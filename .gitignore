@@ -1,0 +1,25 @@
+# Dependencias
+node_modules/
+
+# Variables de entorno (MUY IMPORTANTE)
+.env
+.env.local       
+.env.production   
+
+# Scripts de seed con contraseñas
+seedUsers.js
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Uploads (imágenes subidas)
+uploads/
+
+# Build
+dist/
+build/
