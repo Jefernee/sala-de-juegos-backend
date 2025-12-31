@@ -41,12 +41,6 @@ app.use("/api/auth", authRoutes);
 app.use("/api/products", productsRoutes);
 
 
-// Middleware global de errores
-app.use((err, req, res, next) => {
-  console.error("ERROR GLOBAL:", err);
-  res.status(500).json({ error: err.message });
-});
-
 // Usar la ruta (después de las otras rutas)
 app.use('/api/sales', salesRoutes);
 
@@ -57,6 +51,12 @@ app.use('/api/reports', reportsRoutes);
 // Servidor
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
+});
+
+// Middleware global de errores
+app.use((err, req, res, next) => {
+  console.error("ERROR GLOBAL:", err);
+  res.status(500).json({ error: err.message });
 });
 
 export { mongoose };
