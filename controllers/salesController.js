@@ -1,5 +1,5 @@
 // controllers/salesController.js
-import Sale from '../models/Sale.js';
+import Sale from '../models/sale.js';
 import Inventario from '../models/Inventario.js';
 
 // Registrar nueva venta
