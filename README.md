@@ -53,7 +53,7 @@ Crea un archivo `.env` en la raíz del proyecto:
 
 ```env
 # Base de datos
-MONGODB_URI=mongodb+srv://usuario:password@cluster.mongodb.net/inventario
+MONGODB_URI=mongodb+srv://<TU_USUARIO>:<TU_PASSWORD>@<TU_CLUSTER>.mongodb.net/inventario
 
 # Puerto
 PORT=5000
@@ -188,13 +188,39 @@ Authorization: Bearer tu_token_aqui
 
 ### 3. Configurar variables de entorno
 
-En Render, agrega las mismas variables del archivo `.env`:
-- `MONGODB_URI`
-- `JWT_SECRET`
-- `CLOUDINARY_CLOUD_NAME`
-- `CLOUDINARY_API_KEY`
-- `CLOUDINARY_API_SECRET`
-- `FRONTEND_URL`
+### 3. Configurar variables de entorno
+
+Crea un archivo `.env` en la raíz del proyecto:
+```env
+# Base de datos MongoDB Atlas
+MONGODB_URI=mongodb+srv://<USUARIO>:<PASSWORD>@<CLUSTER>.mongodb.net/inventario
+
+# Puerto del servidor
+PORT=5000
+
+# Clave secreta para JWT (genera una aleatoria y segura)
+JWT_SECRET=tu_clave_secreta_muy_segura_aqui_cambiala
+
+# Credenciales de Cloudinary
+CLOUDINARY_CLOUD_NAME=tu_cloud_name_aqui
+CLOUDINARY_API_KEY=tu_api_key_aqui
+CLOUDINARY_API_SECRET=tu_api_secret_aqui
+
+# URL del frontend para CORS
+FRONTEND_URL=http://localhost:3000
+```
+
+**📌 Cómo obtener tu MONGODB_URI:**
+
+1. Ve a [MongoDB Atlas](https://www.mongodb.com/cloud/atlas)
+2. Inicia sesión y selecciona tu cluster
+3. Click en **"Connect"** → **"Connect your application"**
+4. Copia la cadena de conexión
+5. Reemplaza:
+   - `<username>` con tu usuario de MongoDB
+   - `<password>` con tu contraseña real
+   - `<cluster>` quedará automáticamente
+6. Agrega `/inventario` al final antes de los parámetros
 
 ### 4. Comando de build
 ```bash
