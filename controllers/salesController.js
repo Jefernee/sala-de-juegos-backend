@@ -55,6 +55,9 @@ export const addSale = async (req, res) => {
 
     console.log("\n✅ PASO 2: Validando productos en base de datos");
     
+    // Array para almacenar productos validados
+    const productosValidados = [];
+    
     // Validar cada producto
     for (let i = 0; i < productos.length; i++) {
       const item = productos[i];
@@ -149,6 +152,13 @@ export const addSale = async (req, res) => {
       }
       console.log(`   ✓ Precio correcto`);
       console.log(`   ✅ Producto validado exitosamente`);
+      
+      // Guardar producto validado para actualizar después
+      productosValidados.push({
+        id: productoDB._id,
+        cantidadVendida: item.cantidad,
+        cantidadActual: productoDB.cantidad
+      });
     }
 
     console.log("\n✅ PASO 3: Validando total general");
@@ -185,7 +195,28 @@ export const addSale = async (req, res) => {
     console.log("✅ Venta guardada exitosamente!");
     console.log("ID de venta:", ventaGuardada._id);
 
-    console.log("\n✅ PASO 5: Enviando respuesta al frontend");
+    // ✅ NUEVO: PASO 5 - Actualizar inventario
+    console.log("\n✅ PASO 5: Actualizando inventario");
+    for (const prod of productosValidados) {
+      const nuevaCantidad = prod.cantidadActual - prod.cantidadVendida;
+      console.log(`   📦 Actualizando producto ${prod.id}`);
+      console.log(`      Cantidad anterior: ${prod.cantidadActual}`);
+      console.log(`      Cantidad vendida: ${prod.cantidadVendida}`);
+      console.log(`      Nueva cantidad: ${nuevaCantidad}`);
+      
+      await Inventario.findByIdAndUpdate(
+        prod.id,
+        { 
+          cantidad: nuevaCantidad,
+          updatedAt: new Date()
+        }
+      );
+      
+      console.log(`   ✅ Inventario actualizado`);
+    }
+    console.log("✅ Todo el inventario actualizado correctamente");
+
+    console.log("\n✅ PASO 6: Enviando respuesta al frontend");
     const respuesta = {
       message: 'Venta registrada exitosamente',
       venta: ventaGuardada

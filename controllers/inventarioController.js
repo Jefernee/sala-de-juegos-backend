@@ -5,7 +5,7 @@ import { mongoose } from "../db.js";
 // GET
 export const getInventario = async (req, res) => {
   try {
-    const data = await Inventario.find().populate('createdBy', 'nombre email');
+    const data = await Inventario.find().populate("createdBy", "nombre email");
     res.json(data);
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -24,10 +24,10 @@ export const addProducto = async (req, res, next) => {
 
   try {
     const userId = req.user?.id;
-    
+
     if (!userId) {
-      return res.status(401).json({ 
-        error: "Usuario no autenticado. Debes iniciar sesión." 
+      return res.status(401).json({
+        error: "Usuario no autenticado. Debes iniciar sesión.",
       });
     }
 
@@ -77,8 +77,8 @@ export const addProducto = async (req, res, next) => {
       precioVenta: Number(body.precioVenta),
       fechaCompra: new Date(body.fechaCompra),
       imagen: result.secure_url,
-      seVende: body.seVende === 'true' || body.seVende === true,
-      createdBy: userId
+      seVende: body.seVende === "true" || body.seVende === true,
+      createdBy: userId,
     });
 
     console.log("Producto listo para guardar:", producto);
@@ -88,10 +88,11 @@ export const addProducto = async (req, res, next) => {
     );
 
     const savedProducto = await producto.save();
-    
-    const productoConUsuario = await Inventario.findById(savedProducto._id)
-      .populate('createdBy', 'nombre email');
-    
+
+    const productoConUsuario = await Inventario.findById(
+      savedProducto._id
+    ).populate("createdBy", "nombre email");
+
     console.log("Producto guardado correctamente:", productoConUsuario);
 
     res.status(201).json(productoConUsuario);
@@ -124,7 +125,7 @@ export const updateProducto = async (req, res) => {
 
     // Buscar producto actual
     const productoActual = await Inventario.findById(req.params.id);
-    
+
     if (!productoActual) {
       console.error("❌ Producto no encontrado en la BD");
       return res.status(404).json({ error: "Producto no encontrado" });
@@ -135,14 +136,13 @@ export const updateProducto = async (req, res) => {
     // Preparar datos de actualización
     const updateData = {
       nombre: req.body.nombre,
-      cantidad: Number(req.body.cantidad),
-      precioCompra: Number(req.body.precioCompra),
-      precioVenta: Number(req.body.precioVenta),
+      cantidad: Number(req.body.cantidad) || 0,
+      precioCompra: Number(req.body.precioCompra) || 0,
+      precioVenta: Number(req.body.precioVenta) || 0,
       fechaCompra: req.body.fechaCompra,
-      seVende: req.body.seVende === 'true' || req.body.seVende === true,
-      updatedAt: new Date()
+      seVende: req.body.seVende === "true" || req.body.seVende === true,
+      updatedAt: new Date(),
     };
-
     console.log("📦 Datos preparados para actualizar:", updateData);
 
     // ✅ Si hay nueva imagen, procesarla
@@ -152,9 +152,9 @@ export const updateProducto = async (req, res) => {
         fieldname: req.file.fieldname,
         originalname: req.file.originalname,
         mimetype: req.file.mimetype,
-        size: req.file.size
+        size: req.file.size,
       });
-      
+
       const uploadToCloudinary = (fileBuffer) => {
         return new Promise((resolve, reject) => {
           const stream = cloudinary.uploader.upload_stream(
@@ -185,7 +185,7 @@ export const updateProducto = async (req, res) => {
       try {
         const result = await uploadToCloudinary(req.file.buffer);
         console.log("✅ Nueva imagen subida a Cloudinary:", result.secure_url);
-        
+
         // Agregar nueva URL de imagen
         updateData.imagen = result.secure_url;
 
@@ -194,16 +194,20 @@ export const updateProducto = async (req, res) => {
           try {
             const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
             const match = productoActual.imagen.match(regex);
-            
+
             let publicId;
             if (match) {
               publicId = match[1];
             } else {
-              const urlParts = productoActual.imagen.split('/');
-              const uploadIndex = urlParts.findIndex(part => part === 'upload');
+              const urlParts = productoActual.imagen.split("/");
+              const uploadIndex = urlParts.findIndex(
+                (part) => part === "upload"
+              );
               if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
-                const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/');
-                publicId = pathAfterUpload.replace(/\.[^/.]+$/, '');
+                const pathAfterUpload = urlParts
+                  .slice(uploadIndex + 2)
+                  .join("/");
+                publicId = pathAfterUpload.replace(/\.[^/.]+$/, "");
               }
             }
 
@@ -213,15 +217,18 @@ export const updateProducto = async (req, res) => {
               console.log("Resultado eliminación:", deleteResult);
             }
           } catch (cloudinaryError) {
-            console.error("⚠️  Error al eliminar imagen anterior:", cloudinaryError);
+            console.error(
+              "⚠️  Error al eliminar imagen anterior:",
+              cloudinaryError
+            );
             // Continuar aunque falle la eliminación
           }
         }
       } catch (uploadError) {
         console.error("❌ Error al subir imagen a Cloudinary:", uploadError);
-        return res.status(500).json({ 
-          error: "Error al subir imagen", 
-          details: uploadError.message 
+        return res.status(500).json({
+          error: "Error al subir imagen",
+          details: uploadError.message,
         });
       }
     } else {
@@ -234,12 +241,12 @@ export const updateProducto = async (req, res) => {
     const productoActualizado = await Inventario.findByIdAndUpdate(
       req.params.id,
       updateData,
-      { 
-        new: true,  // Retorna el documento actualizado
-        runValidators: true  // Ejecuta validaciones del schema
+      {
+        new: true, // Retorna el documento actualizado
+        runValidators: true, // Ejecuta validaciones del schema
       }
-    ).populate('createdBy', 'nombre email');
-    
+    ).populate("createdBy", "nombre email");
+
     if (!productoActualizado) {
       console.error("❌ No se pudo actualizar el producto");
       return res.status(500).json({ error: "Error al actualizar producto" });
@@ -247,13 +254,12 @@ export const updateProducto = async (req, res) => {
 
     console.log("✅ Producto actualizado exitosamente:", productoActualizado);
     res.json(productoActualizado);
-    
   } catch (error) {
     console.error("❌ ERROR EN updateProducto:", error);
     console.error("Stack trace:", error.stack);
-    res.status(500).json({ 
+    res.status(500).json({
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
 };
@@ -262,7 +268,7 @@ export const updateProducto = async (req, res) => {
 export const deleteProducto = async (req, res) => {
   try {
     const producto = await Inventario.findById(req.params.id);
-    
+
     if (!producto) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
@@ -271,43 +277,55 @@ export const deleteProducto = async (req, res) => {
       try {
         const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
         const match = producto.imagen.match(regex);
-        
+
         let publicId;
         if (match) {
           publicId = match[1];
         } else {
-          const urlParts = producto.imagen.split('/');
-          const uploadIndex = urlParts.findIndex(part => part === 'upload');
+          const urlParts = producto.imagen.split("/");
+          const uploadIndex = urlParts.findIndex((part) => part === "upload");
           if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
-            const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/');
-            publicId = pathAfterUpload.replace(/\.[^/.]+$/, '');
+            const pathAfterUpload = urlParts.slice(uploadIndex + 2).join("/");
+            publicId = pathAfterUpload.replace(/\.[^/.]+$/, "");
           }
         }
 
         if (publicId) {
-          console.log("Eliminando imagen de Cloudinary con public_id:", publicId);
-          
+          console.log(
+            "Eliminando imagen de Cloudinary con public_id:",
+            publicId
+          );
+
           const result = await cloudinary.uploader.destroy(publicId);
           console.log("Resultado de eliminación en Cloudinary:", result);
-          
-          if (result.result === 'ok') {
+
+          if (result.result === "ok") {
             console.log("✅ Imagen eliminada de Cloudinary exitosamente");
           } else {
-            console.warn("⚠️ Cloudinary respondió pero la imagen puede no existir:", result);
+            console.warn(
+              "⚠️ Cloudinary respondió pero la imagen puede no existir:",
+              result
+            );
           }
         } else {
-          console.error("❌ No se pudo extraer el public_id de la URL:", producto.imagen);
+          console.error(
+            "❌ No se pudo extraer el public_id de la URL:",
+            producto.imagen
+          );
         }
       } catch (cloudinaryError) {
-        console.error("❌ Error al eliminar imagen de Cloudinary:", cloudinaryError);
+        console.error(
+          "❌ Error al eliminar imagen de Cloudinary:",
+          cloudinaryError
+        );
       }
     }
 
     await Inventario.findByIdAndDelete(req.params.id);
-    
-    res.json({ 
+
+    res.json({
       message: "Producto e imagen eliminados correctamente",
-      id: req.params.id 
+      id: req.params.id,
     });
   } catch (error) {
     console.error("Error al eliminar producto:", error);
@@ -330,17 +348,19 @@ export const getProductosPaginados = async (req, res) => {
 
     const skip = (page - 1) * limit;
     const search = req.query.search || "";
-    const soloDisponibles = req.query.disponible === 'true';
+    const soloDisponibles = req.query.disponible === "true";
 
     let query = search ? { nombre: { $regex: search, $options: "i" } } : {};
-    
+
     if (soloDisponibles) {
       query.seVende = true;
     }
 
     const productos = await Inventario.find(query)
-      .select("nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt")
-      .populate('createdBy', 'nombre email')
+      .select(
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt"
+      )
+      .populate("createdBy", "nombre email")
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 })
@@ -383,26 +403,28 @@ export const getProductosPublicos = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 12;
-    const search = req.query.search || '';
-    
+    const search = req.query.search || "";
+
     const skip = (page - 1) * limit;
-    
+
     const filter = {
       seVende: true,
-      ...(search && { nombre: { $regex: search, $options: 'i' } })
+      ...(search && { nombre: { $regex: search, $options: "i" } }),
     };
-    
+
     const [productos, totalProducts] = await Promise.all([
       Inventario.find(filter)
-        .select('nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad')
+        .select(
+          "nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad"
+        )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit),
-      Inventario.countDocuments(filter)
+      Inventario.countDocuments(filter),
     ]);
-    
+
     const totalPages = Math.ceil(totalProducts / limit);
-    
+
     res.json({
       productos,
       pagination: {
@@ -410,14 +432,14 @@ export const getProductosPublicos = async (req, res) => {
         totalPages,
         currentPage: page,
         hasNextPage: page < totalPages,
-        hasPrevPage: page > 1
-      }
+        hasPrevPage: page > 1,
+      },
     });
   } catch (error) {
-    console.error('Error al obtener productos públicos:', error);
-    res.status(500).json({ 
-      error: 'Error al obtener productos',
-      message: error.message 
+    console.error("Error al obtener productos públicos:", error);
+    res.status(500).json({
+      error: "Error al obtener productos",
+      message: error.message,
     });
   }
 };
@@ -425,25 +447,25 @@ export const getProductosPublicos = async (req, res) => {
 // ✅ NUEVA: Obtener productos disponibles para venta
 export const getProductosParaVenta = async (req, res) => {
   try {
-    const search = req.query.search || '';
-    
+    const search = req.query.search || "";
+
     const filter = {
       seVende: true,
       cantidad: { $gt: 0 },
-      ...(search && { nombre: { $regex: search, $options: 'i' } })
+      ...(search && { nombre: { $regex: search, $options: "i" } }),
     };
-    
+
     const productos = await Inventario.find(filter)
-      .select('nombre imagen imagenOptimizada precioVenta cantidad')
+      .select("nombre imagen imagenOptimizada precioVenta cantidad")
       .sort({ nombre: 1 })
       .limit(100);
-    
+
     res.json({ productos });
   } catch (error) {
-    console.error('Error al obtener productos para venta:', error);
-    res.status(500).json({ 
-      error: 'Error al obtener productos',
-      message: error.message 
+    console.error("Error al obtener productos para venta:", error);
+    res.status(500).json({
+      error: "Error al obtener productos",
+      message: error.message,
     });
   }
 };
