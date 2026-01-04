@@ -20,11 +20,9 @@ export const addProducto = async (req, res, next) => {
   const { body, file } = req;
   console.log("BODY recibido:", body);
   console.log("FILE recibido:", file);
-  console.log("Usuario autenticado:", req.user); // ✅ Para debug
+  console.log("Usuario autenticado:", req.user);
 
   try {
-    // ✅ VALIDAR QUE HAYA USUARIO AUTENTICADO
-    // El token tiene "id", no "_id"
     const userId = req.user?.id;
     
     if (!userId) {
@@ -50,6 +48,7 @@ export const addProducto = async (req, res, next) => {
           {
             resource_type: "image",
             folder: "productos",
+            angle: "exif",
             transformation: [
               { width: 400, height: 400, crop: "fill" },
               { quality: "auto:good" },
@@ -71,7 +70,6 @@ export const addProducto = async (req, res, next) => {
     const result = await uploadToCloudinary(file.buffer);
     console.log("Imagen subida y optimizada:", result.secure_url);
 
-    // ✅ Crear nuevo producto con referencia al usuario
     const producto = new Inventario({
       nombre: body.nombre,
       cantidad: Number(body.cantidad),
@@ -79,11 +77,7 @@ export const addProducto = async (req, res, next) => {
       precioVenta: Number(body.precioVenta),
       fechaCompra: new Date(body.fechaCompra),
       imagen: result.secure_url,
-      
-      // ✅ CAMPO CORREGIDO: seVende (como en tu BD)
       seVende: body.seVende === 'true' || body.seVende === true,
-      
-      // ✅ REFERENCIA AL USUARIO: Usa req.user.id (no _id)
       createdBy: userId
     });
 
@@ -95,7 +89,6 @@ export const addProducto = async (req, res, next) => {
 
     const savedProducto = await producto.save();
     
-    // ✅ Populate para devolver los datos del usuario
     const productoConUsuario = await Inventario.findById(savedProducto._id)
       .populate('createdBy', 'nombre email');
     
@@ -108,63 +101,192 @@ export const addProducto = async (req, res, next) => {
   }
 };
 
-// PUT - ✅ ACTUALIZADO
+// ✅ PUT - ACTUALIZADO CON MEJOR MANEJO DE ERRORES Y LOGS
 export const updateProducto = async (req, res) => {
+  console.log("========================================");
+  console.log("🔵 PETICIÓN PUT RECIBIDA");
+  console.log("========================================");
+  console.log("req.params.id:", req.params.id);
+  console.log("req.body:", req.body);
+  console.log("req.file:", req.file);
+  console.log("========================================");
   try {
+    console.log("=== INICIO updateProducto ===");
+    console.log("ID del producto:", req.params.id);
+    console.log("Body recibido:", req.body);
+    console.log("File recibido:", req.file);
+    console.log("Usuario autenticado:", req.user);
+
+    // ✅ Validar que el ID sea válido
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: "ID de producto inválido" });
+    }
+
+    // Buscar producto actual
+    const productoActual = await Inventario.findById(req.params.id);
+    
+    if (!productoActual) {
+      console.error("❌ Producto no encontrado en la BD");
+      return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    console.log("✅ Producto actual encontrado:", productoActual);
+
+    // Preparar datos de actualización
     const updateData = {
-      ...req.body,
+      nombre: req.body.nombre,
+      cantidad: Number(req.body.cantidad),
+      precioCompra: Number(req.body.precioCompra),
+      precioVenta: Number(req.body.precioVenta),
+      fechaCompra: req.body.fechaCompra,
+      seVende: req.body.seVende === 'true' || req.body.seVende === true,
       updatedAt: new Date()
     };
-    
-    const producto = await Inventario.findByIdAndUpdate(
+
+    console.log("📦 Datos preparados para actualizar:", updateData);
+
+    // ✅ Si hay nueva imagen, procesarla
+    if (req.file) {
+      console.log("🖼️  Nueva imagen detectada, subiendo a Cloudinary...");
+      console.log("Archivo recibido:", {
+        fieldname: req.file.fieldname,
+        originalname: req.file.originalname,
+        mimetype: req.file.mimetype,
+        size: req.file.size
+      });
+      
+      const uploadToCloudinary = (fileBuffer) => {
+        return new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              resource_type: "image",
+              folder: "productos",
+              angle: "exif",
+              transformation: [
+                { width: 400, height: 400, crop: "fill" },
+                { quality: "auto:good" },
+                { fetch_format: "auto" },
+              ],
+            },
+            (error, result) => {
+              if (error) {
+                console.error("❌ Error en Cloudinary upload:", error);
+                reject(error);
+              } else {
+                console.log("✅ Cloudinary upload exitoso");
+                resolve(result);
+              }
+            }
+          );
+          stream.end(fileBuffer);
+        });
+      };
+
+      try {
+        const result = await uploadToCloudinary(req.file.buffer);
+        console.log("✅ Nueva imagen subida a Cloudinary:", result.secure_url);
+        
+        // Agregar nueva URL de imagen
+        updateData.imagen = result.secure_url;
+
+        // ✅ Eliminar imagen anterior de Cloudinary
+        if (productoActual.imagen) {
+          try {
+            const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
+            const match = productoActual.imagen.match(regex);
+            
+            let publicId;
+            if (match) {
+              publicId = match[1];
+            } else {
+              const urlParts = productoActual.imagen.split('/');
+              const uploadIndex = urlParts.findIndex(part => part === 'upload');
+              if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
+                const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/');
+                publicId = pathAfterUpload.replace(/\.[^/.]+$/, '');
+              }
+            }
+
+            if (publicId) {
+              console.log("🗑️  Eliminando imagen anterior:", publicId);
+              const deleteResult = await cloudinary.uploader.destroy(publicId);
+              console.log("Resultado eliminación:", deleteResult);
+            }
+          } catch (cloudinaryError) {
+            console.error("⚠️  Error al eliminar imagen anterior:", cloudinaryError);
+            // Continuar aunque falle la eliminación
+          }
+        }
+      } catch (uploadError) {
+        console.error("❌ Error al subir imagen a Cloudinary:", uploadError);
+        return res.status(500).json({ 
+          error: "Error al subir imagen", 
+          details: uploadError.message 
+        });
+      }
+    } else {
+      console.log("ℹ️  No se recibió nueva imagen, se mantiene la actual");
+    }
+
+    console.log("📝 Datos finales para actualizar:", updateData);
+
+    // Actualizar producto
+    const productoActualizado = await Inventario.findByIdAndUpdate(
       req.params.id,
       updateData,
-      { new: true }
+      { 
+        new: true,  // Retorna el documento actualizado
+        runValidators: true  // Ejecuta validaciones del schema
+      }
     ).populate('createdBy', 'nombre email');
     
-    res.json(producto);
+    if (!productoActualizado) {
+      console.error("❌ No se pudo actualizar el producto");
+      return res.status(500).json({ error: "Error al actualizar producto" });
+    }
+
+    console.log("✅ Producto actualizado exitosamente:", productoActualizado);
+    res.json(productoActualizado);
+    
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error("❌ ERROR EN updateProducto:", error);
+    console.error("Stack trace:", error.stack);
+    res.status(500).json({ 
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 };
 
 // DELETE - ✅ ACTUALIZADO: Elimina producto e imagen de Cloudinary
 export const deleteProducto = async (req, res) => {
   try {
-    // 1. Buscar el producto primero para obtener la URL de la imagen
     const producto = await Inventario.findById(req.params.id);
     
     if (!producto) {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    // 2. Extraer el public_id de la URL de Cloudinary
     if (producto.imagen) {
       try {
-        // La URL de Cloudinary tiene formato:
-        // https://res.cloudinary.com/cloud-name/image/upload/v123456/productos/imagen.jpg
-        // Necesitamos extraer: productos/imagen
-        
         const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
         const match = producto.imagen.match(regex);
         
         let publicId;
         if (match) {
-          publicId = match[1]; // Extrae "productos/imagen"
+          publicId = match[1];
         } else {
-          // Fallback: método manual
           const urlParts = producto.imagen.split('/');
           const uploadIndex = urlParts.findIndex(part => part === 'upload');
           if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
             const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/');
-            publicId = pathAfterUpload.replace(/\.[^/.]+$/, ''); // Remueve extensión
+            publicId = pathAfterUpload.replace(/\.[^/.]+$/, '');
           }
         }
 
         if (publicId) {
           console.log("Eliminando imagen de Cloudinary con public_id:", publicId);
           
-          // 3. Eliminar imagen de Cloudinary
           const result = await cloudinary.uploader.destroy(publicId);
           console.log("Resultado de eliminación en Cloudinary:", result);
           
@@ -178,11 +300,9 @@ export const deleteProducto = async (req, res) => {
         }
       } catch (cloudinaryError) {
         console.error("❌ Error al eliminar imagen de Cloudinary:", cloudinaryError);
-        // Continuar con la eliminación del producto aunque falle Cloudinary
       }
     }
 
-    // 4. Eliminar el producto de la base de datos
     await Inventario.findByIdAndDelete(req.params.id);
     
     res.json({ 
@@ -220,7 +340,7 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select("nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt")
-      .populate('createdBy', 'nombre email') // ✅ Incluir datos del usuario
+      .populate('createdBy', 'nombre email')
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 })
@@ -268,7 +388,7 @@ export const getProductosPublicos = async (req, res) => {
     const skip = (page - 1) * limit;
     
     const filter = {
-      seVende: true, // Solo productos disponibles
+      seVende: true,
       ...(search && { nombre: { $regex: search, $options: 'i' } })
     };
     
@@ -307,10 +427,9 @@ export const getProductosParaVenta = async (req, res) => {
   try {
     const search = req.query.search || '';
     
-    // Filtros: seVende=true Y cantidad>0
     const filter = {
-      seVende: true, // Solo productos disponibles para venta
-      cantidad: { $gt: 0 }, // Con stock disponible
+      seVende: true,
+      cantidad: { $gt: 0 },
       ...(search && { nombre: { $regex: search, $options: 'i' } })
     };
     

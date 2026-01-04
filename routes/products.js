@@ -20,8 +20,8 @@ router.get("/", getInventario);
 
 // ✅ AGREGAR authMiddleware ANTES de upload
 router.post("/", authMiddleware, upload.single("imagen"), addProducto);
-
-router.put("/:id", authMiddleware, updateProducto); // ✅ También proteger PUT
+// ✅ PUT - Editar producto (FALTABA upload.single("imagen"))
+router.put("/:id", authMiddleware, upload.single("imagen"), updateProducto);
 router.get("/public", getProductosPublicos);
 router.delete("/:id", authMiddleware, deleteProducto); // ✅ También proteger DELETE
 
