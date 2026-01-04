@@ -1,7 +1,6 @@
 # 🏪 Sistema POS - Backend API
 
 <div align="center">
-  <img src="docs/images/logo.png" alt="Logo POS System" width="200"/>
   
   ### API RESTful completa para sistema de punto de venta
   
@@ -11,7 +10,39 @@
   [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
   [![Deploy](https://img.shields.io/badge/Deploy-Render-blueviolet.svg)](https://render.com/)
   
-  [Demo Live](https://sala-de-juegos-backend.onrender.com) • [Documentación](https://github.com/tu-usuario/tu-repo/wiki) • [Reportar Bug](https://github.com/tu-usuario/tu-repo/issues)
+  [Demo Live](https://sala-de-juegos-backend.onrender.com) • [Documentación](https://github.com/Jefernee/sala-de-juegos-backend/wiki) • [Reportar Bug](https://github.com/Jefernee/sala-de-juegos-backend/issues)
+</div>
+
+---
+
+## 📸 Capturas de Pantalla
+
+<div align="center">
+  
+### 🔐 Autenticación
+<img src="Docs/images/login.png" alt="Login" width="800"/>
+
+### 📦 Gestión de Productos
+<img src="Docs/images/gestión productos.png" alt="Gestión de Productos" width="800"/>
+
+### ➕ Agregar Productos
+<img src="Docs/images/agregar productos.png" alt="Agregar Productos" width="800"/>
+
+### 🛍️ Catálogo de Productos
+<img src="Docs/images/muestra_productos.png" alt="Muestra de Productos" width="800"/>
+
+### 💰 Dashboard de Ventas
+<img src="Docs/images/dashboard ventas.png" alt="Dashboard de Ventas" width="800"/>
+
+### 📊 Reportes
+<img src="Docs/images/reportes.png" alt="Reportes" width="800"/>
+
+### 📋 Pedidos
+<img src="Docs/images/pedidos.png" alt="Pedidos" width="800"/>
+
+### 🛒 Hacer Pedido
+<img src="Docs/images/hacer_pedido.png" alt="Hacer Pedido" width="800"/>
+
 </div>
 
 ---
@@ -80,7 +111,7 @@
 ## 🛠️ Stack Tecnológico
 
 <div align="center">
-  <img src="docs/images/arquitectura.png" alt="Arquitectura del Sistema" width="700"/>
+  <img src="Docs/images/arquitectura.png" alt="Arquitectura del Sistema" width="700"/>
   
   **Arquitectura del Sistema**
 </div>
@@ -125,6 +156,8 @@ backend/
 │   ├── sales.js                # Rutas de ventas
 │   ├── pedidos.js              # Rutas de pedidos
 │   └── reports.js              # Rutas de reportes
+├── Docs/
+│   └── images/                 # Capturas de pantalla del sistema
 ├── .env                        # Variables de entorno (no incluir en Git)
 ├── .gitignore
 ├── db.js                       # Conexión a MongoDB
@@ -140,7 +173,7 @@ backend/
 ### 1. Clonar el repositorio
 
 ```bash
-git clone https://github.com/tu-usuario/sala-de-juegos-backend.git
+git clone https://github.com/Jefernee/sala-de-juegos-backend.git
 cd sala-de-juegos-backend
 ```
 
@@ -188,6 +221,8 @@ FRONTEND_URL=https://tu-frontend.vercel.app
 - **MONGO_URI**: Reemplaza `<USUARIO>`, `<PASSWORD>`, y `<CLUSTER>` con tus credenciales
 - **JWT_SECRET**: Genera una clave aleatoria segura (mínimo 32 caracteres)
 - **Cloudinary**: Crea una cuenta gratuita en [cloudinary.com](https://cloudinary.com)
+- **NUNCA** compartas tus variables de entorno públicamente
+- **NUNCA** subas el archivo `.env` a GitHub
 
 ---
 
@@ -213,6 +248,10 @@ El servidor estará disponible en `http://localhost:5000`
 
 ### 🔓 Autenticación
 
+<div align="center">
+  <img src="Docs/images/login.png" alt="Login Interface" width="600"/>
+</div>
+
 | Método | Endpoint | Descripción | Auth | Body |
 |--------|----------|-------------|------|------|
 | POST | `/api/auth/register` | Registrar usuario | ❌ | `{ email, password, nombre }` |
@@ -226,9 +265,9 @@ POST /api/auth/register
 Content-Type: application/json
 
 {
-  "email": "admin@tienda.com",
-  "password": "Password123",
-  "nombre": "Administrador"
+  "email": "usuario@ejemplo.com",
+  "password": "ContraseñaSegura123!",
+  "nombre": "Nombre Usuario"
 }
 ```
 
@@ -238,8 +277,8 @@ Content-Type: application/json
   "message": "Usuario creado exitosamente",
   "user": {
     "id": "507f1f77bcf86cd799439011",
-    "email": "admin@tienda.com",
-    "nombre": "Administrador"
+    "email": "usuario@ejemplo.com",
+    "nombre": "Nombre Usuario"
   }
 }
 ```
@@ -251,8 +290,8 @@ POST /api/auth/login
 Content-Type: application/json
 
 {
-  "email": "admin@tienda.com",
-  "password": "Password123"
+  "email": "usuario@ejemplo.com",
+  "password": "ContraseñaSegura123!"
 }
 ```
 
@@ -262,21 +301,19 @@ Content-Type: application/json
   "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
   "user": {
     "id": "507f1f77bcf86cd799439011",
-    "email": "admin@tienda.com",
-    "nombre": "Administrador"
+    "email": "usuario@ejemplo.com",
+    "nombre": "Nombre Usuario"
   }
 }
 ```
 
-<div align="center">
-  <img src="docs/images/postman-login.png" alt="Login en Postman" width="800"/>
-  
-  **Ejemplo de Login en Postman**
-</div>
-
 ---
 
 ### 📦 Productos (Inventario)
+
+<div align="center">
+  <img src="Docs/images/gestión productos.png" alt="Gestión de Productos" width="700"/>
+</div>
 
 | Método | Endpoint | Descripción | Auth |
 |--------|----------|-------------|------|
@@ -288,8 +325,13 @@ Content-Type: application/json
 | PUT | `/api/products/:id` | Actualizar producto | ✅ |
 | DELETE | `/api/products/:id` | Eliminar producto | ✅ |
 
-#### Ejemplo: Crear Producto
+#### Agregar Producto
 
+<div align="center">
+  <img src="Docs/images/agregar productos.png" alt="Formulario Agregar Producto" width="600"/>
+</div>
+
+**Request:**
 ```bash
 POST /api/products
 Authorization: Bearer <tu_token>
@@ -315,19 +357,23 @@ Content-Type: multipart/form-data
   "precioCompra": 15000,
   "precioVenta": 25000,
   "fechaCompra": "2024-01-15T00:00:00.000Z",
-  "imagen": "https://res.cloudinary.com/tu-cloud/image/upload/productos/abc123.jpg",
+  "imagen": "https://res.cloudinary.com/...",
   "seVende": true,
   "createdBy": {
     "_id": "507f1f77bcf86cd799439011",
-    "nombre": "Administrador",
-    "email": "admin@tienda.com"
+    "nombre": "Usuario",
+    "email": "usuario@ejemplo.com"
   },
   "createdAt": "2024-01-15T10:30:00.000Z",
   "updatedAt": "2024-01-15T10:30:00.000Z"
 }
 ```
 
-#### Ejemplo: Productos Paginados
+#### Catálogo de Productos
+
+<div align="center">
+  <img src="Docs/images/muestra_productos.png" alt="Catálogo de Productos" width="700"/>
+</div>
 
 ```bash
 GET /api/products/list?page=1&limit=12&search=camisa&disponible=true
@@ -361,6 +407,10 @@ Authorization: Bearer <tu_token>
 ---
 
 ### 💰 Ventas
+
+<div align="center">
+  <img src="Docs/images/dashboard ventas.png" alt="Dashboard de Ventas" width="700"/>
+</div>
 
 | Método | Endpoint | Descripción | Auth |
 |--------|----------|-------------|------|
@@ -422,15 +472,13 @@ Content-Type: application/json
 - ✅ Valida que los precios no hayan cambiado
 - ✅ Actualiza el inventario restando las cantidades vendidas
 
-<div align="center">
-  <img src="docs/images/postman-venta.png" alt="Registrar Venta en Postman" width="800"/>
-  
-  **Flujo de Registro de Venta**
-</div>
-
 ---
 
 ### 📋 Pedidos
+
+<div align="center">
+  <img src="Docs/images/pedidos.png" alt="Lista de Pedidos" width="700"/>
+</div>
 
 | Método | Endpoint | Descripción | Auth |
 |--------|----------|-------------|------|
@@ -440,8 +488,13 @@ Content-Type: application/json
 | PATCH | `/api/pedidos/:id` | Actualizar estado | ✅ |
 | DELETE | `/api/pedidos/:id` | Eliminar pedido | ✅ |
 
-#### Ejemplo: Crear Pedido
+#### Crear Pedido
 
+<div align="center">
+  <img src="Docs/images/hacer_pedido.png" alt="Formulario de Pedido" width="600"/>
+</div>
+
+**Request:**
 ```bash
 POST /api/pedidos
 Authorization: Bearer <tu_token>
@@ -496,6 +549,10 @@ Content-Type: application/json
 
 ### 📊 Reportes
 
+<div align="center">
+  <img src="Docs/images/reportes.png" alt="Reportes y Estadísticas" width="700"/>
+</div>
+
 | Método | Endpoint | Descripción | Auth |
 |--------|----------|-------------|------|
 | GET | `/api/reports/resumen` | Dashboard general | ✅ |
@@ -543,12 +600,6 @@ Authorization: Bearer <tu_token>
   "pedidosPendientes": 12
 }
 ```
-
-<div align="center">
-  <img src="docs/images/dashboard.png" alt="Dashboard de Reportes" width="800"/>
-  
-  **Vista del Dashboard con Métricas en Tiempo Real**
-</div>
 
 #### Ejemplo: Productos Más Vendidos
 
@@ -708,7 +759,7 @@ Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ### Flujo de Autenticación
 
 <div align="center">
-  <img src="docs/images/flujo-auth.png" alt="Flujo de Autenticación" width="700"/>
+  <img src="Docs/images/flujo-auth.png" alt="Flujo de Autenticación" width="700"/>
   
   **Diagrama de Flujo de Autenticación JWT**
 </div>
@@ -728,24 +779,7 @@ sequenceDiagram
 
 ### Middleware de Autenticación
 
-```javascript
-// middlewares/auth.js
-export default (req, res, next) => {
-  const token = req.header('Authorization')?.replace('Bearer ', '');
-  
-  if (!token) {
-    return res.status(401).json({ error: 'Acceso denegado' });
-  }
-  
-  try {
-    const verified = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = verified;
-    next();
-  } catch (error) {
-    res.status(401).json({ error: 'Token inválido' });
-  }
-};
-```
+El sistema utiliza JWT para proteger las rutas sensibles. Todas las operaciones de modificación de datos requieren autenticación válida.
 
 ---
 
@@ -772,34 +806,25 @@ Asegúrate de tener:
 
 ### 3. Variables de Entorno
 
-Agrega en Render (Environment):
+Agrega en Render (Environment) las mismas variables definidas en tu archivo `.env` local:
 
-```
-MONGO_URI=mongodb+srv://usuario:password@cluster.mongodb.net/pos_tienda
-JWT_SECRET=tu_clave_secreta_aqui
-CLOUDINARY_CLOUD_NAME=tu_cloud_name
-CLOUDINARY_API_KEY=tu_api_key
-CLOUDINARY_API_SECRET=tu_api_secret
-PORT=5000
-FRONTEND_URL=https://tu-frontend.vercel.app
-```
+- `MONGO_URI`
+- `JWT_SECRET`
+- `CLOUDINARY_CLOUD_NAME`
+- `CLOUDINARY_API_KEY`
+- `CLOUDINARY_API_SECRET`
+- `PORT`
+- `FRONTEND_URL`
+
+⚠️ **IMPORTANTE**: Nunca expongas tus variables de entorno en código público.
 
 ### 4. Deploy Automático
 
 Render detectará automáticamente los cambios en tu rama principal y desplegará.
 
-**URL del backend:** `https://sala-de-juegos-backend.onrender.com`
-
 ### 5. Configurar CORS
 
-En `server.js`:
-
-```javascript
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
-}));
-```
+Asegúrate de configurar correctamente los orígenes permitidos para CORS en tu aplicación para evitar problemas de seguridad.
 
 ---
 
@@ -926,6 +951,18 @@ GET /api/reports/ventas-periodo?days=30
 
 ---
 
+## 🔐 Mejores Prácticas de Seguridad
+
+- ✅ Nunca expongas tus variables de entorno en código público
+- ✅ Usa contraseñas seguras para MongoDB y JWT_SECRET
+- ✅ Mantén actualizado el archivo `.gitignore` para excluir archivos sensibles
+- ✅ Implementa rate limiting en producción
+- ✅ Usa HTTPS en producción
+- ✅ Valida y sanitiza todas las entradas de usuario
+- ✅ Mantén las dependencias actualizadas
+
+---
+
 ## 🤝 Contribuir
 
 1. Fork el proyecto
@@ -944,9 +981,9 @@ Este proyecto está bajo la Licencia MIT. Ver archivo `LICENSE` para más detall
 
 ## 👥 Equipo
 
-**Desarrollador Principal:** Tu Nombre
-- GitHub: [@tu-usuario](https://github.com/tu-usuario)
-- Email: tu@email.com
+**Desarrollador:** Jefernee
+- GitHub: [@Jefernee](https://github.com/Jefernee)
+- Repositorio: [sala-de-juegos-backend](https://github.com/Jefernee/sala-de-juegos-backend)
 
 ---
 
@@ -962,10 +999,14 @@ Este proyecto está bajo la Licencia MIT. Ver archivo `LICENSE` para más detall
 
 ## 📞 Soporte
 
-¿Tienes problemas? Abre un [issue en GitHub](https://github.com/tu-usuario/tu-repo/issues) o contáctanos.
+¿Tienes problemas? Abre un [issue en GitHub](https://github.com/Jefernee/sala-de-juegos-backend/issues).
 
 ---
 
-⭐ **Si este proyecto te fue útil, dale una estrella en GitHub**
-
-**Última actualización:** Enero 2025
+<div align="center">
+  
+  ⭐ **Si este proyecto te fue útil, dale una estrella en GitHub** ⭐
+  
+  **Última actualización:** Enero 2025
+  
+</div>
