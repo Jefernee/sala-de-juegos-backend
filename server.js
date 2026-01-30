@@ -13,12 +13,17 @@ import reportsRoutes from './routes/reports.js';
 
 dotenv.config();
 
+console.log('✅ FRONTEND_URL:', process.env.FRONTEND_URL);
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
 
 // Middlewares
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL,
+  credentials: true
+}));
 app.use(express.json());
 
 // Conexión a MongoDB
@@ -48,9 +53,25 @@ app.use('/api/pedidos', pedidosRoutes);
 
 app.use('/api/reports', reportsRoutes);
 
+// Al inicio del archivo, después de los imports
+const SERVER_START_TIME = Date.now();
+console.log('🚀 ========================================');
+console.log('🚀 SERVIDOR INICIANDO...');
+console.log('🚀 Timestamp:', new Date().toISOString());
+console.log('🚀 ========================================');
+
 // Servidor
 app.listen(PORT, () => {
   console.log(`Servidor corriendo en http://localhost:${PORT}`);
+});
+
+
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime() // Tiempo que lleva corriendo
+  });
 });
 
 // Middleware global de errores

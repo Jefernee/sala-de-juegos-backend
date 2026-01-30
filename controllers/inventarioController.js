@@ -12,15 +12,23 @@ export const getInventario = async (req, res) => {
   }
 };
 
-// POST - ✅ ACTUALIZADO CON USUARIO
 export const addProducto = async (req, res, next) => {
-  console.log("Estado de conexión Mongoose:", mongoose.connection.readyState);
-  console.log("INICIO addProducto");
+  console.log("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴");
+  console.log("🔴 ADDPRODUCTO SE ESTÁ EJECUTANDO 🔴");
+  console.log("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴");
+  console.log("======================================");
+  console.log("🚀 INICIO addProducto");
+  const inicioTotal = Date.now();
 
   const { body, file } = req;
-  console.log("BODY recibido:", body);
-  console.log("FILE recibido:", file);
-  console.log("Usuario autenticado:", req.user);
+  console.log("📦 BODY recibido:", body);
+  console.log(
+    "📷 FILE recibido:",
+    file
+      ? `${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`
+      : "Sin archivo",
+  );
+  console.log("👤 Usuario autenticado:", req.user);
 
   try {
     const userId = req.user?.id;
@@ -31,16 +39,9 @@ export const addProducto = async (req, res, next) => {
       });
     }
 
-    console.log(
-      "Estado de conexión Mongoose antes de subir imagen:",
-      req.app.get("mongooseConnection")?.readyState || 0
-    );
-    console.log(
-      "Mongoose connection readyState:",
-      mongoose.connection.readyState
-    );
-
-    console.log("Subiendo imagen a Cloudinary...");
+    // ⏱️ MEDICIÓN 1: Cloudinary
+    console.log("\n📤 Subiendo imagen a Cloudinary...");
+    const inicioCloudinary = Date.now();
 
     const uploadToCloudinary = (fileBuffer) => {
       return new Promise((resolve, reject) => {
@@ -48,12 +49,8 @@ export const addProducto = async (req, res, next) => {
           {
             resource_type: "image",
             folder: "productos",
-            angle: "exif",
-            transformation: [
-              { width: 400, height: 400, crop: "fill" },
-              { quality: "auto:good" },
-              { fetch_format: "auto" },
-            ],
+            // ✅ ELIMINADO: transformaciones innecesarias
+            // La imagen ya viene comprimida del frontend
           },
           (error, result) => {
             if (error) {
@@ -61,14 +58,22 @@ export const addProducto = async (req, res, next) => {
             } else {
               resolve(result);
             }
-          }
+          },
         );
         stream.end(fileBuffer);
       });
     };
 
     const result = await uploadToCloudinary(file.buffer);
-    console.log("Imagen subida y optimizada:", result.secure_url);
+    const tiempoCloudinary = Date.now() - inicioCloudinary;
+    console.log(`✅ Imagen subida: ${result.secure_url}`);
+    console.log(
+      `⏱️ TIEMPO CLOUDINARY: ${tiempoCloudinary}ms (${(tiempoCloudinary / 1000).toFixed(2)}s)`,
+    );
+
+    // ⏱️ MEDICIÓN 2: Creación del objeto
+    console.log("\n🔨 Creando objeto producto...");
+    const inicioCreacion = Date.now();
 
     const producto = new Inventario({
       nombre: body.nombre,
@@ -81,23 +86,43 @@ export const addProducto = async (req, res, next) => {
       createdBy: userId,
     });
 
-    console.log("Producto listo para guardar:", producto);
-    console.log(
-      "Estado de conexión Mongoose antes de save:",
-      mongoose.connection.readyState
-    );
+    const tiempoCreacion = Date.now() - inicioCreacion;
+    console.log(`⏱️ TIEMPO CREACIÓN OBJETO: ${tiempoCreacion}ms`);
+
+    // ⏱️ MEDICIÓN 3: Save en MongoDB
+    console.log("\n💾 Guardando en MongoDB...");
+    console.log("Estado conexión Mongoose:", mongoose.connection.readyState);
+    const inicioSave = Date.now();
 
     const savedProducto = await producto.save();
 
-    const productoConUsuario = await Inventario.findById(
-      savedProducto._id
-    ).populate("createdBy", "nombre email");
+    const tiempoSave = Date.now() - inicioSave;
+    console.log(`✅ Producto guardado en BD`);
+    console.log(
+      `⏱️ TIEMPO SAVE MONGODB: ${tiempoSave}ms (${(tiempoSave / 1000).toFixed(2)}s)`,
+    );
 
-    console.log("Producto guardado correctamente:", productoConUsuario);
+    // ⏱️ RESUMEN FINAL
+    const tiempoTotal = Date.now() - inicioTotal;
+    console.log("\n📊 ========== RESUMEN DE TIEMPOS ==========");
+    console.log(
+      `⏱️ Cloudinary:    ${tiempoCloudinary}ms (${((tiempoCloudinary / tiempoTotal) * 100).toFixed(1)}%)`,
+    );
+    console.log(
+      `⏱️ Creación:      ${tiempoCreacion}ms (${((tiempoCreacion / tiempoTotal) * 100).toFixed(1)}%)`,
+    );
+    console.log(
+      `⏱️ Save MongoDB:  ${tiempoSave}ms (${((tiempoSave / tiempoTotal) * 100).toFixed(1)}%)`,
+    );
+    console.log(
+      `⏱️ TIEMPO TOTAL:  ${tiempoTotal}ms (${(tiempoTotal / 1000).toFixed(2)}s)`,
+    );
+    console.log("==========================================\n");
 
-    res.status(201).json(productoConUsuario);
+    // ✅ CAMBIO: Devolver savedProducto en vez de productoConUsuario
+    res.status(201).json(savedProducto);
   } catch (error) {
-    console.error("ERROR EN ADDPRODUCTO:", error);
+    console.error("❌ ERROR EN ADDPRODUCTO:", error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -176,7 +201,7 @@ export const updateProducto = async (req, res) => {
                 console.log("✅ Cloudinary upload exitoso");
                 resolve(result);
               }
-            }
+            },
           );
           stream.end(fileBuffer);
         });
@@ -201,7 +226,7 @@ export const updateProducto = async (req, res) => {
             } else {
               const urlParts = productoActual.imagen.split("/");
               const uploadIndex = urlParts.findIndex(
-                (part) => part === "upload"
+                (part) => part === "upload",
               );
               if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
                 const pathAfterUpload = urlParts
@@ -219,7 +244,7 @@ export const updateProducto = async (req, res) => {
           } catch (cloudinaryError) {
             console.error(
               "⚠️  Error al eliminar imagen anterior:",
-              cloudinaryError
+              cloudinaryError,
             );
             // Continuar aunque falle la eliminación
           }
@@ -244,7 +269,7 @@ export const updateProducto = async (req, res) => {
       {
         new: true, // Retorna el documento actualizado
         runValidators: true, // Ejecuta validaciones del schema
-      }
+      },
     ).populate("createdBy", "nombre email");
 
     if (!productoActualizado) {
@@ -293,7 +318,7 @@ export const deleteProducto = async (req, res) => {
         if (publicId) {
           console.log(
             "Eliminando imagen de Cloudinary con public_id:",
-            publicId
+            publicId,
           );
 
           const result = await cloudinary.uploader.destroy(publicId);
@@ -304,19 +329,19 @@ export const deleteProducto = async (req, res) => {
           } else {
             console.warn(
               "⚠️ Cloudinary respondió pero la imagen puede no existir:",
-              result
+              result,
             );
           }
         } else {
           console.error(
             "❌ No se pudo extraer el public_id de la URL:",
-            producto.imagen
+            producto.imagen,
           );
         }
       } catch (cloudinaryError) {
         console.error(
           "❌ Error al eliminar imagen de Cloudinary:",
-          cloudinaryError
+          cloudinaryError,
         );
       }
     }
@@ -358,7 +383,7 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select(
-        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt"
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt",
       )
       .populate("createdBy", "nombre email")
       .limit(limit)
@@ -415,7 +440,7 @@ export const getProductosPublicos = async (req, res) => {
     const [productos, totalProducts] = await Promise.all([
       Inventario.find(filter)
         .select(
-          "nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad"
+          "nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad",
         )
         .sort({ createdAt: -1 })
         .skip(skip)

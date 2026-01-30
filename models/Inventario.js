@@ -46,11 +46,22 @@ inventarioSchema.pre('save', async function() {
 });
 
 // Índices
+// Índice 1: Listar productos del usuario ordenados por fecha
+inventarioSchema.index({ createdBy: 1, createdAt: -1 });
+
+// Índice 2: Buscar por nombre
 inventarioSchema.index({ nombre: 1 });
+
+// Índice 3: Filtrar por disponibilidad
+inventarioSchema.index({ seVende: 1 });
+
+// Índice 4: _id (AUTOMÁTICO - no hay que crearlo)
+
+/*inventarioSchema.index({ nombre: 1 });
 inventarioSchema.index({ seVende: 1 });
 inventarioSchema.index({ seVende: 1, nombre: 1 });
 inventarioSchema.index({ createdBy: 1 });
-inventarioSchema.index({ createdAt: -1 });
+inventarioSchema.index({ createdAt: -1 });*/
 
 export default mongoose.model("Inventario", inventarioSchema);
 
