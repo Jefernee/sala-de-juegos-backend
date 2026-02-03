@@ -1,0 +1,4 @@
+Modo	    Backend	            Frontend	    Cómo ejecutar
+🟢 LOCAL	localhost:5000	localhost:3000	    backend: npm run dev + frontend: npm run dev
+🔵 HÍBRIDO	Render (nube)	localhost:3000	    Solo frontend: npm run prod
+🟣 PRODUCCIÓN	Render (nube)	Netlify (nube)	Abre https://salajuegosruiz.netlify.app en el navegador

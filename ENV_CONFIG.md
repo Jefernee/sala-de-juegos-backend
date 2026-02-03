@@ -2,6 +2,7 @@
 
 ## 📁 Estructura de archivos .env
 
+
 ### Backend (`sala-juegos-backend/.env`)
 ```env
 # Puerto del servidor

@@ -1,6 +1,10 @@
 // db.js
 import mongoose from 'mongoose';
 import dotenv from 'dotenv';
+import dns from 'dns';
+
+// Forzar DNS públicos (SOLUCIÓN al error querySrv / DNS)
+dns.setServers(['1.1.1.1', '8.8.8.8']);
 dotenv.config();
 
 const connectDB = async () => {
