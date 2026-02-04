@@ -1,6 +1,7 @@
 import Inventario from "../models/Inventario.js";
 import cloudinary from "../config/cloudinary.js";
 import { mongoose } from "../db.js";
+import Sale from "../models/sale.js";
 
 // GET
 export const getInventario = async (req, res) => {
@@ -469,25 +470,120 @@ export const getProductosPublicos = async (req, res) => {
   }
 };
 
-// ✅ NUEVA: Obtener productos disponibles para venta
+// ⭐ NUEVA VERSIÓN: Obtener productos disponibles para venta ORDENADOS POR MÁS VENDIDOS
 export const getProductosParaVenta = async (req, res) => {
-  try {
-    const search = req.query.search || "";
+  console.log("\n📦 ===== OBTENIENDO PRODUCTOS PARA VENTA =====");
 
-    const filter = {
-      seVende: true,
+  try {
+    const { search } = req.query;
+    console.log(`🔍 Búsqueda: "${search || "sin filtro"}"`);
+
+    // 1️⃣ Filtro base: productos con stock y disponibles para venta
+    let matchQuery = {
       cantidad: { $gt: 0 },
-      ...(search && { nombre: { $regex: search, $options: "i" } }),
+      seVende: true,
     };
 
-    const productos = await Inventario.find(filter)
-      .select("nombre imagen imagenOptimizada precioVenta cantidad")
-      .sort({ nombre: 1 })
-      .limit(100);
+    // 2️⃣ Si hay búsqueda, agregar filtros
+    if (search && search.trim() !== "") {
+      const searchRegex = new RegExp(search.trim(), "i");
+      matchQuery.$or = [
+        { nombre: searchRegex },
+        { categoria: searchRegex },
+        { codigo: searchRegex },
+      ];
+      console.log(`   Aplicando filtro de búsqueda: "${search}"`);
+    }
 
-    res.json({ productos });
+    console.log("📊 Calculando productos ordenados por ventas...");
+
+    // 3️⃣ Agregación para obtener productos con total de ventas y ordenarlos
+    const productos = await Inventario.aggregate([
+      // PASO 1: Filtrar productos disponibles (con stock y se venden)
+      { $match: matchQuery },
+
+      // PASO 2: Buscar cuántas veces se vendió cada producto
+      {
+        $lookup: {
+          from: "sales", // ⚠️ Nombre de tu colección de ventas en MongoDB
+          let: { productoId: "$_id" }, // Usar _id directamente como ObjectId
+          pipeline: [
+            // Descomponer el array de productos de cada venta
+            { $unwind: "$productos" },
+            // Filtrar solo los productos que coincidan con el ID actual
+            {
+              $match: {
+                $expr: {
+                  $eq: ["$productos.productoId", "$$productoId"], // Comparar ObjectId
+                },
+              },
+            },
+            // Sumar todas las cantidades vendidas
+            {
+              $group: {
+                _id: null,
+                totalVendido: { $sum: "$productos.cantidad" },
+              },
+            },
+          ],
+          as: "ventasData",
+        },
+      },
+
+      // PASO 3: Agregar campo totalVendido (0 si nunca se vendió)
+      {
+        $addFields: {
+          totalVendido: {
+            $ifNull: [{ $arrayElemAt: ["$ventasData.totalVendido", 0] }, 0],
+          },
+        },
+      },
+
+      // PASO 4: Eliminar campo temporal
+      {
+        $project: {
+          ventasData: 0,
+        },
+      },
+
+      // PASO 5: 🔥 ORDENAR - MÁS VENDIDOS PRIMERO
+      {
+        $sort: {
+          totalVendido: -1, // -1 = descendente (más vendidos primero)
+          nombre: 1, // 1 = ascendente (alfabético como desempate)
+        },
+      },
+
+      // PASO 6: Limitar resultados
+      { $limit: 100 },
+    ]);
+
+    console.log(`✅ ${productos.length} productos encontrados y ordenados`);
+
+    // Mostrar top 5 en consola para debug
+    if (productos.length > 0) {
+      console.log("\n🏆 Top 5 productos más vendidos:");
+      productos.slice(0, 5).forEach((p, i) => {
+        console.log(`   ${i + 1}. ${p.nombre}`);
+        console.log(`      - Vendidos: ${p.totalVendido || 0}`);
+        console.log(`      - Stock: ${p.cantidad}`);
+        console.log(`      - Precio: ₡${p.precioVenta}`);
+      });
+    }
+
+    // Respuesta al frontend (mismo formato que antes)
+    res.json({
+      productos,
+      totalEncontrados: productos.length,
+    });
+
+    console.log(
+      "✅ Productos enviados al frontend (ordenados por más vendidos)\n",
+    );
   } catch (error) {
-    console.error("Error al obtener productos para venta:", error);
+    console.error("\n❌ Error al obtener productos para venta:", error);
+    console.error("Mensaje:", error.message);
+    console.error("Stack:", error.stack);
     res.status(500).json({
       error: "Error al obtener productos",
       message: error.message,
