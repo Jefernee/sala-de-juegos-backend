@@ -100,9 +100,13 @@ export const register = async (req, res) => {
 };
 
 // ============================================
-// LOGIN
+// LOGIN CON MEDICIÓN DE TIEMPOS
 // ============================================
 export const login = async (req, res) => {
+  const timestamps = {
+    inicio: Date.now()
+  };
+
   try {
     console.log("🔐 ========================================");
     console.log("🔐 LOGIN REQUEST RECIBIDO");
@@ -124,8 +128,13 @@ export const login = async (req, res) => {
       });
     }
 
-    // Buscar usuario
+    timestamps.validacion = Date.now();
+    console.log(`⏱️  Validación: ${timestamps.validacion - timestamps.inicio}ms`);
+
+    // Buscar usuario en MongoDB
     const user = await User.findOne({ email });
+    timestamps.busquedaDB = Date.now();
+    console.log(`⏱️  Búsqueda en MongoDB: ${timestamps.busquedaDB - timestamps.validacion}ms`);
 
     if (!user) {
       console.log("❌ Usuario no encontrado:", email);
@@ -138,8 +147,10 @@ export const login = async (req, res) => {
 
     console.log("✅ Usuario encontrado:", user.email);
 
-    // Verificar contraseña
+    // Verificar contraseña con bcrypt
     const validPassword = await bcrypt.compare(password, user.password);
+    timestamps.bcrypt = Date.now();
+    console.log(`⏱️  Bcrypt compare: ${timestamps.bcrypt - timestamps.busquedaDB}ms`);
     console.log("🔑 Contraseña válida:", validPassword);
 
     if (!validPassword) {
@@ -160,8 +171,22 @@ export const login = async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: "24h" }
     );
+    timestamps.jwt = Date.now();
+    console.log(`⏱️  Generación JWT: ${timestamps.jwt - timestamps.bcrypt}ms`);
 
     console.log("✅ Login exitoso para:", user.email);
+
+    // Tiempo total
+    timestamps.fin = Date.now();
+    const tiempoTotal = timestamps.fin - timestamps.inicio;
+    
+    console.log("📊 ========== RESUMEN DE TIEMPOS ==========");
+    console.log(`⏱️  Validación:     ${timestamps.validacion - timestamps.inicio}ms`);
+    console.log(`⏱️  MongoDB:        ${timestamps.busquedaDB - timestamps.validacion}ms`);
+    console.log(`⏱️  Bcrypt:         ${timestamps.bcrypt - timestamps.busquedaDB}ms`);
+    console.log(`⏱️  JWT:            ${timestamps.jwt - timestamps.bcrypt}ms`);
+    console.log(`⏱️  TIEMPO TOTAL:   ${tiempoTotal}ms (${(tiempoTotal/1000).toFixed(2)}s)`);
+    console.log("==========================================");
 
     res.json({
       success: true,
