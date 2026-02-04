@@ -1,10 +1,9 @@
-// routes/reports.js
 import express from 'express';
 import {
   getResumenGeneral,
   getProductosMasVendidos,
   getProductosMenosVendidos,
-  getProductosStockBajo,
+  getProductosStockBajo, 
   getVentasPorPeriodo,
   getEstadisticasPedidos
 } from '../controllers/reportsController.js';
