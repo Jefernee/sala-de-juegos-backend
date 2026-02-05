@@ -1,44 +1,57 @@
 // utils/dateUtils.js
 
 /**
- * Obtiene rangos de fechas en UTC para hoy, semana y mes
+ * Obtiene rangos de fechas basados en la zona horaria de Costa Rica
+ * El día inicia a las 12:00 AM (medianoche) hora de Costa Rica
  * @returns {Object} Objeto con rangos de fechas
  */
 export const getUTCDateRanges = () => {
-  const ahora = new Date();
-
-  // Inicio y fin del día actual en UTC
+  // Obtener fecha/hora actual en Costa Rica
+  const ahoraCostaRica = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+  
+  // Inicio del día en Costa Rica (00:00:00) convertido a UTC
+  // Costa Rica es UTC-6, entonces medianoche CR = 6:00 AM UTC
   const hoy = new Date(
     Date.UTC(
-      ahora.getUTCFullYear(),
-      ahora.getUTCMonth(),
-      ahora.getUTCDate(),
-      0,
+      ahoraCostaRica.getFullYear(),
+      ahoraCostaRica.getMonth(),
+      ahoraCostaRica.getDate(),
+      6, // +6 horas para compensar UTC-6
       0,
       0,
       0
     )
   );
 
+  // Fin del día en Costa Rica (23:59:59.999) convertido a UTC
   const finHoy = new Date(
     Date.UTC(
-      ahora.getUTCFullYear(),
-      ahora.getUTCMonth(),
-      ahora.getUTCDate(),
-      23,
+      ahoraCostaRica.getFullYear(),
+      ahoraCostaRica.getMonth(),
+      ahoraCostaRica.getDate() + 1,
+      5, // Día siguiente a las 05:59:59 UTC = 23:59:59 Costa Rica
       59,
       59,
       999
     )
   );
 
-  // Inicio de la semana en UTC (domingo)
+  // Inicio de la semana en Costa Rica (domingo a las 00:00:00)
   const inicioSemana = new Date(hoy);
-  inicioSemana.setUTCDate(hoy.getUTCDate() - ahora.getUTCDay());
+  const diaActual = ahoraCostaRica.getDay(); // 0 = domingo
+  inicioSemana.setUTCDate(hoy.getUTCDate() - diaActual);
 
-  // Inicio del mes en UTC
+  // Inicio del mes en Costa Rica (día 1 a las 00:00:00)
   const inicioMes = new Date(
-    Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), 1, 0, 0, 0, 0)
+    Date.UTC(
+      ahoraCostaRica.getFullYear(),
+      ahoraCostaRica.getMonth(),
+      1,
+      6, // +6 horas para compensar UTC-6
+      0,
+      0,
+      0
+    )
   );
 
   return {
@@ -89,8 +102,10 @@ export const formatCostaRicaTime = (date = new Date()) => {
  * @param {Object} ranges - Objeto de rangos retornado por getUTCDateRanges
  */
 export const logDateRanges = (ranges) => {
-  console.log(`📅 Rangos de búsqueda UTC:`);
-  console.log(`   Hoy: ${ranges.hoy.inicio.toISOString()} a ${ranges.hoy.fin.toISOString()}`);
-  console.log(`   Semana desde: ${ranges.semana.inicio.toISOString()}`);
-  console.log(`   Mes desde: ${ranges.mes.inicio.toISOString()}`);
+  console.log(`📅 Rangos de búsqueda (Zona horaria: Costa Rica):`);
+  console.log(`   Hoy UTC: ${ranges.hoy.inicio.toISOString()} a ${ranges.hoy.fin.toISOString()}`);
+  console.log(`   Hoy CR:  ${formatCostaRicaTime(ranges.hoy.inicio)} a ${formatCostaRicaTime(ranges.hoy.fin)}`);
+  console.log(`   Semana desde UTC: ${ranges.semana.inicio.toISOString()}`);
+  console.log(`   Mes desde UTC: ${ranges.mes.inicio.toISOString()}`);
 };
+
