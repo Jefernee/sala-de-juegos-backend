@@ -10,6 +10,7 @@ import authRoutes from "./routes/auth.js";
 import salesRoutes from "./routes/sales.js";
 import pedidosRoutes from "./routes/pedidos.js";
 import reportsRoutes from "./routes/reports.js";
+import playsRoutes from "./routes/plays.js";
 // ⏱️ Marca de inicio real del proceso (cold start)
 const PROCESS_START_TIME = Date.now();
 
@@ -74,6 +75,8 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
 
 app.use("/api/reports", reportsRoutes);
+// Ruta de plays
+app.use("/api/plays", playsRoutes);
 
 // Al inicio del archivo, después de los imports
 const SERVER_START_TIME = Date.now();
