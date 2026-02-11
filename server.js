@@ -11,7 +11,7 @@ import salesRoutes from "./routes/sales.js";
 import pedidosRoutes from "./routes/pedidos.js";
 import reportsRoutes from "./routes/reports.js";
 import playsRoutes from "./routes/plays.js";
-import multer from 'multer';
+import { handleMulterError } from './middlewares/upload.js';
 import dns from 'dns';
 
 // ⏱️ Marca de inicio real del proceso (cold start)
@@ -137,7 +137,13 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/plays", playsRoutes);
 
 // ============================================
-// ✅ MIDDLEWARE GLOBAL DE ERRORES MEJORADO
+// ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
+// ============================================
+// DEBE ir DESPUÉS de las rutas pero ANTES del middleware global de errores
+app.use(handleMulterError);
+
+// ============================================
+// ✅ MIDDLEWARE GLOBAL DE ERRORES
 // ============================================
 app.use((err, req, res, next) => {
   console.error("❌ ERROR GLOBAL:", {
@@ -153,45 +159,6 @@ app.use((err, req, res, next) => {
       error: 'La petición es demasiado grande. Reduce el tamaño de los datos o la imagen.',
       code: 'PAYLOAD_TOO_LARGE',
       limit: '10mb'
-    });
-  }
-
-  // Error de Multer (archivos)
-  if (err instanceof multer.MulterError) {
-    console.error("❌ Error de Multer:", err);
-    
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ 
-        error: 'El archivo es demasiado grande. Máximo permitido: 2 MB',
-        code: 'FILE_TOO_LARGE'
-      });
-    }
-    
-    if (err.code === 'LIMIT_FILE_COUNT') {
-      return res.status(400).json({ 
-        error: 'Solo se permite subir 1 archivo a la vez',
-        code: 'TOO_MANY_FILES'
-      });
-    }
-    
-    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-      return res.status(400).json({ 
-        error: 'Campo de archivo inesperado. Usa el campo "imagen"',
-        code: 'UNEXPECTED_FIELD'
-      });
-    }
-    
-    return res.status(400).json({ 
-      error: `Error de carga: ${err.message}`,
-      code: err.code
-    });
-  }
-
-  // Error de formato de archivo
-  if (err.code === 'INVALID_FILE_TYPE') {
-    return res.status(415).json({ 
-      error: err.message || 'Formato de archivo no soportado',
-      code: 'INVALID_FILE_TYPE'
     });
   }
 
@@ -246,12 +213,6 @@ app.listen(PORT, () => {
   console.log(`\n✅ Servidor corriendo en http://localhost:${PORT}`);
   console.log(`⏱️ Tiempo de inicio: ${startupTime}ms`);
   console.log("🚀 ========================================\n");
-});
-
-// Middleware global de errores
-app.use((err, req, res, next) => {
-  console.error("ERROR GLOBAL:", err);
-  res.status(500).json({ error: err.message });
 });
 
 export { mongoose };

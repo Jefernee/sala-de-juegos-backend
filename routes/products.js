@@ -1,7 +1,7 @@
 // routes/products.js
 import express from "express";
 import upload from "../middlewares/upload.js";
-import authMiddleware from "../middlewares/auth.js"; // ✅ IMPORTAR
+import authMiddleware from "../middlewares/auth.js";
 import {
   getInventario,
   addProducto,
@@ -14,18 +14,22 @@ import {
 
 const router = express.Router();
 
-router.get("/para-venta", getProductosParaVenta);
-router.get("/list", getProductosPaginados);
-router.get("/", getInventario);
-
-// ✅ AGREGAR authMiddleware ANTES de upload
-router.post("/", authMiddleware, upload.single("imagen"), addProducto);
-// ✅ PUT - Editar producto (FALTABA upload.single("imagen"))
-router.put("/:id", authMiddleware, upload.single("imagen"), updateProducto);
+// ✅ RUTAS PÚBLICAS (sin autenticación)
 router.get("/public", getProductosPublicos);
-router.delete("/:id", authMiddleware, deleteProducto); // ✅ También proteger DELETE
+router.get("/para-venta", getProductosParaVenta);
+
+// ✅ RUTAS PROTEGIDAS (requieren autenticación)
+// IMPORTANTE: El orden de middlewares es: authMiddleware -> upload -> controlador
+router.post("/", authMiddleware, upload.single("imagen"), addProducto);
+router.put("/:id", authMiddleware, upload.single("imagen"), updateProducto);
+router.delete("/:id", authMiddleware, deleteProducto);
+
+// ✅ RUTAS DE LECTURA PROTEGIDAS
+router.get("/list", authMiddleware, getProductosPaginados);
+router.get("/", authMiddleware, getInventario);
 
 export default router;
+
 
 
 
