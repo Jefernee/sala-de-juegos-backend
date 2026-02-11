@@ -378,3 +378,119 @@ export const getSalesStats = async (req, res) => {
     });
   }
 };
+
+// ============================================
+// AGREGAR AL FINAL DE controllers/salesController.js
+// Funciones adicionales para UPDATE y DELETE de ventas
+// ============================================
+
+// Actualizar venta
+export const updateSale = async (req, res) => {
+  console.log(`\n✏️ ===== ACTUALIZANDO VENTA ${req.params.id} =====`);
+  console.log("📦 Datos recibidos:", JSON.stringify(req.body, null, 2));
+  
+  try {
+    const { id } = req.params;
+    const updateData = req.body;
+
+    // Buscar venta existente
+    const ventaExistente = await Sale.findById(id);
+    
+    if (!ventaExistente) {
+      console.log("❌ Venta no encontrada");
+      return res.status(404).json({ error: 'Venta no encontrada' });
+    }
+
+    console.log("✅ Venta encontrada, actualizando...");
+
+    // Actualizar la venta
+    const ventaActualizada = await Sale.findByIdAndUpdate(
+      id,
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    console.log("✅ Venta actualizada exitosamente");
+    console.log("Datos actualizados:", JSON.stringify(ventaActualizada, null, 2));
+
+    res.json({
+      message: 'Venta actualizada exitosamente',
+      venta: ventaActualizada
+    });
+
+  } catch (error) {
+    console.error("❌ Error al actualizar venta:", error);
+    
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({ 
+        error: 'Error de validación',
+        detalles: messages.join(', ')
+      });
+    }
+    
+    if (error.name === 'CastError') {
+      return res.status(400).json({ 
+        error: 'ID de venta inválido',
+        mensaje: error.message 
+      });
+    }
+
+    res.status(500).json({ 
+      error: 'Error al actualizar la venta',
+      mensaje: error.message 
+    });
+  }
+};
+
+// Eliminar venta
+export const deleteSale = async (req, res) => {
+  console.log(`\n🗑️ ===== ELIMINANDO VENTA ${req.params.id} =====`);
+  
+  try {
+    const { id } = req.params;
+
+    // Buscar venta existente
+    const ventaExistente = await Sale.findById(id);
+    
+    if (!ventaExistente) {
+      console.log("❌ Venta no encontrada");
+      return res.status(404).json({ error: 'Venta no encontrada' });
+    }
+
+    console.log("✅ Venta encontrada:");
+    console.log(`   ID: ${ventaExistente._id}`);
+    console.log(`   Total: ₡${ventaExistente.total}`);
+    console.log(`   Fecha: ${ventaExistente.fecha}`);
+    console.log(`   Productos: ${ventaExistente.productos.length}`);
+
+    // Eliminar la venta
+    await Sale.findByIdAndDelete(id);
+
+    console.log("✅ Venta eliminada exitosamente");
+
+    res.json({
+      message: 'Venta eliminada exitosamente',
+      ventaEliminada: {
+        id: ventaExistente._id,
+        total: ventaExistente.total,
+        fecha: ventaExistente.fecha
+      }
+    });
+
+  } catch (error) {
+    console.error("❌ Error al eliminar venta:", error);
+    
+    if (error.name === 'CastError') {
+      return res.status(400).json({ 
+        error: 'ID de venta inválido',
+        mensaje: error.message 
+      });
+    }
+
+    res.status(500).json({ 
+      error: 'Error al eliminar la venta',
+      mensaje: error.message 
+    });
+  }
+};

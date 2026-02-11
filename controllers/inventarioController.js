@@ -12,9 +12,9 @@ export const getInventario = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
-
+// Agregar productos
 export const addProducto = async (req, res, next) => {
-  console.log("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴");
+  console.log("\n🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴");
   console.log("🔴 ADDPRODUCTO SE ESTÁ EJECUTANDO 🔴");
   console.log("🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴");
   console.log("======================================");
@@ -22,21 +22,54 @@ export const addProducto = async (req, res, next) => {
   const inicioTotal = Date.now();
 
   const { body, file } = req;
+  
   console.log("📦 BODY recibido:", body);
-  console.log(
-    "📷 FILE recibido:",
-    file
-      ? `${file.originalname} (${(file.size / 1024).toFixed(2)} KB)`
-      : "Sin archivo",
-  );
+  console.log("📷 FILE recibido:", file ? {
+    originalname: file.originalname,
+    mimetype: file.mimetype,
+    size: `${(file.size / 1024).toFixed(2)} KB (${(file.size / (1024 * 1024)).toFixed(2)} MB)`,
+    buffer: file.buffer ? '✅ Buffer presente' : '❌ Sin buffer'
+  } : "❌ Sin archivo");
   console.log("👤 Usuario autenticado:", req.user);
 
   try {
+    // ✅ 1. VALIDAR USUARIO
     const userId = req.user?.id;
-
     if (!userId) {
+      console.error("❌ Usuario no autenticado");
       return res.status(401).json({
         error: "Usuario no autenticado. Debes iniciar sesión.",
+        code: "UNAUTHORIZED"
+      });
+    }
+
+    // ✅ 2. VALIDAR ARCHIVO
+    if (!file) {
+      console.error("❌ No se recibió archivo");
+      return res.status(400).json({
+        error: "No se recibió ninguna imagen. Por favor, selecciona una imagen.",
+        code: "NO_FILE"
+      });
+    }
+
+    if (!file.buffer) {
+      console.error("❌ Archivo sin buffer");
+      return res.status(400).json({
+        error: "El archivo no tiene contenido. Intenta con otra imagen.",
+        code: "EMPTY_FILE"
+      });
+    }
+
+    // ✅ 3. VALIDAR CAMPOS REQUERIDOS
+    const requiredFields = ['nombre', 'cantidad', 'precioCompra', 'precioVenta', 'fechaCompra'];
+    const missingFields = requiredFields.filter(field => !body[field]);
+    
+    if (missingFields.length > 0) {
+      console.error("❌ Campos faltantes:", missingFields);
+      return res.status(400).json({
+        error: `Faltan campos obligatorios: ${missingFields.join(', ')}`,
+        code: "MISSING_FIELDS",
+        missingFields
       });
     }
 
@@ -50,12 +83,24 @@ export const addProducto = async (req, res, next) => {
           {
             resource_type: "image",
             folder: "productos",
-            // ✅ ELIMINADO: transformaciones innecesarias
-            // La imagen ya viene comprimida del frontend
+            // ✅ NO aplicar transformaciones
+            // La imagen ya viene optimizada del frontend
           },
           (error, result) => {
             if (error) {
-              reject(error);
+              console.error("❌ Error en Cloudinary:", {
+                message: error.message,
+                http_code: error.http_code,
+                name: error.name
+              });
+              
+              // Crear error más descriptivo
+              const errorMsg = error.message || 'Error desconocido de Cloudinary';
+              const cloudinaryError = new Error(`Cloudinary: ${errorMsg}`);
+              cloudinaryError.code = 'CLOUDINARY_ERROR';
+              cloudinaryError.originalError = error;
+              
+              reject(cloudinaryError);
             } else {
               resolve(result);
             }
@@ -65,12 +110,27 @@ export const addProducto = async (req, res, next) => {
       });
     };
 
-    const result = await uploadToCloudinary(file.buffer);
-    const tiempoCloudinary = Date.now() - inicioCloudinary;
-    console.log(`✅ Imagen subida: ${result.secure_url}`);
-    console.log(
-      `⏱️ TIEMPO CLOUDINARY: ${tiempoCloudinary}ms (${(tiempoCloudinary / 1000).toFixed(2)}s)`,
-    );
+    let result;
+    try {
+      result = await uploadToCloudinary(file.buffer);
+      const tiempoCloudinary = Date.now() - inicioCloudinary;
+      
+      console.log(`✅ Imagen subida exitosamente a Cloudinary`);
+      console.log(`   URL: ${result.secure_url}`);
+      console.log(`   Public ID: ${result.public_id}`);
+      console.log(`   Formato: ${result.format}`);
+      console.log(`   Tamaño: ${(result.bytes / 1024).toFixed(2)} KB`);
+      console.log(`⏱️ TIEMPO CLOUDINARY: ${tiempoCloudinary}ms (${(tiempoCloudinary / 1000).toFixed(2)}s)`);
+      
+    } catch (cloudinaryError) {
+      console.error("❌ Fallo crítico en Cloudinary:", cloudinaryError);
+      
+      return res.status(500).json({
+        error: "No se pudo subir la imagen a Cloudinary. Verifica las credenciales o intenta más tarde.",
+        code: "CLOUDINARY_ERROR",
+        details: cloudinaryError.message
+      });
+    }
 
     // ⏱️ MEDICIÓN 2: Creación del objeto
     console.log("\n🔨 Creando objeto producto...");
@@ -92,39 +152,75 @@ export const addProducto = async (req, res, next) => {
 
     // ⏱️ MEDICIÓN 3: Save en MongoDB
     console.log("\n💾 Guardando en MongoDB...");
-    console.log("Estado conexión Mongoose:", mongoose.connection.readyState);
+    console.log("   Estado conexión Mongoose:", {
+      0: "desconectado",
+      1: "conectado",
+      2: "conectando",
+      3: "desconectando"
+    }[mongoose.connection.readyState]);
+    
     const inicioSave = Date.now();
 
-    const savedProducto = await producto.save();
-
-    const tiempoSave = Date.now() - inicioSave;
-    console.log(`✅ Producto guardado en BD`);
-    console.log(
-      `⏱️ TIEMPO SAVE MONGODB: ${tiempoSave}ms (${(tiempoSave / 1000).toFixed(2)}s)`,
-    );
+    let savedProducto;
+    try {
+      savedProducto = await producto.save();
+      const tiempoSave = Date.now() - inicioSave;
+      
+      console.log(`✅ Producto guardado en BD`);
+      console.log(`   ID: ${savedProducto._id}`);
+      console.log(`⏱️ TIEMPO SAVE MONGODB: ${tiempoSave}ms (${(tiempoSave / 1000).toFixed(2)}s)`);
+      
+    } catch (mongoError) {
+      console.error("❌ Fallo crítico en MongoDB:", mongoError);
+      
+      // Si falló MongoDB, intentar borrar la imagen de Cloudinary
+      try {
+        console.log("🧹 Limpiando imagen de Cloudinary...");
+        await cloudinary.uploader.destroy(result.public_id);
+        console.log("✅ Imagen eliminada de Cloudinary");
+      } catch (cleanupError) {
+        console.error("❌ No se pudo limpiar Cloudinary:", cleanupError);
+      }
+      
+      return res.status(500).json({
+        error: "No se pudo guardar el producto en la base de datos.",
+        code: "DATABASE_ERROR",
+        details: mongoError.message
+      });
+    }
 
     // ⏱️ RESUMEN FINAL
     const tiempoTotal = Date.now() - inicioTotal;
     console.log("\n📊 ========== RESUMEN DE TIEMPOS ==========");
-    console.log(
-      `⏱️ Cloudinary:    ${tiempoCloudinary}ms (${((tiempoCloudinary / tiempoTotal) * 100).toFixed(1)}%)`,
-    );
-    console.log(
-      `⏱️ Creación:      ${tiempoCreacion}ms (${((tiempoCreacion / tiempoTotal) * 100).toFixed(1)}%)`,
-    );
-    console.log(
-      `⏱️ Save MongoDB:  ${tiempoSave}ms (${((tiempoSave / tiempoTotal) * 100).toFixed(1)}%)`,
-    );
-    console.log(
-      `⏱️ TIEMPO TOTAL:  ${tiempoTotal}ms (${(tiempoTotal / 1000).toFixed(2)}s)`,
-    );
+    console.log(`⏱️ Cloudinary:    ${(result && inicioCloudinary) ? (Date.now() - inicioCloudinary - (tiempoTotal - inicioCloudinary)) : 0}ms`);
+    console.log(`⏱️ Creación:      ${tiempoCreacion}ms`);
+    console.log(`⏱️ Save MongoDB:  ${savedProducto ? (Date.now() - inicioSave - (tiempoTotal - inicioSave)) : 0}ms`);
+    console.log(`⏱️ TIEMPO TOTAL:  ${tiempoTotal}ms (${(tiempoTotal / 1000).toFixed(2)}s)`);
     console.log("==========================================\n");
 
-    // ✅ CAMBIO: Devolver savedProducto en vez de productoConUsuario
-    res.status(201).json(savedProducto);
+    // ✅ RESPUESTA EXITOSA
+    res.status(201).json({
+      message: "Producto agregado exitosamente",
+      producto: savedProducto,
+      _debug: {
+        uploadTime: tiempoTotal,
+        cloudinaryUrl: result.secure_url
+      }
+    });
+    
   } catch (error) {
-    console.error("❌ ERROR EN ADDPRODUCTO:", error);
-    res.status(500).json({ error: error.message });
+    console.error("❌ ERROR INESPERADO EN ADDPRODUCTO:", {
+      message: error.message,
+      name: error.name,
+      code: error.code,
+      stack: error.stack
+    });
+    
+    // Error no manejado
+    res.status(500).json({ 
+      error: error.message || "Error interno del servidor",
+      code: error.code || "INTERNAL_ERROR"
+    });
   }
 };
 
