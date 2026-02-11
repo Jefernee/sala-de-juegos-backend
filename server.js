@@ -68,9 +68,8 @@ app.use(
 // ============================================
 // ✅ AUMENTAR LÍMITES DE EXPRESS
 // ============================================
-// IMPORTANTE: Esto permite que Express acepte peticiones más grandes
 app.use(express.json({ 
-  limit: '10mb'  // Aumentado de 100kb (default) a 10mb
+  limit: '50mb'  // ⚠️ CAMBIADO DE 10mb A 50mb PARA PERMITIR IMÁGENES DE 5MB
 }));
 
 app.use(express.urlencoded({ 

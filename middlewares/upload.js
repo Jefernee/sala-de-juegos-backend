@@ -1,97 +1,73 @@
 // middlewares/upload.js
-import multer from 'multer';
+import multer from "multer";
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
 
-console.log("✅ Middleware de upload cargado");
+// Configurar Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-// ============================================
-// CONFIGURACIÓN DE MULTER
-// ============================================
+// Configurar storage de Cloudinary
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: {
+    folder: "productos",
+    allowed_formats: ["jpg", "jpeg", "png", "webp"],
+    transformation: [{ width: 1000, height: 1000, crop: "limit" }],
+  },
+});
 
-// Usar memoria en lugar de disco (más rápido y compatible con Cloudinary)
-const storage = multer.memoryStorage();
-
-// Filtro de archivos permitidos
+// ✅ FILTRO CORREGIDO - EXACTAMENTE 5MB
 const fileFilter = (req, file, cb) => {
-  console.log("🔍 Validando archivo:", {
-    fieldname: file.fieldname,
-    originalname: file.originalname,
-    mimetype: file.mimetype,
-    size: file.size
-  });
-
-  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  // Validar tipo MIME
+  const allowedMimes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
   
-  if (allowedTypes.includes(file.mimetype)) {
-    console.log("✅ Tipo de archivo válido:", file.mimetype);
-    cb(null, true);
-  } else {
-    console.error("❌ Tipo de archivo no válido:", file.mimetype);
-    const error = new Error(
-      `Formato no soportado: ${file.mimetype}. Solo se permiten: JPG, PNG, WebP`
+  if (!allowedMimes.includes(file.mimetype)) {
+    return cb(
+      new Error(
+        "Formato de imagen no válido. Solo se permiten JPG, PNG o WebP.",
+      ),
+      false,
     );
-    error.code = 'INVALID_FILE_TYPE';
-    cb(error, false);
   }
+
+  cb(null, true);
 };
 
-// Configuración de Multer
+// ✅ MULTER CON LÍMITE EXACTO DE 5MB
 const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024, // 10 MB (debe ser mayor o igual al límite del frontend)
-    files: 1, // Solo 1 archivo a la vez
+    fileSize: 5 * 1024 * 1024, // ⚠️ 5MB EXACTOS - CORREGIDO
   },
 });
 
-// ============================================
-// MIDDLEWARE DE MANEJO DE ERRORES DE MULTER
-// ============================================
+// Middleware para manejar errores de Multer
 export const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     console.error("❌ Error de Multer:", err);
     
-    if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ 
-        error: 'El archivo es demasiado grande. Máximo permitido: 10 MB',
-        code: 'FILE_TOO_LARGE',
-        maxSize: '10 MB'
+    if (err.code === "FILE_TOO_LARGE") {
+      return res.status(413).json({
+        error: "El archivo es demasiado grande. El límite es 5MB.",
+        code: "FILE_TOO_LARGE",
+        limit: "5MB",
       });
     }
     
-    if (err.code === 'LIMIT_FILE_COUNT') {
-      return res.status(400).json({ 
-        error: 'Solo se permite subir 1 archivo a la vez',
-        code: 'TOO_MANY_FILES'
-      });
-    }
-    
-    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-      return res.status(400).json({ 
-        error: 'Campo de archivo inesperado. Usa el campo "imagen"',
-        code: 'UNEXPECTED_FIELD',
-        expectedField: 'imagen'
-      });
-    }
-    
-    return res.status(400).json({ 
-      error: `Error al procesar el archivo: ${err.message}`,
-      code: err.code
+    return res.status(400).json({
+      error: `Error al subir archivo: ${err.message}`,
+      code: err.code,
     });
   }
-
-  if (err && err.code === 'INVALID_FILE_TYPE') {
-    return res.status(415).json({ 
-      error: err.message,
-      code: 'INVALID_FILE_TYPE'
-    });
-  }
-
-  // Si no es un error de Multer, pasar al siguiente middleware
+  
   next(err);
 };
 
 export default upload;
-
 
 
