@@ -1,7 +1,7 @@
-// middlewares/upload.js
+// middlewares/upload.js - VERSIÓN CORREGIDA (SIN multer-storage-cloudinary)
 import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
-import { CloudinaryStorage } from "multer-storage-cloudinary";
+import streamifier from "streamifier";
 
 // Configurar Cloudinary
 cloudinary.config({
@@ -10,43 +10,65 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
-// Configurar storage de Cloudinary
-const storage = new CloudinaryStorage({
-  cloudinary: cloudinary,
-  params: {
-    folder: "productos",
-    allowed_formats: ["jpg", "jpeg", "png", "webp"],
-    transformation: [{ width: 1000, height: 1000, crop: "limit" }],
-  },
-});
+// ✅ Storage en memoria
+const storage = multer.memoryStorage();
 
-// ✅ FILTRO CORREGIDO - EXACTAMENTE 5MB
+// ✅ Filtro de archivos
 const fileFilter = (req, file, cb) => {
-  // Validar tipo MIME
   const allowedMimes = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
   
   if (!allowedMimes.includes(file.mimetype)) {
-    return cb(
-      new Error(
-        "Formato de imagen no válido. Solo se permiten JPG, PNG o WebP.",
-      ),
-      false,
-    );
+    return cb(new Error("Formato de imagen no válido. Solo se permiten JPG, PNG o WebP."), false);
   }
-
   cb(null, true);
 };
 
-// ✅ MULTER CON LÍMITE EXACTO DE 5MB
+// ✅ Configuración de Multer
 const upload = multer({
   storage: storage,
   fileFilter: fileFilter,
   limits: {
-    fileSize: 5 * 1024 * 1024, // ⚠️ 5MB EXACTOS - CORREGIDO
+    fileSize: 5 * 1024 * 1024, // 5MB
   },
 });
 
-// Middleware para manejar errores de Multer
+// ✅ Middleware para subir a Cloudinary manualmente
+export const uploadToCloudinary = async (req, res, next) => {
+  if (!req.file) {
+    return next();
+  }
+
+  try {
+    const stream = cloudinary.uploader.upload_stream(
+      {
+        folder: "productos",
+        allowed_formats: ["jpg", "jpeg", "png", "webp"],
+        transformation: [{ width: 1000, height: 1000, crop: "limit" }],
+      },
+      (error, result) => {
+        if (error) {
+          console.error("❌ Error subiendo a Cloudinary:", error);
+          return res.status(500).json({ 
+            error: "Error al subir la imagen a Cloudinary",
+            details: error.message 
+          });
+        }
+        
+        // ✅ Guardar la URL en req.file
+        req.file.path = result.secure_url;
+        req.file.cloudinary_id = result.public_id;
+        next();
+      }
+    );
+
+    streamifier.createReadStream(req.file.buffer).pipe(stream);
+  } catch (error) {
+    console.error("❌ Error en uploadToCloudinary:", error);
+    next(error);
+  }
+};
+
+// ✅ Middleware para manejar errores de Multer
 export const handleMulterError = (err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     console.error("❌ Error de Multer:", err);

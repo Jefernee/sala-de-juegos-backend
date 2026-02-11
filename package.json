@@ -21,7 +21,8 @@
     "mongodb": "^7.0.0",
     "mongoose": "^9.0.2",
     "mongoose-sequence": "^6.0.1",
-    "multer": "^2.0.2"
+    "multer": "^2.0.2",
+    "streamifier": "^0.1.1"
   },
   "devDependencies": {
     "cross-env": "^10.1.0",
