@@ -1,6 +1,6 @@
 // routes/products.js
 import express from "express";
-import upload, { uploadToCloudinary } from "../middlewares/upload.js"; // ✅ IMPORTACIÓN CORREGIDA
+import { uploadBase64ToCloudinary } from "../middlewares/upload.js";
 import authMiddleware from "../middlewares/auth.js";
 import {
   getInventario,
@@ -18,18 +18,17 @@ const router = express.Router();
 router.get("/public", getProductosPublicos);
 router.get("/para-venta", getProductosParaVenta);
 
-// ✅ RUTAS PROTEGIDAS - ORDEN CORRECTO
-router.post("/", 
-  authMiddleware, 
-  upload.single("imagen"), 
-  uploadToCloudinary, // ✅ ESTO ES CRÍTICO
+// ✅ RUTAS PROTEGIDAS
+// Ya no usamos upload.single("imagen") — la imagen llega como base64 en el body JSON
+router.post("/",
+  authMiddleware,
+  uploadBase64ToCloudinary,   // ← procesa imagenBase64 del body y adjunta req.cloudinaryUrl
   addProducto
 );
 
-router.put("/:id", 
-  authMiddleware, 
-  upload.single("imagen"), 
-  uploadToCloudinary, 
+router.put("/:id",
+  authMiddleware,
+  uploadBase64ToCloudinary,   // ← también en el update
   updateProducto
 );
 

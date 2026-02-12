@@ -69,13 +69,14 @@ app.use(
 // ✅ AUMENTAR LÍMITES DE EXPRESS
 // ============================================
 app.use(express.json({ 
-  limit: '50mb'  // ⚠️ CAMBIADO DE 10mb A 50mb PARA PERMITIR IMÁGENES DE 5MB
+  limit: "10mb",
+  timeout: 120000 // 2 minutos
 }));
 
 app.use(express.urlencoded({ 
-  limit: '10mb',           // Límite de tamaño
-  extended: true,          // Permite objetos anidados
-  parameterLimit: 50000    // Límite de parámetros
+  extended: true, 
+  limit: "10mb",
+  timeout: 120000
 }));
 
 console.log("✅ Límites de Express configurados: 10mb");
