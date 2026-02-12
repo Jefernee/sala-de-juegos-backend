@@ -18,17 +18,16 @@ const router = express.Router();
 router.get("/public", getProductosPublicos);
 router.get("/para-venta", getProductosParaVenta);
 
-// ✅ RUTAS PROTEGIDAS
-// Ya no usamos upload.single("imagen") — la imagen llega como base64 en el body JSON
+// ✅ RUTAS PROTEGIDAS - AMBAS USAN BASE64
 router.post("/",
   authMiddleware,
-  uploadBase64ToCloudinary,   // ← procesa imagenBase64 del body y adjunta req.cloudinaryUrl
+  uploadBase64ToCloudinary,   // ✅ Procesa imagenBase64 del body
   addProducto
 );
 
 router.put("/:id",
   authMiddleware,
-  uploadBase64ToCloudinary,   // ← también en el update
+  uploadBase64ToCloudinary,   // ✅ También procesa imagenBase64 (opcional en PUT)
   updateProducto
 );
 
@@ -39,7 +38,6 @@ router.get("/list", authMiddleware, getProductosPaginados);
 router.get("/", authMiddleware, getInventario);
 
 export default router;
-
 
 
 

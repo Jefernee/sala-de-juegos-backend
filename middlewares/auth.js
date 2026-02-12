@@ -5,8 +5,8 @@ const authMiddleware = (req, res, next) => {
   console.log("\n🔐 ========== AUTH MIDDLEWARE ==========");
   console.log("📍 Ruta:", req.method, req.originalUrl);
   console.log("📦 Headers:", {
-    authorization: req.headers.authorization ? '✅ Presente' : '❌ Ausente',
-    contentType: req.headers['content-type']
+    authorization: req.headers.authorization ? "✅ Presente" : "❌ Ausente",
+    contentType: req.headers["content-type"],
   });
 
   try {
@@ -17,7 +17,7 @@ const authMiddleware = (req, res, next) => {
       console.error("❌ No se proporcionó token de autorización");
       return res.status(401).json({
         error: "No se proporcionó token de autorización. Debes iniciar sesión.",
-        code: "NO_TOKEN"
+        code: "NO_TOKEN",
       });
     }
 
@@ -25,7 +25,7 @@ const authMiddleware = (req, res, next) => {
       console.error("❌ Formato de token inválido");
       return res.status(401).json({
         error: "Formato de token inválido. Debe ser: Bearer <token>",
-        code: "INVALID_TOKEN_FORMAT"
+        code: "INVALID_TOKEN_FORMAT",
       });
     }
 
@@ -35,7 +35,7 @@ const authMiddleware = (req, res, next) => {
       console.error("❌ Token vacío");
       return res.status(401).json({
         error: "Token vacío. Debes iniciar sesión.",
-        code: "EMPTY_TOKEN"
+        code: "EMPTY_TOKEN",
       });
     }
 
@@ -46,7 +46,7 @@ const authMiddleware = (req, res, next) => {
       console.error("❌ JWT_SECRET no está configurado en el servidor");
       return res.status(500).json({
         error: "Error de configuración del servidor",
-        code: "NO_JWT_SECRET"
+        code: "NO_JWT_SECRET",
       });
     }
 
@@ -57,36 +57,35 @@ const authMiddleware = (req, res, next) => {
     console.log("👤 Usuario:", {
       id: decoded.id,
       username: decoded.username,
-      role: decoded.role
+      role: decoded.role,
     });
 
     // Adjuntar información del usuario a la petición
     req.user = {
       id: decoded.id,
-      username: decoded.username,
-      role: decoded.role
+      email: decoded.email, // ✅
+      nombre: decoded.nombre, // ✅
     };
 
     console.log("🔐 ========== AUTH OK ==========\n");
     next();
-
   } catch (error) {
     console.error("❌ Error en autenticación:", {
       name: error.name,
-      message: error.message
+      message: error.message,
     });
 
     if (error.name === "JsonWebTokenError") {
       return res.status(401).json({
         error: "Token inválido. Por favor, inicia sesión nuevamente.",
-        code: "INVALID_TOKEN"
+        code: "INVALID_TOKEN",
       });
     }
 
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({
         error: "Token expirado. Por favor, inicia sesión nuevamente.",
-        code: "EXPIRED_TOKEN"
+        code: "EXPIRED_TOKEN",
       });
     }
 
@@ -94,7 +93,7 @@ const authMiddleware = (req, res, next) => {
     return res.status(500).json({
       error: "Error al verificar la autenticación",
       code: "AUTH_ERROR",
-      details: error.message
+      details: error.message,
     });
   }
 };

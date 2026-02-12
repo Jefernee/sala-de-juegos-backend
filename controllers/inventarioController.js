@@ -14,7 +14,7 @@ export const getInventario = async (req, res) => {
 };
 
 // ============================================
-// AGREGAR PRODUCTO
+// AGREGAR PRODUCTO con base 64 no form
 // ============================================
 export const addProducto = async (req, res) => {
   console.log("\n🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴🔴");
@@ -160,23 +160,18 @@ export const addProducto = async (req, res) => {
   }
 };
 
-
-// ✅ PUT - ACTUALIZADO CON MEJOR MANEJO DE ERRORES Y LOGS
+//put actaulizado con base 64
 export const updateProducto = async (req, res) => {
   console.log("========================================");
   console.log("🔵 PETICIÓN PUT RECIBIDA");
   console.log("========================================");
   console.log("req.params.id:", req.params.id);
   console.log("req.body:", req.body);
-  console.log("req.file:", req.file);
+  console.log("req.cloudinaryUrl:", req.cloudinaryUrl || "❌ No hay nueva imagen");
+  console.log("Usuario autenticado:", req.user);
   console.log("========================================");
-  try {
-    console.log("=== INICIO updateProducto ===");
-    console.log("ID del producto:", req.params.id);
-    console.log("Body recibido:", req.body);
-    console.log("File recibido:", req.file);
-    console.log("Usuario autenticado:", req.user);
 
+  try {
     // ✅ Validar que el ID sea válido
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return res.status(400).json({ error: "ID de producto inválido" });
@@ -190,7 +185,11 @@ export const updateProducto = async (req, res) => {
       return res.status(404).json({ error: "Producto no encontrado" });
     }
 
-    console.log("✅ Producto actual encontrado:", productoActual);
+    console.log("✅ Producto actual encontrado:", {
+      id: productoActual._id,
+      nombre: productoActual.nombre,
+      imagenActual: productoActual.imagen,
+    });
 
     // Preparar datos de actualización
     const updateData = {
@@ -202,96 +201,46 @@ export const updateProducto = async (req, res) => {
       seVende: req.body.seVende === "true" || req.body.seVende === true,
       updatedAt: new Date(),
     };
+
     console.log("📦 Datos preparados para actualizar:", updateData);
 
-    // ✅ Si hay nueva imagen, procesarla
-    if (req.file) {
-      console.log("🖼️  Nueva imagen detectada, subiendo a Cloudinary...");
-      console.log("Archivo recibido:", {
-        fieldname: req.file.fieldname,
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-      });
+    // ✅ Si hay nueva imagen (el middleware ya la subió a Cloudinary)
+    if (req.cloudinaryUrl) {
+      console.log("🖼️ Nueva imagen detectada en Cloudinary:", req.cloudinaryUrl);
+      
+      // Agregar nueva URL de imagen
+      updateData.imagen = req.cloudinaryUrl;
 
-      const uploadToCloudinary = (fileBuffer) => {
-        return new Promise((resolve, reject) => {
-          const stream = cloudinary.uploader.upload_stream(
-            {
-              resource_type: "image",
-              folder: "productos",
-              angle: "exif",
-              transformation: [
-                { width: 400, height: 400, crop: "fill" },
-                { quality: "auto:good" },
-                { fetch_format: "auto" },
-              ],
-            },
-            (error, result) => {
-              if (error) {
-                console.error("❌ Error en Cloudinary upload:", error);
-                reject(error);
-              } else {
-                console.log("✅ Cloudinary upload exitoso");
-                resolve(result);
-              }
-            },
-          );
-          stream.end(fileBuffer);
-        });
-      };
+      // ✅ Eliminar imagen anterior de Cloudinary
+      if (productoActual.imagen) {
+        try {
+          const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
+          const match = productoActual.imagen.match(regex);
 
-      try {
-        const result = await uploadToCloudinary(req.file.buffer);
-        console.log("✅ Nueva imagen subida a Cloudinary:", result.secure_url);
-
-        // Agregar nueva URL de imagen
-        updateData.imagen = result.secure_url;
-
-        // ✅ Eliminar imagen anterior de Cloudinary
-        if (productoActual.imagen) {
-          try {
-            const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
-            const match = productoActual.imagen.match(regex);
-
-            let publicId;
-            if (match) {
-              publicId = match[1];
-            } else {
-              const urlParts = productoActual.imagen.split("/");
-              const uploadIndex = urlParts.findIndex(
-                (part) => part === "upload",
-              );
-              if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
-                const pathAfterUpload = urlParts
-                  .slice(uploadIndex + 2)
-                  .join("/");
-                publicId = pathAfterUpload.replace(/\.[^/.]+$/, "");
-              }
+          let publicId;
+          if (match) {
+            publicId = match[1];
+          } else {
+            const urlParts = productoActual.imagen.split("/");
+            const uploadIndex = urlParts.findIndex((part) => part === "upload");
+            if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
+              const pathAfterUpload = urlParts.slice(uploadIndex + 2).join("/");
+              publicId = pathAfterUpload.replace(/\.[^/.]+$/, "");
             }
-
-            if (publicId) {
-              console.log("🗑️  Eliminando imagen anterior:", publicId);
-              const deleteResult = await cloudinary.uploader.destroy(publicId);
-              console.log("Resultado eliminación:", deleteResult);
-            }
-          } catch (cloudinaryError) {
-            console.error(
-              "⚠️  Error al eliminar imagen anterior:",
-              cloudinaryError,
-            );
-            // Continuar aunque falle la eliminación
           }
+
+          if (publicId) {
+            console.log("🗑️ Eliminando imagen anterior:", publicId);
+            const deleteResult = await cloudinary.uploader.destroy(publicId);
+            console.log("Resultado eliminación:", deleteResult);
+          }
+        } catch (cloudinaryError) {
+          console.error("⚠️ Error al eliminar imagen anterior:", cloudinaryError);
+          // Continuar aunque falle la eliminación
         }
-      } catch (uploadError) {
-        console.error("❌ Error al subir imagen a Cloudinary:", uploadError);
-        return res.status(500).json({
-          error: "Error al subir imagen",
-          details: uploadError.message,
-        });
       }
     } else {
-      console.log("ℹ️  No se recibió nueva imagen, se mantiene la actual");
+      console.log("ℹ️ No se recibió nueva imagen, se mantiene la actual");
     }
 
     console.log("📝 Datos finales para actualizar:", updateData);
@@ -303,7 +252,7 @@ export const updateProducto = async (req, res) => {
       {
         new: true, // Retorna el documento actualizado
         runValidators: true, // Ejecuta validaciones del schema
-      },
+      }
     ).populate("createdBy", "nombre email");
 
     if (!productoActualizado) {
@@ -311,13 +260,24 @@ export const updateProducto = async (req, res) => {
       return res.status(500).json({ error: "Error al actualizar producto" });
     }
 
-    console.log("✅ Producto actualizado exitosamente:", productoActualizado);
-    res.json(productoActualizado);
+    console.log("✅ Producto actualizado exitosamente:", {
+      id: productoActualizado._id,
+      nombre: productoActualizado.nombre,
+      imagenNueva: productoActualizado.imagen,
+    });
+
+    res.json({
+      message: "Producto actualizado exitosamente",
+      producto: productoActualizado,
+    });
+
   } catch (error) {
     console.error("❌ ERROR EN updateProducto:", error);
     console.error("Stack trace:", error.stack);
+    
     res.status(500).json({
-      error: error.message,
+      error: error.message || "Error al actualizar producto",
+      code: error.code || "UPDATE_ERROR",
       stack: process.env.NODE_ENV === "development" ? error.stack : undefined,
     });
   }
