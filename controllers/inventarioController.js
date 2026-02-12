@@ -28,7 +28,9 @@ export const addProducto = async (req, res, next) => {
     originalname: file.originalname,
     mimetype: file.mimetype,
     size: `${(file.size / 1024).toFixed(2)} KB (${(file.size / (1024 * 1024)).toFixed(2)} MB)`,
-    buffer: file.buffer ? '✅ Buffer presente' : '❌ Sin buffer'
+    buffer: file.buffer ? '✅ Buffer presente' : '❌ Sin buffer',
+    // ✅ NUEVO: mostrar si ya tiene URL de Cloudinary del middleware
+    cloudinaryUrl: file.path ? `✅ Ya subida: ${file.path}` : '❌ Sin URL (se subirá aquí)'
   } : "❌ Sin archivo");
   console.log("👤 Usuario autenticado:", req.user);
 
@@ -52,14 +54,6 @@ export const addProducto = async (req, res, next) => {
       });
     }
 
-    if (!file.buffer) {
-      console.error("❌ Archivo sin buffer");
-      return res.status(400).json({
-        error: "El archivo no tiene contenido. Intenta con otra imagen.",
-        code: "EMPTY_FILE"
-      });
-    }
-
     // ✅ 3. VALIDAR CAMPOS REQUERIDOS
     const requiredFields = ['nombre', 'cantidad', 'precioCompra', 'precioVenta', 'fechaCompra'];
     const missingFields = requiredFields.filter(field => !body[field]);
@@ -73,63 +67,88 @@ export const addProducto = async (req, res, next) => {
       });
     }
 
-    // ⏱️ MEDICIÓN 1: Cloudinary
-    console.log("\n📤 Subiendo imagen a Cloudinary...");
-    const inicioCloudinary = Date.now();
+    // ✅ 4. OBTENER URL DE CLOUDINARY
+    // El middleware uploadToCloudinary ya subió la imagen y guardó la URL en file.path
+    // Si por alguna razón no está (e.g. ruta sin middleware), se sube aquí como fallback
+    let imageUrl;
+    let tiempoCloudinary = 0;
 
-    const uploadToCloudinary = (fileBuffer) => {
-      return new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          {
-            resource_type: "image",
-            folder: "productos",
-            // ✅ NO aplicar transformaciones
-            // La imagen ya viene optimizada del frontend
-          },
-          (error, result) => {
-            if (error) {
-              console.error("❌ Error en Cloudinary:", {
-                message: error.message,
-                http_code: error.http_code,
-                name: error.name
-              });
-              
-              // Crear error más descriptivo
-              const errorMsg = error.message || 'Error desconocido de Cloudinary';
-              const cloudinaryError = new Error(`Cloudinary: ${errorMsg}`);
-              cloudinaryError.code = 'CLOUDINARY_ERROR';
-              cloudinaryError.originalError = error;
-              
-              reject(cloudinaryError);
-            } else {
-              resolve(result);
-            }
-          },
-        );
-        stream.end(fileBuffer);
-      });
-    };
+    if (file.path && file.path.startsWith('http')) {
+      // ✅ CASO NORMAL: el middleware ya subió la imagen
+      imageUrl = file.path;
+      console.log("\n✅ Imagen ya subida por middleware uploadToCloudinary");
+      console.log(`   URL: ${imageUrl}`);
+      console.log(`   Cloudinary ID: ${file.cloudinary_id || 'N/A'}`);
+    } else {
+      // ⚠️ FALLBACK: el middleware no subió la imagen, se sube aquí
+      // Esto no debería pasar si la ruta está bien configurada
+      console.warn("\n⚠️ file.path no tiene URL de Cloudinary, subiendo manualmente...");
+      console.warn("   Verifica que uploadToCloudinary middleware esté en la ruta");
 
-    let result;
-    try {
-      result = await uploadToCloudinary(file.buffer);
-      const tiempoCloudinary = Date.now() - inicioCloudinary;
-      
-      console.log(`✅ Imagen subida exitosamente a Cloudinary`);
-      console.log(`   URL: ${result.secure_url}`);
-      console.log(`   Public ID: ${result.public_id}`);
-      console.log(`   Formato: ${result.format}`);
-      console.log(`   Tamaño: ${(result.bytes / 1024).toFixed(2)} KB`);
-      console.log(`⏱️ TIEMPO CLOUDINARY: ${tiempoCloudinary}ms (${(tiempoCloudinary / 1000).toFixed(2)}s)`);
-      
-    } catch (cloudinaryError) {
-      console.error("❌ Fallo crítico en Cloudinary:", cloudinaryError);
-      
-      return res.status(500).json({
-        error: "No se pudo subir la imagen a Cloudinary. Verifica las credenciales o intenta más tarde.",
-        code: "CLOUDINARY_ERROR",
-        details: cloudinaryError.message
-      });
+      if (!file.buffer) {
+        console.error("❌ Archivo sin buffer");
+        return res.status(400).json({
+          error: "El archivo no tiene contenido. Intenta con otra imagen.",
+          code: "EMPTY_FILE"
+        });
+      }
+
+      console.log("\n📤 Subiendo imagen a Cloudinary (fallback)...");
+      const inicioCloudinary = Date.now();
+
+      const uploadToCloudinaryFallback = (fileBuffer) => {
+        return new Promise((resolve, reject) => {
+          const stream = cloudinary.uploader.upload_stream(
+            {
+              resource_type: "image",
+              folder: "productos",
+            },
+            (error, result) => {
+              if (error) {
+                console.error("❌ Error en Cloudinary:", {
+                  message: error.message,
+                  http_code: error.http_code,
+                  name: error.name
+                });
+                
+                const errorMsg = error.message || 'Error desconocido de Cloudinary';
+                const cloudinaryError = new Error(`Cloudinary: ${errorMsg}`);
+                cloudinaryError.code = 'CLOUDINARY_ERROR';
+                cloudinaryError.originalError = error;
+                
+                reject(cloudinaryError);
+              } else {
+                resolve(result);
+              }
+            },
+          );
+          stream.end(fileBuffer);
+        });
+      };
+
+      let result;
+      try {
+        result = await uploadToCloudinaryFallback(file.buffer);
+        tiempoCloudinary = Date.now() - inicioCloudinary;
+        
+        console.log(`✅ Imagen subida exitosamente a Cloudinary (fallback)`);
+        console.log(`   URL: ${result.secure_url}`);
+        console.log(`   Public ID: ${result.public_id}`);
+        console.log(`   Formato: ${result.format}`);
+        console.log(`   Tamaño: ${(result.bytes / 1024).toFixed(2)} KB`);
+        console.log(`⏱️ TIEMPO CLOUDINARY (fallback): ${tiempoCloudinary}ms (${(tiempoCloudinary / 1000).toFixed(2)}s)`);
+
+        imageUrl = result.secure_url;
+        
+      } catch (cloudinaryError) {
+        console.error("❌ Fallo crítico en Cloudinary:", cloudinaryError);
+        
+        return res.status(500).json({
+          error: "No se pudo subir la imagen a Cloudinary. Verifica las credenciales o intenta más tarde.",
+          code: "CLOUDINARY_ERROR",
+          details: cloudinaryError.message
+        });
+      }
     }
 
     // ⏱️ MEDICIÓN 2: Creación del objeto
@@ -142,7 +161,7 @@ export const addProducto = async (req, res, next) => {
       precioCompra: Number(body.precioCompra),
       precioVenta: Number(body.precioVenta),
       fechaCompra: new Date(body.fechaCompra),
-      imagen: result.secure_url,
+      imagen: imageUrl, // ✅ Usa la URL obtenida (del middleware o del fallback)
       seVende: body.seVende === "true" || body.seVende === true,
       createdBy: userId,
     });
@@ -176,8 +195,13 @@ export const addProducto = async (req, res, next) => {
       // Si falló MongoDB, intentar borrar la imagen de Cloudinary
       try {
         console.log("🧹 Limpiando imagen de Cloudinary...");
-        await cloudinary.uploader.destroy(result.public_id);
-        console.log("✅ Imagen eliminada de Cloudinary");
+        const publicId = file.cloudinary_id || null;
+        if (publicId) {
+          await cloudinary.uploader.destroy(publicId);
+          console.log("✅ Imagen eliminada de Cloudinary");
+        } else {
+          console.warn("⚠️ No se pudo limpiar Cloudinary: sin public_id");
+        }
       } catch (cleanupError) {
         console.error("❌ No se pudo limpiar Cloudinary:", cleanupError);
       }
@@ -192,9 +216,8 @@ export const addProducto = async (req, res, next) => {
     // ⏱️ RESUMEN FINAL
     const tiempoTotal = Date.now() - inicioTotal;
     console.log("\n📊 ========== RESUMEN DE TIEMPOS ==========");
-    console.log(`⏱️ Cloudinary:    ${(result && inicioCloudinary) ? (Date.now() - inicioCloudinary - (tiempoTotal - inicioCloudinary)) : 0}ms`);
+    console.log(`⏱️ Cloudinary:    ${tiempoCloudinary}ms (${tiempoCloudinary > 0 ? 'fallback' : 'ya subida por middleware'})`);
     console.log(`⏱️ Creación:      ${tiempoCreacion}ms`);
-    console.log(`⏱️ Save MongoDB:  ${savedProducto ? (Date.now() - inicioSave - (tiempoTotal - inicioSave)) : 0}ms`);
     console.log(`⏱️ TIEMPO TOTAL:  ${tiempoTotal}ms (${(tiempoTotal / 1000).toFixed(2)}s)`);
     console.log("==========================================\n");
 
@@ -204,7 +227,7 @@ export const addProducto = async (req, res, next) => {
       producto: savedProducto,
       _debug: {
         uploadTime: tiempoTotal,
-        cloudinaryUrl: result.secure_url
+        cloudinaryUrl: imageUrl
       }
     });
     
@@ -223,6 +246,7 @@ export const addProducto = async (req, res, next) => {
     });
   }
 };
+
 
 // ✅ PUT - ACTUALIZADO CON MEJOR MANEJO DE ERRORES Y LOGS
 export const updateProducto = async (req, res) => {
