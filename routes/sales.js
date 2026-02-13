@@ -1,5 +1,5 @@
 // ============================================
-// routes/sales.js - ACTUALIZADO CON TODAS LAS OPERACIONES CRUD
+// routes/sales.js - CON AUTENTICACIÓN
 // ============================================
 import express from 'express';
 import {
@@ -10,17 +10,18 @@ import {
   updateSale,
   deleteSale
 } from '../controllers/salesController.js';
+import authMiddleware from '../middlewares/auth.js';
 
 const router = express.Router();
 
 // Obtener estadísticas (ANTES de /:id para evitar conflictos)
-router.get('/stats/summary', getSalesStats);
+router.get('/stats/summary', authMiddleware, getSalesStats);
 
-// CRUD completo de ventas
-router.get('/', getSales);           // Obtener todas (con paginación)
-router.post('/', addSale);           // Crear nueva venta
-router.get('/:id', getSaleById);     // Obtener una venta por ID
-router.put('/:id', updateSale);      // Actualizar venta
-router.delete('/:id', deleteSale);   // Eliminar venta
+// CRUD completo de ventas - TODAS PROTEGIDAS
+router.get('/', authMiddleware, getSales);
+router.post('/', authMiddleware, addSale);
+router.get('/:id', authMiddleware, getSaleById);
+router.put('/:id', authMiddleware, updateSale);
+router.delete('/:id', authMiddleware, deleteSale);
 
 export default router;

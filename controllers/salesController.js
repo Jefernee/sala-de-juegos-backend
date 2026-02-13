@@ -1,96 +1,106 @@
 // controllers/salesController.js
-import Sale from '../models/sale.js';
-import Inventario from '../models/Inventario.js';
+import Sale from "../models/sale.js";
+import Inventario from "../models/Inventario.js";
+import { crearFiltroFechas, formatCostaRicaTime } from "../utils/dateUtils.js";
 
 // Registrar nueva venta
 export const addSale = async (req, res) => {
   console.log("\n🚀 ===== INICIO DE PROCESO DE VENTA =====");
   console.log("📦 Body recibido:", JSON.stringify(req.body, null, 2));
-  
+
   try {
     const { productos, total, montoPagado, vuelto, fecha } = req.body;
 
     console.log("\n✅ PASO 1: Validaciones básicas iniciales");
-    
+
     // Validaciones básicas
     if (!productos || productos.length === 0) {
       console.log("❌ ERROR: No hay productos");
-      return res.status(400).json({ error: 'Debe incluir productos en la venta' });
+      return res
+        .status(400)
+        .json({ error: "Debe incluir productos en la venta" });
     }
     console.log(`✓ Productos recibidos: ${productos.length}`);
 
     if (!total || !montoPagado) {
       console.log("❌ ERROR: Faltan datos de pago");
-      return res.status(400).json({ error: 'Faltan datos de pago' });
+      return res.status(400).json({ error: "Faltan datos de pago" });
     }
     console.log(`✓ Total: ₡${total}, Monto pagado: ₡${montoPagado}`);
 
     if (total <= 0) {
       console.log("❌ ERROR: Total inválido");
-      return res.status(400).json({ error: 'El total debe ser mayor a 0' });
+      return res.status(400).json({ error: "El total debe ser mayor a 0" });
     }
 
     if (montoPagado < total) {
       console.log("❌ ERROR: Pago insuficiente");
-      return res.status(400).json({ 
-        error: 'El monto pagado es insuficiente',
+      return res.status(400).json({
+        error: "El monto pagado es insuficiente",
         detalles: {
           total,
           montoPagado,
-          faltante: total - montoPagado
-        }
+          faltante: total - montoPagado,
+        },
       });
     }
 
     const vueltoCalculado = montoPagado - total;
     if (Math.abs(vuelto - vueltoCalculado) > 0.01) {
       console.log("❌ ERROR: Vuelto no coincide");
-      return res.status(400).json({ 
-        error: 'El vuelto calculado no coincide',
+      return res.status(400).json({
+        error: "El vuelto calculado no coincide",
         vueltoRecibido: vuelto,
-        vueltoEsperado: vueltoCalculado
+        vueltoEsperado: vueltoCalculado,
       });
     }
     console.log(`✓ Vuelto correcto: ₡${vuelto}`);
 
     console.log("\n✅ PASO 2: Validando productos en base de datos");
-    
+
     // Array para almacenar productos validados
     const productosValidados = [];
-    
+
     // Validar cada producto
     for (let i = 0; i < productos.length; i++) {
       const item = productos[i];
-      console.log(`\n📦 Validando producto ${i + 1}/${productos.length}: ${item.nombre}`);
+      console.log(
+        `\n📦 Validando producto ${i + 1}/${productos.length}: ${item.nombre}`,
+      );
       console.log(`   ID: ${item.productoId}`);
       console.log(`   Cantidad solicitada: ${item.cantidad}`);
       console.log(`   Precio: ₡${item.precioVenta}`);
-      
+
       // Validaciones básicas del item
-      if (!item.productoId || !item.nombre || !item.cantidad || item.cantidad <= 0) {
+      if (
+        !item.productoId ||
+        !item.nombre ||
+        !item.cantidad ||
+        item.cantidad <= 0
+      ) {
         console.log(`❌ ERROR: Datos inválidos del producto`);
-        return res.status(400).json({ 
-          error: 'Datos de producto inválidos',
-          producto: item
+        return res.status(400).json({
+          error: "Datos de producto inválidos",
+          producto: item,
         });
       }
-      
+
       if (!item.precioVenta || item.precioVenta <= 0) {
         console.log(`❌ ERROR: Precio inválido`);
-        return res.status(400).json({ 
-          error: 'Precio de venta inválido',
-          producto: item
+        return res.status(400).json({
+          error: "Precio de venta inválido",
+          producto: item,
         });
       }
 
       const subtotalCalculado = item.cantidad * item.precioVenta;
       if (Math.abs(item.subtotal - subtotalCalculado) > 0.01) {
         console.log(`❌ ERROR: Subtotal incorrecto`);
-        return res.status(400).json({ 
-          error: 'Subtotal incorrecto para el producto',
+        return res.status(400).json({
+          error: "Subtotal incorrecto para el producto",
           producto: item.nombre,
           subtotalRecibido: item.subtotal,
-          subtotalEsperado: subtotalCalculado
+          subtotalEsperado: subtotalCalculado,
         });
       }
 
@@ -102,7 +112,7 @@ export const addSale = async (req, res) => {
         console.log(`❌ ERROR: Producto no encontrado en BD`);
         return res.status(404).json({
           error: `Producto "${item.nombre}" no encontrado en el inventario`,
-          producto: { nombre: item.nombre, id: item.productoId }
+          producto: { nombre: item.nombre, id: item.productoId },
         });
       }
       console.log(`   ✓ Producto encontrado en BD`);
@@ -114,11 +124,11 @@ export const addSale = async (req, res) => {
         console.log(`❌ ERROR: Producto no disponible para venta`);
         return res.status(400).json({
           error: `El producto "${productoDB.nombre}" no está disponible para venta`,
-          producto: { 
-            nombre: productoDB.nombre, 
+          producto: {
+            nombre: productoDB.nombre,
             seVende: false,
-            mensaje: 'Este producto ha sido marcado como no disponible'
-          }
+            mensaje: "Este producto ha sido marcado como no disponible",
+          },
         });
       }
 
@@ -131,8 +141,8 @@ export const addSale = async (req, res) => {
             nombre: productoDB.nombre,
             solicitado: item.cantidad,
             disponible: productoDB.cantidad,
-            mensaje: `Solo hay ${productoDB.cantidad} unidad${productoDB.cantidad !== 1 ? 'es' : ''} disponible${productoDB.cantidad !== 1 ? 's' : ''}`
-          }
+            mensaje: `Solo hay ${productoDB.cantidad} unidad${productoDB.cantidad !== 1 ? "es" : ""} disponible${productoDB.cantidad !== 1 ? "s" : ""}`,
+          },
         });
       }
       console.log(`   ✓ Stock suficiente`);
@@ -146,33 +156,36 @@ export const addSale = async (req, res) => {
             nombre: productoDB.nombre,
             precioEnCarrito: item.precioVenta,
             precioActual: productoDB.precioVenta,
-            mensaje: 'Por favor actualiza el carrito'
-          }
+            mensaje: "Por favor actualiza el carrito",
+          },
         });
       }
       console.log(`   ✓ Precio correcto`);
       console.log(`   ✅ Producto validado exitosamente`);
-      
+
       // Guardar producto validado para actualizar después
       productosValidados.push({
         id: productoDB._id,
         cantidadVendida: item.cantidad,
-        cantidadActual: productoDB.cantidad
+        cantidadActual: productoDB.cantidad,
       });
     }
 
     console.log("\n✅ PASO 3: Validando total general");
     // Validar total
-    const totalCalculado = productos.reduce((sum, item) => sum + item.subtotal, 0);
+    const totalCalculado = productos.reduce(
+      (sum, item) => sum + item.subtotal,
+      0,
+    );
     console.log(`Total calculado: ₡${totalCalculado}`);
     console.log(`Total recibido: ₡${total}`);
-    
+
     if (Math.abs(total - totalCalculado) > 0.01) {
       console.log("❌ ERROR: Total no coincide");
-      return res.status(400).json({ 
-        error: 'El total no coincide con la suma de subtotales',
+      return res.status(400).json({
+        error: "El total no coincide con la suma de subtotales",
         totalRecibido: total,
-        totalCalculado: totalCalculado
+        totalCalculado: totalCalculado,
       });
     }
     console.log("✓ Total correcto");
@@ -184,13 +197,17 @@ export const addSale = async (req, res) => {
       total,
       montoPagado,
       vuelto,
-      fecha: fecha || new Date()
+      fecha: fecha || new Date(),
+      // ✅ AGREGAR DATOS DEL USUARIO
+      usuario: req.user.id,
+      nombreUsuario: req.user.nombre,
+      emailUsuario: req.user.email,
     };
     console.log("Datos a guardar:", JSON.stringify(ventaData, null, 2));
 
     const newSale = new Sale(ventaData);
     console.log("📝 Objeto Sale creado, guardando...");
-    
+
     const ventaGuardada = await newSale.save();
     console.log("✅ Venta guardada exitosamente!");
     console.log("ID de venta:", ventaGuardada._id);
@@ -203,70 +220,66 @@ export const addSale = async (req, res) => {
       console.log(`      Cantidad anterior: ${prod.cantidadActual}`);
       console.log(`      Cantidad vendida: ${prod.cantidadVendida}`);
       console.log(`      Nueva cantidad: ${nuevaCantidad}`);
-      
-      await Inventario.findByIdAndUpdate(
-        prod.id,
-        { 
-          cantidad: nuevaCantidad,
-          updatedAt: new Date()
-        }
-      );
-      
+
+      await Inventario.findByIdAndUpdate(prod.id, {
+        cantidad: nuevaCantidad,
+        updatedAt: new Date(),
+      });
+
       console.log(`   ✅ Inventario actualizado`);
     }
     console.log("✅ Todo el inventario actualizado correctamente");
 
     console.log("\n✅ PASO 6: Enviando respuesta al frontend");
     const respuesta = {
-      message: 'Venta registrada exitosamente',
-      venta: ventaGuardada
+      message: "Venta registrada exitosamente",
+      venta: ventaGuardada,
     };
     console.log("Respuesta:", JSON.stringify(respuesta, null, 2));
 
     res.status(201).json(respuesta);
-    
-    console.log("🎉 ===== VENTA COMPLETADA EXITOSAMENTE =====\n");
 
+    console.log("🎉 ===== VENTA COMPLETADA EXITOSAMENTE =====\n");
   } catch (error) {
     console.error("\n❌ ===== ERROR EN PROCESO DE VENTA =====");
     console.error("Tipo de error:", error.name);
     console.error("Mensaje:", error.message);
     console.error("Stack:", error.stack);
-    
+
     // Manejar diferentes tipos de errores
-    if (error.name === 'ValidationError') {
+    if (error.name === "ValidationError") {
       console.error("❌ Error de validación de Mongoose");
-      const messages = Object.values(error.errors).map(err => err.message);
+      const messages = Object.values(error.errors).map((err) => err.message);
       console.error("Detalles:", messages);
-      return res.status(400).json({ 
-        error: 'Error de validación',
-        detalles: messages.join(', '),
-        mensaje: error.message
+      return res.status(400).json({
+        error: "Error de validación",
+        detalles: messages.join(", "),
+        mensaje: error.message,
       });
     }
-    
-    if (error.name === 'CastError') {
+
+    if (error.name === "CastError") {
       console.error("❌ Error de ID inválido");
-      return res.status(400).json({ 
-        error: 'ID de producto inválido',
+      return res.status(400).json({
+        error: "ID de producto inválido",
         detalles: error.message,
-        mensaje: `El ID "${error.value}" no es válido`
+        mensaje: `El ID "${error.value}" no es válido`,
       });
     }
 
     // Error genérico
     console.error("❌ Error genérico del servidor");
-    res.status(500).json({ 
-      error: 'Error al registrar la venta',
-      mensaje: error.message || 'Error interno del servidor',
-      tipo: error.name
+    res.status(500).json({
+      error: "Error al registrar la venta",
+      mensaje: error.message || "Error interno del servidor",
+      tipo: error.name,
     });
-    
+
     console.error("===== FIN DE ERROR =====\n");
   }
 };
 
-// Obtener todas las ventas (con paginación)
+// Obtener todas las ventas (con paginación y filtros de fecha)
 export const getSales = async (req, res) => {
   console.log("\n📋 Obteniendo lista de ventas");
   
@@ -275,14 +288,30 @@ export const getSales = async (req, res) => {
     const limit = parseInt(req.query.limit) || 20;
     const skip = (page - 1) * limit;
 
-    console.log(`Página: ${page}, Límite: ${limit}`);
+    const filtro = {};
+    
+    if (req.query.fechaInicio || req.query.fechaFin) {
+      filtro.fecha = crearFiltroFechas(req.query.fechaInicio, req.query.fechaFin);
+      
+      if (filtro.fecha.$gte) {
+        console.log(`📅 Desde: ${filtro.fecha.$gte.toISOString()} (${formatCostaRicaTime(filtro.fecha.$gte)})`);
+      }
+      if (filtro.fecha.$lte) {
+        console.log(`📅 Hasta: ${filtro.fecha.$lte.toISOString()} (${formatCostaRicaTime(filtro.fecha.$lte)})`);
+      }
+    }
 
-    const ventas = await Sale.find()
+    console.log(`Página: ${page}, Límite: ${limit}`);
+    console.log(`Filtro aplicado:`, JSON.stringify(filtro, null, 2));
+
+    // ✅ AGREGAR .populate() PARA INCLUIR DATOS DEL USUARIO
+    const ventas = await Sale.find(filtro)
+      .populate('usuario', 'nombre email') // Trae nombre y email del usuario
       .sort({ fecha: -1 })
       .skip(skip)
       .limit(limit);
 
-    const totalVentas = await Sale.countDocuments();
+    const totalVentas = await Sale.countDocuments(filtro);
 
     console.log(`✅ ${ventas.length} ventas obtenidas (Total: ${totalVentas})`);
 
@@ -309,31 +338,30 @@ export const getSales = async (req, res) => {
 // Obtener venta por ID
 export const getSaleById = async (req, res) => {
   console.log(`\n🔍 Buscando venta ID: ${req.params.id}`);
-  
+
   try {
     const venta = await Sale.findById(req.params.id);
-    
+
     if (!venta) {
       console.log("❌ Venta no encontrada");
-      return res.status(404).json({ error: 'Venta no encontrada' });
+      return res.status(404).json({ error: "Venta no encontrada" });
     }
 
     console.log("✅ Venta encontrada");
     res.json(venta);
-
   } catch (error) {
     console.error("❌ Error al obtener venta:", error);
-    
-    if (error.name === 'CastError') {
-      return res.status(400).json({ 
-        error: 'ID de venta inválido',
-        mensaje: error.message 
+
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        error: "ID de venta inválido",
+        mensaje: error.message,
       });
     }
-    
-    res.status(500).json({ 
-      error: 'Error al obtener la venta',
-      mensaje: error.message 
+
+    res.status(500).json({
+      error: "Error al obtener la venta",
+      mensaje: error.message,
     });
   }
 };
@@ -341,20 +369,26 @@ export const getSaleById = async (req, res) => {
 // Obtener estadísticas de ventas
 export const getSalesStats = async (req, res) => {
   console.log("\n📊 Calculando estadísticas de ventas");
-  
+
   try {
     const hoy = new Date();
     hoy.setHours(0, 0, 0, 0);
 
     const ventasHoy = await Sale.find({ fecha: { $gte: hoy } });
-    
-    const totalVentasHoy = ventasHoy.reduce((sum, venta) => sum + venta.total, 0);
+
+    const totalVentasHoy = ventasHoy.reduce(
+      (sum, venta) => sum + venta.total,
+      0,
+    );
     const cantidadVentasHoy = ventasHoy.length;
 
     // Estadísticas del mes
     const inicioMes = new Date(hoy.getFullYear(), hoy.getMonth(), 1);
     const ventasMes = await Sale.find({ fecha: { $gte: inicioMes } });
-    const totalVentasMes = ventasMes.reduce((sum, venta) => sum + venta.total, 0);
+    const totalVentasMes = ventasMes.reduce(
+      (sum, venta) => sum + venta.total,
+      0,
+    );
 
     console.log(`Ventas hoy: ${cantidadVentasHoy} (₡${totalVentasHoy})`);
     console.log(`Ventas mes: ${ventasMes.length} (₡${totalVentasMes})`);
@@ -362,19 +396,18 @@ export const getSalesStats = async (req, res) => {
     res.json({
       hoy: {
         total: totalVentasHoy,
-        cantidad: cantidadVentasHoy
+        cantidad: cantidadVentasHoy,
       },
       mes: {
         total: totalVentasMes,
-        cantidad: ventasMes.length
-      }
+        cantidad: ventasMes.length,
+      },
     });
-
   } catch (error) {
     console.error("❌ Error al obtener estadísticas:", error);
-    res.status(500).json({ 
-      error: 'Error al obtener estadísticas',
-      mensaje: error.message 
+    res.status(500).json({
+      error: "Error al obtener estadísticas",
+      mensaje: error.message,
     });
   }
 };
@@ -388,57 +421,58 @@ export const getSalesStats = async (req, res) => {
 export const updateSale = async (req, res) => {
   console.log(`\n✏️ ===== ACTUALIZANDO VENTA ${req.params.id} =====`);
   console.log("📦 Datos recibidos:", JSON.stringify(req.body, null, 2));
-  
+
   try {
     const { id } = req.params;
     const updateData = req.body;
 
     // Buscar venta existente
     const ventaExistente = await Sale.findById(id);
-    
+
     if (!ventaExistente) {
       console.log("❌ Venta no encontrada");
-      return res.status(404).json({ error: 'Venta no encontrada' });
+      return res.status(404).json({ error: "Venta no encontrada" });
     }
 
     console.log("✅ Venta encontrada, actualizando...");
 
     // Actualizar la venta
-    const ventaActualizada = await Sale.findByIdAndUpdate(
-      id,
-      updateData,
-      { new: true, runValidators: true }
-    );
-
-    console.log("✅ Venta actualizada exitosamente");
-    console.log("Datos actualizados:", JSON.stringify(ventaActualizada, null, 2));
-
-    res.json({
-      message: 'Venta actualizada exitosamente',
-      venta: ventaActualizada
+    const ventaActualizada = await Sale.findByIdAndUpdate(id, updateData, {
+      new: true,
+      runValidators: true,
     });
 
+    console.log("✅ Venta actualizada exitosamente");
+    console.log(
+      "Datos actualizados:",
+      JSON.stringify(ventaActualizada, null, 2),
+    );
+
+    res.json({
+      message: "Venta actualizada exitosamente",
+      venta: ventaActualizada,
+    });
   } catch (error) {
     console.error("❌ Error al actualizar venta:", error);
-    
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(err => err.message);
-      return res.status(400).json({ 
-        error: 'Error de validación',
-        detalles: messages.join(', ')
-      });
-    }
-    
-    if (error.name === 'CastError') {
-      return res.status(400).json({ 
-        error: 'ID de venta inválido',
-        mensaje: error.message 
+
+    if (error.name === "ValidationError") {
+      const messages = Object.values(error.errors).map((err) => err.message);
+      return res.status(400).json({
+        error: "Error de validación",
+        detalles: messages.join(", "),
       });
     }
 
-    res.status(500).json({ 
-      error: 'Error al actualizar la venta',
-      mensaje: error.message 
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        error: "ID de venta inválido",
+        mensaje: error.message,
+      });
+    }
+
+    res.status(500).json({
+      error: "Error al actualizar la venta",
+      mensaje: error.message,
     });
   }
 };
@@ -446,16 +480,16 @@ export const updateSale = async (req, res) => {
 // Eliminar venta
 export const deleteSale = async (req, res) => {
   console.log(`\n🗑️ ===== ELIMINANDO VENTA ${req.params.id} =====`);
-  
+
   try {
     const { id } = req.params;
 
     // Buscar venta existente
     const ventaExistente = await Sale.findById(id);
-    
+
     if (!ventaExistente) {
       console.log("❌ Venta no encontrada");
-      return res.status(404).json({ error: 'Venta no encontrada' });
+      return res.status(404).json({ error: "Venta no encontrada" });
     }
 
     console.log("✅ Venta encontrada:");
@@ -470,27 +504,26 @@ export const deleteSale = async (req, res) => {
     console.log("✅ Venta eliminada exitosamente");
 
     res.json({
-      message: 'Venta eliminada exitosamente',
+      message: "Venta eliminada exitosamente",
       ventaEliminada: {
         id: ventaExistente._id,
         total: ventaExistente.total,
-        fecha: ventaExistente.fecha
-      }
+        fecha: ventaExistente.fecha,
+      },
     });
-
   } catch (error) {
     console.error("❌ Error al eliminar venta:", error);
-    
-    if (error.name === 'CastError') {
-      return res.status(400).json({ 
-        error: 'ID de venta inválido',
-        mensaje: error.message 
+
+    if (error.name === "CastError") {
+      return res.status(400).json({
+        error: "ID de venta inválido",
+        mensaje: error.message,
       });
     }
 
-    res.status(500).json({ 
-      error: 'Error al eliminar la venta',
-      mensaje: error.message 
+    res.status(500).json({
+      error: "Error al eliminar la venta",
+      mensaje: error.message,
     });
   }
 };

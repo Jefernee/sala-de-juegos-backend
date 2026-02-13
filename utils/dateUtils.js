@@ -109,3 +109,40 @@ export const logDateRanges = (ranges) => {
   console.log(`   Mes desde UTC: ${ranges.mes.inicio.toISOString()}`);
 };
 
+
+/**
+ *  Nueva función Convierte fechas de formulario a filtro MongoDB
+ * Convierte una fecha en formato YYYY-MM-DD a rango UTC de Costa Rica
+ * @param {string} fechaInicio - Fecha inicio en formato YYYY-MM-DD
+ * @param {string} fechaFin - Fecha fin en formato YYYY-MM-DD (opcional)
+ * @returns {Object} Filtro de MongoDB para el campo fecha
+ */
+export const crearFiltroFechas = (fechaInicio, fechaFin) => {
+  const filtro = {};
+
+  if (fechaInicio) {
+    const [year, month, day] = fechaInicio.split('-');
+    // Inicio del día en Costa Rica = 06:00 UTC
+    const fechaInicioUTC = new Date(Date.UTC(
+      parseInt(year),
+      parseInt(month) - 1,
+      parseInt(day),
+      6, 0, 0, 0
+    ));
+    filtro.$gte = fechaInicioUTC;
+  }
+
+  if (fechaFin) {
+    const [year, month, day] = fechaFin.split('-');
+    // Fin del día en Costa Rica = 05:59:59.999 UTC del día siguiente
+    const fechaFinUTC = new Date(Date.UTC(
+      parseInt(year),
+      parseInt(month) - 1,
+      parseInt(day) + 1,
+      5, 59, 59, 999
+    ));
+    filtro.$lte = fechaFinUTC;
+  }
+
+  return filtro;
+};

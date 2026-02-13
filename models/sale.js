@@ -44,6 +44,20 @@ const saleSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // ✅ NUEVOS CAMPOS DE USUARIO
+  usuario: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
+  },
+  nombreUsuario: {
+    type: String,
+    required: true
+  },
+  emailUsuario: {
+    type: String,
+    required: true
+  },
   fecha: {
     type: Date,
     default: Date.now
@@ -52,8 +66,9 @@ const saleSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Índices para optimizar consultas de reportes
+// Índices para optimizar consultas
 saleSchema.index({ fecha: -1 });
+saleSchema.index({ usuario: 1 });
 saleSchema.index({ 'productos.productoId': 1 });
 
 export default mongoose.model('Sale', saleSchema);
