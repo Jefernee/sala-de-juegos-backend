@@ -40,6 +40,7 @@ const allowedOrigins = [
   process.env.FRONTEND_URL, // Netlify
   "http://localhost:3000", // Para npm run prod
   "http://localhost:3001",
+  "http://localhost:5173", // 🔥 Vite
 ].filter(Boolean);
 
 console.log("🌍 Entorno:", process.env.NODE_ENV);
