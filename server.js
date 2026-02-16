@@ -11,6 +11,7 @@ import salesRoutes from "./routes/sales.js";
 import pedidosRoutes from "./routes/pedidos.js";
 import reportsRoutes from "./routes/reports.js";
 import playsRoutes from "./routes/plays.js";
+import dailyAggregatesRoutes from './routes/dailyAggregats.js';
 import { handleMulterError } from './middlewares/upload.js';
 import dns from 'dns';
 
@@ -136,6 +137,7 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/plays", playsRoutes);
+app.use('/api/daily-aggregates', dailyAggregatesRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
@@ -209,10 +211,11 @@ app.use((err, req, res, next) => {
 // ============================================
 // INICIAR SERVIDOR
 // ============================================
-app.listen(PORT, () => {
+app.listen(PORT, "0.0.0.0", () => {
   const startupTime = Date.now() - SERVER_START_TIME;
-  console.log(`\n✅ Servidor corriendo en http://localhost:${PORT}`);
+  console.log(`\n✅ Servidor corriendo en puerto ${PORT}`);
   console.log(`⏱️ Tiempo de inicio: ${startupTime}ms`);
+  console.log("🌍 Entorno:", process.env.NODE_ENV);
   console.log("🚀 ========================================\n");
 });
 
