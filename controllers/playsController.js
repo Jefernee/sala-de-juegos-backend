@@ -1,5 +1,7 @@
 // controllers/playsController.js
 import Play from '../models/plays.js';
+// Al inicio del archivo, agregar este import
+import { getUTCDateRanges } from '../utils/dateUtils.js';
 
 // Función helper para calcular costos
 const calcularCostos = (lugarDeJuego, tiempoPagado, controlAdicional) => {
@@ -126,7 +128,7 @@ export const createPlay = async (req, res) => {
     const totalPingPong = tipoPlay === 'Ping Pong' ? costos.total : 0;
     
     const play = new Play({
-      fecha: req.body.fecha,
+      fecha: getUTCDateRanges().hoy.inicio,
       cliente: req.body.cliente,
       atendio: req.body.atendio,
       tiempoPagado: req.body.tiempoPagado,
@@ -184,7 +186,6 @@ export const updatePlay = async (req, res) => {
     }
 
     // Actualizar campos básicos
-    if (req.body.fecha !== undefined) play.fecha = req.body.fecha;
     if (req.body.cliente !== undefined) play.cliente = req.body.cliente;
     if (req.body.atendio !== undefined) play.atendio = req.body.atendio;
     if (req.body.tiempoPagado !== undefined) play.tiempoPagado = req.body.tiempoPagado;

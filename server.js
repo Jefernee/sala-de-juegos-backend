@@ -11,7 +11,6 @@ import salesRoutes from "./routes/sales.js";
 import pedidosRoutes from "./routes/pedidos.js";
 import reportsRoutes from "./routes/reports.js";
 import playsRoutes from "./routes/plays.js";
-import dailyAggregatesRoutes from './routes/dailyAggregats.js';
 import { handleMulterError } from './middlewares/upload.js';
 import dns from 'dns';
 
@@ -137,7 +136,6 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/plays", playsRoutes);
-app.use('/api/daily-aggregates', dailyAggregatesRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
