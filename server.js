@@ -12,6 +12,7 @@ import pedidosRoutes from "./routes/pedidos.js";
 import reportsRoutes from "./routes/reports.js";
 import playsRoutes from "./routes/plays.js";
 import { handleMulterError } from './middlewares/upload.js';
+import ahorroRoutes from './routes/ahorroRoutes.js';
 import dns from 'dns';
 
 // ⏱️ Marca de inicio real del proceso (cold start)
@@ -136,6 +137,7 @@ app.use("/api/sales", salesRoutes);
 app.use("/api/pedidos", pedidosRoutes);
 app.use("/api/reports", reportsRoutes);
 app.use("/api/plays", playsRoutes);
+app.use('/api/ahorro', ahorroRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
