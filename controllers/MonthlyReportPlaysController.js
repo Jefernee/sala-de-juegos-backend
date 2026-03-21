@@ -1,34 +1,33 @@
 import Play from '../models/plays.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
-
-
+ 
 // ─────────────────────────────────────────────
 // Helpers internos
 // ─────────────────────────────────────────────
-
+ 
 const NOMBRES_MESES = [
   'Enero', 'Febrero', 'Marzo', 'Abril',
   'Mayo', 'Junio', 'Julio', 'Agosto',
   'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
 ];
-
+ 
 const getRangoMesUTC = (año, mes) => {
   const inicio = new Date(Date.UTC(año, mes - 1, 1, 6, 0, 0, 0));
   const fin    = new Date(Date.UTC(año, mes,     1, 5, 59, 59, 999));
   return { inicio, fin };
 };
-
+ 
 const getDiaCR = (fechaUTC) => {
   const cr = new Date(fechaUTC.toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
   return cr.getDate();
 };
-
+ 
 const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
   const empleadosMap = {};
   const lugaresMap   = {};
   const diasMap      = {};
   const juegosMap    = {}; // ← nuevo
-
+ 
   let totalSesiones              = 0;
   let totalRecaudado             = 0;
   let totalSubtotales            = 0;
@@ -42,7 +41,7 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
   let tiempoTotalPagadoMinutos   = 0;
   let tiempoTotalPendienteMinutos= 0;
   let totalControlesAdicionales  = 0;
-
+ 
   for (const play of plays) {
     totalSesiones++;
     totalRecaudado              += play.total          || 0;
@@ -54,11 +53,11 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     tiempoTotalPagadoMinutos    += play.tiempoPagado   || 0;
     tiempoTotalPendienteMinutos += play.tiempoPendiente|| 0;
     totalControlesAdicionales   += play.controlAdicional || 0;
-
+ 
     if (play.estadoPago === 'Completado')  sesionesCompletadas++;
     else if (play.estadoPago === 'Pendiente') sesionesPendientes++;
     else sesionesEnProceso++;
-
+ 
     // ── Por empleado ──────────────────────────
     const emp = play.atendio || 'Desconocido';
     if (!empleadosMap[emp]) {
@@ -76,7 +75,7 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     empleadosMap[emp].totalPingPong           += play.totalPingPong  || 0;
     empleadosMap[emp].totalControlesAdicionales += play.controlAdicional || 0;
     empleadosMap[emp].tiempoTotalMinutos      += play.tiempoPagado   || 0;
-
+ 
     // ── Por lugar ─────────────────────────────
     const lugar = play.lugarDeJuego || 'Desconocido';
     if (!lugaresMap[lugar]) {
@@ -85,7 +84,7 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     lugaresMap[lugar].totalSesiones++;
     lugaresMap[lugar].totalRecaudado    += play.total        || 0;
     lugaresMap[lugar].tiempoTotalMinutos += play.tiempoPagado || 0;
-
+ 
     // ── Por día ───────────────────────────────
     const dia = getDiaCR(play.fecha);
     if (!diasMap[dia]) {
@@ -96,7 +95,7 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     diasMap[dia].totalPlay4     += play.totalPlay4  || 0;
     diasMap[dia].totalPlay5     += play.totalPlay5  || 0;
     diasMap[dia].totalPingPong  += play.totalPingPong || 0;
-
+ 
     // ── Juegos jugados ────────────────────────
     // juegosJugados es un array de strings, ej: ["FIFA 25", "GTA V"]
     const juegos = Array.isArray(play.juegosJugados) ? play.juegosJugados : [];
@@ -109,11 +108,11 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
       juegosMap[key].vecesJugado++;
     }
   }
-
+ 
   // Ordenar juegos de mayor a menor
   const juegosMasJugados = Object.values(juegosMap)
     .sort((a, b) => b.vecesJugado - a.vecesJugado);
-
+ 
   return {
     año,
     mes,
@@ -141,16 +140,23 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     playsIncluidos: plays.length,
   };
 };
-
+ 
 // ─────────────────────────────────────────────
 // CONTROLADORES PÚBLICOS
 // ─────────────────────────────────────────────
-
+ 
 export const generarReporteMensual = async (req, res) => {
   try {
     const { año, mes } = req.body;
     if (!año || !mes || mes < 1 || mes > 12) {
       return res.status(400).json({ ok: false, mensaje: 'Se requieren año (número) y mes (1-12) válidos.' });
+    }
+    const añoActual = new Date().getFullYear();
+    if (año < añoActual) {
+      return res.status(403).json({
+        ok: false,
+        mensaje: `No se puede regenerar un año anterior. El reporte de ${NOMBRES_MESES[mes - 1]} ${año} está bloqueado.`,
+      });
     }
     const { inicio, fin } = getRangoMesUTC(año, mes);
     const plays = await Play.find({ fecha: { $gte: inicio, $lte: fin } }).lean();
@@ -170,12 +176,20 @@ export const generarReporteMensual = async (req, res) => {
     return res.status(500).json({ ok: false, mensaje: 'Error interno del servidor.', error: error.message });
   }
 };
-
+ 
 export const generarReporteAnual = async (req, res) => {
   try {
     const { año } = req.body;
     if (!año) return res.status(400).json({ ok: false, mensaje: 'Se requiere el año.' });
-
+ 
+    const añoActual = new Date().getFullYear();
+    if (año < añoActual) {
+      return res.status(403).json({
+        ok: false,
+        mensaje: `No se puede regenerar un año anterior. El reporte de ${año} está bloqueado.`,
+      });
+    }
+ 
     const resultados = [];
     for (let mes = 1; mes <= 12; mes++) {
       const { inicio, fin } = getRangoMesUTC(año, mes);
@@ -203,12 +217,12 @@ export const generarReporteAnual = async (req, res) => {
     return res.status(500).json({ ok: false, mensaje: 'Error interno del servidor.', error: error.message });
   }
 };
-
+ 
 export const getReportesPorAño = async (req, res) => {
   try {
     const año = parseInt(req.params.año);
     if (isNaN(año)) return res.status(400).json({ ok: false, mensaje: 'Año inválido.' });
-
+ 
     const reportes = await MonthlyReport.find({ año }).sort({ mes: 1 }).lean();
     const mesesCompletos = Array.from({ length: 12 }, (_, i) => {
       const mesNum = i + 1;
@@ -226,7 +240,7 @@ export const getReportesPorAño = async (req, res) => {
     return res.status(500).json({ ok: false, mensaje: 'Error interno del servidor.', error: error.message });
   }
 };
-
+ 
 export const getReporteMensual = async (req, res) => {
   try {
     const año = parseInt(req.params.año);
@@ -247,7 +261,7 @@ export const getReporteMensual = async (req, res) => {
     return res.status(500).json({ ok: false, mensaje: 'Error interno del servidor.', error: error.message });
   }
 };
-
+ 
 export const getAnosDisponibles = async (req, res) => {
   try {
     const años = await MonthlyReport.distinct('año');
@@ -258,7 +272,7 @@ export const getAnosDisponibles = async (req, res) => {
     return res.status(500).json({ ok: false, mensaje: 'Error interno del servidor.', error: error.message });
   }
 };
-
+ 
 export const compararAños = async (req, res) => {
   try {
     const año1 = parseInt(req.query.año1);
