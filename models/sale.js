@@ -1,13 +1,11 @@
-// ============================================
-// models/Sale.js - Modelo de venta CORREGIDO
-// ============================================
+// models/Sale.js
 import mongoose from 'mongoose';
 
 const saleSchema = new mongoose.Schema({
   productos: [{
     productoId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Inventario',  // ✅ CORREGIDO: debe ser 'Inventario' no 'Product'
+      ref: 'Inventario',
       required: true
     },
     nombre: {
@@ -28,7 +26,18 @@ const saleSchema = new mongoose.Schema({
       type: Number,
       required: true,
       min: 0
-    }
+    },
+    // ── Nuevos campos de costo ─────────────────
+    costoUnitario: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    costoSubtotal: {       // costoUnitario × cantidad
+      type: Number,
+      default: 0,
+      min: 0
+    },
   }],
   total: {
     type: Number,
@@ -44,7 +53,15 @@ const saleSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
-  // ✅ NUEVOS CAMPOS DE USUARIO
+  // ── Totales de costo y ganancia por venta ──
+  totalCosto: {            // suma de todos los costoSubtotal
+    type: Number,
+    default: 0
+  },
+  ganancia: {              // total - totalCosto
+    type: Number,
+    default: 0
+  },
   usuario: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -66,7 +83,6 @@ const saleSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Índices para optimizar consultas
 saleSchema.index({ fecha: -1 });
 saleSchema.index({ usuario: 1 });
 saleSchema.index({ 'productos.productoId': 1 });

@@ -9,8 +9,9 @@ import productsRoutes from "./routes/products.js";
 import authRoutes from "./routes/auth.js";
 import salesRoutes from "./routes/sales.js";
 import pedidosRoutes from "./routes/pedidos.js";
-import reportsRoutes from "./routes/reports.js";
+import reportsRoutes from "./routes/Salereportroutes.js";
 import playsRoutes from "./routes/plays.js";
+import saleReportRoutes from './routes/Salereportroutes.js';
 import monthlyReportRoutes from './routes/Monthlyreportplaysroutes.js';
 import { handleMulterError } from './middlewares/upload.js';
 import ahorroRoutes from './routes/ahorroRoutes.js';
@@ -140,6 +141,7 @@ app.use("/api/reports", reportsRoutes);
 app.use("/api/plays", playsRoutes);
 app.use('/api/ahorro', ahorroRoutes);
 app.use('/api/monthly-reports', monthlyReportRoutes);
+app.use('/api/ventas-reports', saleReportRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
