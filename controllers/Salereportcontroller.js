@@ -1,5 +1,5 @@
 import Sale       from '../models/sale.js';
-import SaleReport  from '../models/SaleReport.js';
+import SaleReport  from '../models/Salereport.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
