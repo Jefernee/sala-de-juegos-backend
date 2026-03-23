@@ -17,6 +17,24 @@ import { handleMulterError } from './middlewares/upload.js';
 import ahorroRoutes from './routes/ahorroRoutes.js';
 import dns from 'dns';
 
+// ============================================
+// ⚠️ CAPTURA DE SIGTERM Y SIGINT
+// ============================================
+process.on('SIGTERM', () => {
+    console.error('⚠️ SIGTERM recibido. Posible terminación de contenedor por Koyeb.');
+    console.error('📌 Estado antes de morir:', {
+        uptime: process.uptime(),
+        memory: process.memoryUsage(),
+        connections: mongoose.connection.readyState
+    });
+    process.exit(0);
+});
+
+process.on('SIGINT', () => {
+    console.error('⚠️ SIGINT recibido. Cerrando servidor...');
+    process.exit(0);
+});
+
 // ⏱️ Marca de inicio real del proceso (cold start)
 const PROCESS_START_TIME = Date.now();
 const SERVER_START_TIME = Date.now();
@@ -103,6 +121,14 @@ const connectDB = async () => {
 };
 
 await connectDB();
+
+// ============================================
+// 📊 MONITOREO DE MEMORIA
+// ============================================
+setInterval(() => {
+    const mem = process.memoryUsage();
+    console.log('📊 Uso de memoria:', mem);
+}, 5000);
 
 // ============================================
 // HEALTH CHECK (debe ir ANTES de las otras rutas)
