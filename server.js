@@ -54,7 +54,7 @@ console.log("✅ FRONTEND_URL:", process.env.FRONTEND_URL);
 
 const app = express();
 let firstRequest = true;
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 8000;
 
 // Permitir localhost SIEMPRE (desarrollo y producción)
 const allowedOrigins = [
@@ -125,6 +125,7 @@ await connectDB();
 // ============================================
 // 📊 MONITOREO DE MEMORIA
 // ============================================
+const mem = process.memoryUsage();
 if (mem.heapUsed > 100 * 1024 * 1024) {
   console.warn('⚠️ Alto uso de memoria:', mem);
 }
