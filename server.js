@@ -125,10 +125,9 @@ await connectDB();
 // ============================================
 // 📊 MONITOREO DE MEMORIA
 // ============================================
-setInterval(() => {
-    const mem = process.memoryUsage();
-    console.log('📊 Uso de memoria:', mem);
-}, 5000);
+if (mem.heapUsed > 100 * 1024 * 1024) {
+  console.warn('⚠️ Alto uso de memoria:', mem);
+}
 
 // ============================================
 // HEALTH CHECK (debe ir ANTES de las otras rutas)
