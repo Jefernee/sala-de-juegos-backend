@@ -1,12 +1,11 @@
 // controllers/playsController.js
 import Play from '../models/plays.js';
-// Al inicio del archivo, agregar este import
 import { getUTCDateRanges } from '../utils/dateUtils.js';
 
 // Función helper para calcular costos
 const calcularCostos = (lugarDeJuego, tiempoPagado, controlAdicional) => {
   let precioPorHora = 0;
-  
+
   if (lugarDeJuego.includes('Play 5')) {
     precioPorHora = 1000;
   } else if (lugarDeJuego.includes('Play 4')) {
@@ -14,15 +13,15 @@ const calcularCostos = (lugarDeJuego, tiempoPagado, controlAdicional) => {
   } else if (lugarDeJuego === 'Ping Pong') {
     precioPorHora = 800;
   }
-  
+
   const subtotal = (tiempoPagado / 60) * precioPorHora;
   const costoControles = controlAdicional * 200;
   const total = subtotal + costoControles;
-  
+
   return {
     subtotal: Math.round(subtotal),
     costoControles,
-    total: Math.round(total)
+    total: Math.round(total),
   };
 };
 
@@ -34,24 +33,34 @@ const determinarTipoPlay = (lugarDeJuego) => {
   return '';
 };
 
-// GET - Obtener todos los plays CON PAGINACIÓN
+// GET - Obtener todos los plays CON PAGINACIÓN Y FILTROS
 export const getAllPlays = async (req, res) => {
   try {
-    // Obtener parámetros de paginación de la query
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 5;
     const skip = (page - 1) * limit;
 
-    // Obtener el total de documentos
-    const total = await Play.countDocuments();
-    
-    // Obtener los plays paginados (ÚLTIMOS PRIMERO)
-    const plays = await Play.find()
+    // ✅ Filtro por tiempo pendiente
+    const filtro = {};
+
+    if (req.query.soloPendiente === 'true') {
+      // Solo registros que tengan tiempo pendiente mayor a 0
+      filtro.tiempoPendiente = { $gt: 0 };
+    } else if (req.query.minPendiente) {
+      // Registros con tiempo pendiente >= al valor enviado (en minutos)
+      const minPendiente = parseInt(req.query.minPendiente);
+      if (!isNaN(minPendiente) && minPendiente > 0) {
+        filtro.tiempoPendiente = { $gte: minPendiente };
+      }
+    }
+
+    const total = await Play.countDocuments(filtro);
+
+    const plays = await Play.find(filtro)
       .sort({ fecha: -1, createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
-    // Calcular información de paginación
     const totalPages = Math.ceil(total / limit);
     const hasNextPage = page < totalPages;
     const hasPrevPage = page > 1;
@@ -66,8 +75,8 @@ export const getAllPlays = async (req, res) => {
         limit,
         totalPages,
         hasNextPage,
-        hasPrevPage
-      }
+        hasPrevPage,
+      },
     });
   } catch (error) {
     console.error('❌ Error en getAllPlays:', error);
@@ -75,7 +84,7 @@ export const getAllPlays = async (req, res) => {
       success: false,
       message: 'Error al obtener los plays',
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
 };
@@ -84,17 +93,17 @@ export const getAllPlays = async (req, res) => {
 export const getPlayById = async (req, res) => {
   try {
     const play = await Play.findById(req.params.id);
-    
+
     if (!play) {
       return res.status(404).json({
         success: false,
-        message: 'Play no encontrado'
+        message: 'Play no encontrado',
       });
     }
-    
+
     res.status(200).json({
       success: true,
-      data: play
+      data: play,
     });
   } catch (error) {
     console.error('❌ Error en getPlayById:', error);
@@ -102,7 +111,7 @@ export const getPlayById = async (req, res) => {
       success: false,
       message: 'Error al obtener el play',
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
 };
@@ -111,22 +120,19 @@ export const getPlayById = async (req, res) => {
 export const createPlay = async (req, res) => {
   try {
     console.log('📝 Datos recibidos para crear play:', req.body);
-    
-    // ✅ Determinar tipo de play automáticamente
+
     const tipoPlay = determinarTipoPlay(req.body.lugarDeJuego);
-    
-    // ✅ Calcular costos automáticamente
+
     const costos = calcularCostos(
       req.body.lugarDeJuego,
       req.body.tiempoPagado,
       req.body.controlAdicional || 0
     );
-    
-    // ✅ Calcular totales por tipo automáticamente
+
     const totalPlay4 = tipoPlay === 'Play 4' ? costos.total : 0;
     const totalPlay5 = tipoPlay === 'Play 5' ? costos.total : 0;
     const totalPingPong = tipoPlay === 'Ping Pong' ? costos.total : 0;
-    
+
     const play = new Play({
       fecha: getUTCDateRanges().hoy.inicio,
       cliente: req.body.cliente,
@@ -145,28 +151,28 @@ export const createPlay = async (req, res) => {
       totalPlay4: totalPlay4,
       totalPlay5: totalPlay5,
       totalPingPong: totalPingPong,
-      estadoPago: req.body.estadoPago || 'En Proceso'
+      estadoPago: req.body.estadoPago || 'En Proceso',
     });
 
     const nuevoPlay = await play.save();
     console.log('✅ Play creado exitosamente:', nuevoPlay._id);
-    
+
     res.status(201).json({
       success: true,
       message: 'Play creado exitosamente',
-      data: nuevoPlay
+      data: nuevoPlay,
     });
   } catch (error) {
     console.error('❌ Error en createPlay:', error);
     console.error('📦 Body recibido:', req.body);
-    
+
     res.status(400).json({
       success: false,
       message: 'Error al crear el play',
       error: error.message,
       errors: error.errors,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      receivedData: process.env.NODE_ENV === 'development' ? req.body : undefined
+      receivedData: process.env.NODE_ENV === 'development' ? req.body : undefined,
     });
   }
 };
@@ -175,17 +181,16 @@ export const createPlay = async (req, res) => {
 export const updatePlay = async (req, res) => {
   try {
     console.log(`📝 Actualizando play ${req.params.id} con:`, req.body);
-    
+
     const play = await Play.findById(req.params.id);
-    
+
     if (!play) {
       return res.status(404).json({
         success: false,
-        message: 'Play no encontrado'
+        message: 'Play no encontrado',
       });
     }
 
-    // Actualizar campos básicos
     if (req.body.cliente !== undefined) play.cliente = req.body.cliente;
     if (req.body.atendio !== undefined) play.atendio = req.body.atendio;
     if (req.body.tiempoPagado !== undefined) play.tiempoPagado = req.body.tiempoPagado;
@@ -197,43 +202,41 @@ export const updatePlay = async (req, res) => {
     if (req.body.controlAdicional !== undefined) play.controlAdicional = req.body.controlAdicional;
     if (req.body.estadoPago !== undefined) play.estadoPago = req.body.estadoPago;
 
-    // ✅ Recalcular TODO automáticamente en el backend
     play.tipoPlay = determinarTipoPlay(play.lugarDeJuego);
-    
+
     const costos = calcularCostos(
       play.lugarDeJuego,
       play.tiempoPagado,
       play.controlAdicional
     );
-    
+
     play.subtotal = costos.subtotal;
     play.costoControles = costos.costoControles;
     play.total = costos.total;
-    
-    // ✅ Recalcular totales por tipo
+
     play.totalPlay4 = play.tipoPlay === 'Play 4' ? costos.total : 0;
     play.totalPlay5 = play.tipoPlay === 'Play 5' ? costos.total : 0;
     play.totalPingPong = play.tipoPlay === 'Ping Pong' ? costos.total : 0;
 
     const playActualizado = await play.save();
     console.log('✅ Play actualizado exitosamente:', playActualizado._id);
-    
+
     res.status(200).json({
       success: true,
       message: 'Play actualizado exitosamente',
-      data: playActualizado
+      data: playActualizado,
     });
   } catch (error) {
     console.error('❌ Error en updatePlay:', error);
     console.error('📦 Body recibido:', req.body);
-    
+
     res.status(400).json({
       success: false,
       message: 'Error al actualizar el play',
       error: error.message,
       errors: error.errors,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      receivedData: process.env.NODE_ENV === 'development' ? req.body : undefined
+      receivedData: process.env.NODE_ENV === 'development' ? req.body : undefined,
     });
   }
 };
@@ -242,32 +245,32 @@ export const updatePlay = async (req, res) => {
 export const deletePlay = async (req, res) => {
   try {
     console.log(`🗑️ Eliminando play: ${req.params.id}`);
-    
+
     const play = await Play.findById(req.params.id);
-    
+
     if (!play) {
       return res.status(404).json({
         success: false,
-        message: 'Play no encontrado'
+        message: 'Play no encontrado',
       });
     }
 
     await play.deleteOne();
     console.log('✅ Play eliminado exitosamente');
-    
+
     res.status(200).json({
       success: true,
       message: 'Play eliminado exitosamente',
-      data: {}
+      data: {},
     });
   } catch (error) {
     console.error('❌ Error en deletePlay:', error);
-    
+
     res.status(500).json({
       success: false,
       message: 'Error al eliminar el play',
       error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   }
 };
