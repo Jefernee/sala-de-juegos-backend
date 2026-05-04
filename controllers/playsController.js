@@ -1,276 +1,318 @@
 // controllers/playsController.js
 import Play from '../models/plays.js';
+import MonthlyReport from '../models/Monthlyplaysreport.js';
 import { getUTCDateRanges } from '../utils/dateUtils.js';
 
-// Función helper para calcular costos
+// ─────────────────────────────────────────────────────────────────
+// Helpers de costo y tipo
+// ─────────────────────────────────────────────────────────────────
+
 const calcularCostos = (lugarDeJuego, tiempoPagado, controlAdicional) => {
   let precioPorHora = 0;
-
-  if (lugarDeJuego.includes('Play 5')) {
-    precioPorHora = 1000;
-  } else if (lugarDeJuego.includes('Play 4')) {
-    precioPorHora = 800;
-  } else if (lugarDeJuego === 'Ping Pong') {
-    precioPorHora = 800;
-  }
-
-  const subtotal = (tiempoPagado / 60) * precioPorHora;
+  if (lugarDeJuego.includes('Play 5'))      precioPorHora = 1000;
+  else if (lugarDeJuego.includes('Play 4')) precioPorHora = 800;
+  else if (lugarDeJuego === 'Ping Pong')    precioPorHora = 800;
+  const subtotal      = (tiempoPagado / 60) * precioPorHora;
   const costoControles = controlAdicional * 200;
-  const total = subtotal + costoControles;
-
-  return {
-    subtotal: Math.round(subtotal),
-    costoControles,
-    total: Math.round(total),
-  };
+  return { subtotal: Math.round(subtotal), costoControles, total: Math.round(subtotal + costoControles) };
 };
 
-// Función helper para determinar tipo de play
 const determinarTipoPlay = (lugarDeJuego) => {
   if (lugarDeJuego.includes('Play 5')) return 'Play 5';
   if (lugarDeJuego.includes('Play 4')) return 'Play 4';
-  if (lugarDeJuego === 'Ping Pong') return 'Ping Pong';
+  if (lugarDeJuego === 'Ping Pong')    return 'Ping Pong';
   return '';
 };
 
-// GET - Obtener todos los plays CON PAGINACIÓN Y FILTROS
+// ─────────────────────────────────────────────────────────────────
+// Auto-regeneración del reporte mensual
+// Se llama después de crear, editar o eliminar un play.
+// Trabaja en background (no bloquea la respuesta al cliente).
+// ─────────────────────────────────────────────────────────────────
+
+const NOMBRES_MESES = [
+  'Enero','Febrero','Marzo','Abril','Mayo','Junio',
+  'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre',
+];
+
+const getRangoMesUTC = (año, mes) => ({
+  inicio: new Date(Date.UTC(año, mes - 1, 1, 6, 0, 0, 0)),
+  fin:    new Date(Date.UTC(año, mes,     1, 5, 59, 59, 999)),
+});
+
+const getDiaCR = (fechaUTC) => {
+  const cr = new Date(fechaUTC.toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+  return cr.getDate();
+};
+
+const calcularDatosReporte = (plays, año, mes, inicio, fin) => {
+  const empleadosMap = {};
+  const lugaresMap   = {};
+  const diasMap      = {};
+  const juegosMap    = {};
+
+  let totalSesiones = 0, totalRecaudado = 0, totalSubtotales = 0;
+  let totalCostosControles = 0, totalPlay4 = 0, totalPlay5 = 0, totalPingPong = 0;
+  let sesionesCompletadas = 0, sesionesPendientes = 0, sesionesEnProceso = 0;
+  let tiempoTotalPagadoMinutos = 0, tiempoTotalPendienteMinutos = 0, totalControlesAdicionales = 0;
+
+  for (const play of plays) {
+    totalSesiones++;
+    totalRecaudado              += play.total           || 0;
+    totalSubtotales             += play.subtotal        || 0;
+    totalCostosControles        += play.costoControles  || 0;
+    totalPlay4                  += play.totalPlay4      || 0;
+    totalPlay5                  += play.totalPlay5      || 0;
+    totalPingPong               += play.totalPingPong   || 0;
+    tiempoTotalPagadoMinutos    += play.tiempoPagado    || 0;
+    tiempoTotalPendienteMinutos += play.tiempoPendiente || 0;
+    totalControlesAdicionales   += play.controlAdicional || 0;
+
+    if      (play.estadoPago === 'Completado') sesionesCompletadas++;
+    else if (play.estadoPago === 'Pendiente')  sesionesPendientes++;
+    else                                        sesionesEnProceso++;
+
+    const emp = play.atendio || 'Desconocido';
+    if (!empleadosMap[emp]) empleadosMap[emp] = { nombre: emp, totalSesiones: 0, totalRecaudado: 0, totalPlay4: 0, totalPlay5: 0, totalPingPong: 0, totalControlesAdicionales: 0, tiempoTotalMinutos: 0 };
+    empleadosMap[emp].totalSesiones++;
+    empleadosMap[emp].totalRecaudado           += play.total           || 0;
+    empleadosMap[emp].totalPlay4               += play.totalPlay4      || 0;
+    empleadosMap[emp].totalPlay5               += play.totalPlay5      || 0;
+    empleadosMap[emp].totalPingPong            += play.totalPingPong   || 0;
+    empleadosMap[emp].totalControlesAdicionales += play.controlAdicional || 0;
+    empleadosMap[emp].tiempoTotalMinutos       += play.tiempoPagado    || 0;
+
+    const lugar = play.lugarDeJuego || 'Desconocido';
+    if (!lugaresMap[lugar]) lugaresMap[lugar] = { lugar, totalSesiones: 0, totalRecaudado: 0, tiempoTotalMinutos: 0 };
+    lugaresMap[lugar].totalSesiones++;
+    lugaresMap[lugar].totalRecaudado    += play.total        || 0;
+    lugaresMap[lugar].tiempoTotalMinutos += play.tiempoPagado || 0;
+
+    const dia = getDiaCR(play.fecha);
+    if (!diasMap[dia]) diasMap[dia] = { dia, totalSesiones: 0, totalRecaudado: 0, totalPlay4: 0, totalPlay5: 0, totalPingPong: 0 };
+    diasMap[dia].totalSesiones++;
+    diasMap[dia].totalRecaudado += play.total        || 0;
+    diasMap[dia].totalPlay4     += play.totalPlay4   || 0;
+    diasMap[dia].totalPlay5     += play.totalPlay5   || 0;
+    diasMap[dia].totalPingPong  += play.totalPingPong || 0;
+
+    for (const juego of (Array.isArray(play.juegosJugados) ? play.juegosJugados : [])) {
+      if (!juego) continue;
+      const key = juego.trim();
+      if (!juegosMap[key]) juegosMap[key] = { nombre: key, vecesJugado: 0 };
+      juegosMap[key].vecesJugado++;
+    }
+  }
+
+  return {
+    año, mes,
+    nombreMes: NOMBRES_MESES[mes - 1],
+    totalSesiones, totalRecaudado, totalSubtotales, totalCostosControles,
+    totalPlay4, totalPlay5, totalPingPong,
+    sesionesCompletadas, sesionesPendientes, sesionesEnProceso,
+    tiempoTotalPagadoMinutos, tiempoTotalPendienteMinutos, totalControlesAdicionales,
+    porEmpleado: Object.values(empleadosMap),
+    porLugar:    Object.values(lugaresMap),
+    porDia:      Object.values(diasMap).sort((a, b) => a.dia - b.dia),
+    juegosMasJugados: Object.values(juegosMap).sort((a, b) => b.vecesJugado - a.vecesJugado),
+    ultimaActualizacion: new Date(),
+    periodoInicio: inicio,
+    periodoFin:    fin,
+    playsIncluidos: plays.length,
+  };
+};
+
+/**
+ * Regenera el reporte del mes al que pertenece la fecha dada.
+ * Se llama en background tras crear/editar/eliminar un play.
+ * @param {Date} fechaPlay - Fecha UTC del play afectado
+ */
+const regenerarReporteDeFecha = async (fechaPlay) => {
+  try {
+    const crDate = new Date(fechaPlay.toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+    const año    = crDate.getFullYear();
+    const mes    = crDate.getMonth() + 1;
+    const { inicio, fin } = getRangoMesUTC(año, mes);
+
+    const plays = await Play.find({ fecha: { $gte: inicio, $lte: fin } }).lean();
+    const datos = calcularDatosReporte(plays, año, mes, inicio, fin);
+
+    await MonthlyReport.findOneAndUpdate(
+      { año, mes },
+      { $set: datos },
+      { upsert: true, runValidators: true }
+    );
+
+    console.log(`✅ Reporte ${NOMBRES_MESES[mes - 1]} ${año} actualizado automáticamente (${plays.length} plays)`);
+  } catch (err) {
+    // No propagar el error: el play ya se guardó, el reporte se puede regenerar luego
+    console.error('⚠️ Error al regenerar reporte mensual automáticamente:', err.message);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET - Todos los plays con paginación y filtros
+// ─────────────────────────────────────────────────────────────────
+
 export const getAllPlays = async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
+    const page  = parseInt(req.query.page)  || 1;
     const limit = parseInt(req.query.limit) || 5;
-    const skip = (page - 1) * limit;
+    const skip  = (page - 1) * limit;
 
-    // ✅ Filtro por tiempo pendiente
     const filtro = {};
-
     if (req.query.soloPendiente === 'true') {
-      // Solo registros que tengan tiempo pendiente mayor a 0
       filtro.tiempoPendiente = { $gt: 0 };
     } else if (req.query.minPendiente) {
-      // Registros con tiempo pendiente >= al valor enviado (en minutos)
       const minPendiente = parseInt(req.query.minPendiente);
-      if (!isNaN(minPendiente) && minPendiente > 0) {
+      if (!isNaN(minPendiente) && minPendiente > 0)
         filtro.tiempoPendiente = { $gte: minPendiente };
-      }
     }
 
-    const total = await Play.countDocuments(filtro);
-
-    const plays = await Play.find(filtro)
-      .sort({ fecha: -1, createdAt: -1 })
-      .skip(skip)
-      .limit(limit);
-
+    const total      = await Play.countDocuments(filtro);
+    const plays      = await Play.find(filtro).sort({ fecha: -1, createdAt: -1 }).skip(skip).limit(limit);
     const totalPages = Math.ceil(total / limit);
-    const hasNextPage = page < totalPages;
-    const hasPrevPage = page > 1;
 
     res.status(200).json({
       success: true,
       data: plays,
-      pagination: {
-        total,
-        count: plays.length,
-        page,
-        limit,
-        totalPages,
-        hasNextPage,
-        hasPrevPage,
-      },
+      pagination: { total, count: plays.length, page, limit, totalPages, hasNextPage: page < totalPages, hasPrevPage: page > 1 },
     });
   } catch (error) {
     console.error('❌ Error en getAllPlays:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtener los plays',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-    });
+    res.status(500).json({ success: false, message: 'Error al obtener los plays', error: error.message });
   }
 };
 
-// GET - Obtener un play por ID
+// ─────────────────────────────────────────────────────────────────
+// GET - Por ID
+// ─────────────────────────────────────────────────────────────────
+
 export const getPlayById = async (req, res) => {
   try {
     const play = await Play.findById(req.params.id);
-
-    if (!play) {
-      return res.status(404).json({
-        success: false,
-        message: 'Play no encontrado',
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: play,
-    });
+    if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
+    res.status(200).json({ success: true, data: play });
   } catch (error) {
     console.error('❌ Error en getPlayById:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al obtener el play',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-    });
+    res.status(500).json({ success: false, message: 'Error al obtener el play', error: error.message });
   }
 };
 
-// POST - Crear un nuevo play
+// ─────────────────────────────────────────────────────────────────
+// POST - Crear play → regenera reporte del mes automáticamente
+// ─────────────────────────────────────────────────────────────────
+
 export const createPlay = async (req, res) => {
   try {
     console.log('📝 Datos recibidos para crear play:', req.body);
 
     const tipoPlay = determinarTipoPlay(req.body.lugarDeJuego);
+    const costos   = calcularCostos(req.body.lugarDeJuego, req.body.tiempoPagado, req.body.controlAdicional || 0);
 
-    const costos = calcularCostos(
-      req.body.lugarDeJuego,
-      req.body.tiempoPagado,
-      req.body.controlAdicional || 0
-    );
-
-    const totalPlay4 = tipoPlay === 'Play 4' ? costos.total : 0;
-    const totalPlay5 = tipoPlay === 'Play 5' ? costos.total : 0;
-    const totalPingPong = tipoPlay === 'Ping Pong' ? costos.total : 0;
+    const fechaPlay = getUTCDateRanges().hoy.inicio;
 
     const play = new Play({
-      fecha: getUTCDateRanges().hoy.inicio,
-      cliente: req.body.cliente,
-      atendio: req.body.atendio,
-      tiempoPagado: req.body.tiempoPagado,
+      fecha:           fechaPlay,
+      cliente:         req.body.cliente,
+      atendio:         req.body.atendio,
+      tiempoPagado:    req.body.tiempoPagado,
       tiempoPendiente: req.body.tiempoPendiente || 0,
-      horaInicio: req.body.horaInicio,
-      horaFinal: req.body.horaFinal,
-      lugarDeJuego: req.body.lugarDeJuego,
-      tipoPlay: tipoPlay,
-      juegosJugados: req.body.juegosJugados || [],
+      horaInicio:      req.body.horaInicio,
+      horaFinal:       req.body.horaFinal,
+      lugarDeJuego:    req.body.lugarDeJuego,
+      tipoPlay,
+      juegosJugados:   req.body.juegosJugados || [],
       controlAdicional: req.body.controlAdicional || 0,
-      subtotal: costos.subtotal,
-      costoControles: costos.costoControles,
-      total: costos.total,
-      totalPlay4: totalPlay4,
-      totalPlay5: totalPlay5,
-      totalPingPong: totalPingPong,
-      estadoPago: req.body.estadoPago || 'En Proceso',
+      subtotal:        costos.subtotal,
+      costoControles:  costos.costoControles,
+      total:           costos.total,
+      totalPlay4:      tipoPlay === 'Play 4'    ? costos.total : 0,
+      totalPlay5:      tipoPlay === 'Play 5'    ? costos.total : 0,
+      totalPingPong:   tipoPlay === 'Ping Pong' ? costos.total : 0,
+      estadoPago:      req.body.estadoPago || 'En Proceso',
     });
 
     const nuevoPlay = await play.save();
     console.log('✅ Play creado exitosamente:', nuevoPlay._id);
 
-    res.status(201).json({
-      success: true,
-      message: 'Play creado exitosamente',
-      data: nuevoPlay,
-    });
+    // ✅ Regenerar reporte en background (no espera respuesta)
+    regenerarReporteDeFecha(fechaPlay);
+
+    res.status(201).json({ success: true, message: 'Play creado exitosamente', data: nuevoPlay });
   } catch (error) {
     console.error('❌ Error en createPlay:', error);
-    console.error('📦 Body recibido:', req.body);
-
-    res.status(400).json({
-      success: false,
-      message: 'Error al crear el play',
-      error: error.message,
-      errors: error.errors,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      receivedData: process.env.NODE_ENV === 'development' ? req.body : undefined,
-    });
+    res.status(400).json({ success: false, message: 'Error al crear el play', error: error.message, errors: error.errors });
   }
 };
 
-// PUT - Actualizar un play
+// ─────────────────────────────────────────────────────────────────
+// PUT - Actualizar play → regenera reporte del mes automáticamente
+// ─────────────────────────────────────────────────────────────────
+
 export const updatePlay = async (req, res) => {
   try {
-    console.log(`📝 Actualizando play ${req.params.id} con:`, req.body);
+    console.log(`📝 Actualizando play ${req.params.id}`);
 
     const play = await Play.findById(req.params.id);
+    if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
 
-    if (!play) {
-      return res.status(404).json({
-        success: false,
-        message: 'Play no encontrado',
-      });
-    }
+    const fechaOriginal = play.fecha; // guardar antes de modificar
 
-    if (req.body.cliente !== undefined) play.cliente = req.body.cliente;
-    if (req.body.atendio !== undefined) play.atendio = req.body.atendio;
-    if (req.body.tiempoPagado !== undefined) play.tiempoPagado = req.body.tiempoPagado;
-    if (req.body.tiempoPendiente !== undefined) play.tiempoPendiente = req.body.tiempoPendiente;
-    if (req.body.horaInicio !== undefined) play.horaInicio = req.body.horaInicio;
-    if (req.body.horaFinal !== undefined) play.horaFinal = req.body.horaFinal;
-    if (req.body.lugarDeJuego !== undefined) play.lugarDeJuego = req.body.lugarDeJuego;
-    if (req.body.juegosJugados !== undefined) play.juegosJugados = req.body.juegosJugados;
+    if (req.body.cliente          !== undefined) play.cliente          = req.body.cliente;
+    if (req.body.atendio          !== undefined) play.atendio          = req.body.atendio;
+    if (req.body.tiempoPagado     !== undefined) play.tiempoPagado     = req.body.tiempoPagado;
+    if (req.body.tiempoPendiente  !== undefined) play.tiempoPendiente  = req.body.tiempoPendiente;
+    if (req.body.horaInicio       !== undefined) play.horaInicio       = req.body.horaInicio;
+    if (req.body.horaFinal        !== undefined) play.horaFinal        = req.body.horaFinal;
+    if (req.body.lugarDeJuego     !== undefined) play.lugarDeJuego     = req.body.lugarDeJuego;
+    if (req.body.juegosJugados    !== undefined) play.juegosJugados    = req.body.juegosJugados;
     if (req.body.controlAdicional !== undefined) play.controlAdicional = req.body.controlAdicional;
-    if (req.body.estadoPago !== undefined) play.estadoPago = req.body.estadoPago;
+    if (req.body.estadoPago       !== undefined) play.estadoPago       = req.body.estadoPago;
 
-    play.tipoPlay = determinarTipoPlay(play.lugarDeJuego);
-
-    const costos = calcularCostos(
-      play.lugarDeJuego,
-      play.tiempoPagado,
-      play.controlAdicional
-    );
-
-    play.subtotal = costos.subtotal;
+    play.tipoPlay       = determinarTipoPlay(play.lugarDeJuego);
+    const costos        = calcularCostos(play.lugarDeJuego, play.tiempoPagado, play.controlAdicional);
+    play.subtotal       = costos.subtotal;
     play.costoControles = costos.costoControles;
-    play.total = costos.total;
-
-    play.totalPlay4 = play.tipoPlay === 'Play 4' ? costos.total : 0;
-    play.totalPlay5 = play.tipoPlay === 'Play 5' ? costos.total : 0;
-    play.totalPingPong = play.tipoPlay === 'Ping Pong' ? costos.total : 0;
+    play.total          = costos.total;
+    play.totalPlay4     = play.tipoPlay === 'Play 4'    ? costos.total : 0;
+    play.totalPlay5     = play.tipoPlay === 'Play 5'    ? costos.total : 0;
+    play.totalPingPong  = play.tipoPlay === 'Ping Pong' ? costos.total : 0;
 
     const playActualizado = await play.save();
     console.log('✅ Play actualizado exitosamente:', playActualizado._id);
 
-    res.status(200).json({
-      success: true,
-      message: 'Play actualizado exitosamente',
-      data: playActualizado,
-    });
+    // ✅ Regenerar reporte en background
+    regenerarReporteDeFecha(fechaOriginal);
+
+    res.status(200).json({ success: true, message: 'Play actualizado exitosamente', data: playActualizado });
   } catch (error) {
     console.error('❌ Error en updatePlay:', error);
-    console.error('📦 Body recibido:', req.body);
-
-    res.status(400).json({
-      success: false,
-      message: 'Error al actualizar el play',
-      error: error.message,
-      errors: error.errors,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      receivedData: process.env.NODE_ENV === 'development' ? req.body : undefined,
-    });
+    res.status(400).json({ success: false, message: 'Error al actualizar el play', error: error.message, errors: error.errors });
   }
 };
 
-// DELETE - Eliminar un play
+// ─────────────────────────────────────────────────────────────────
+// DELETE - Eliminar play → regenera reporte del mes automáticamente
+// ─────────────────────────────────────────────────────────────────
+
 export const deletePlay = async (req, res) => {
   try {
     console.log(`🗑️ Eliminando play: ${req.params.id}`);
 
     const play = await Play.findById(req.params.id);
+    if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
 
-    if (!play) {
-      return res.status(404).json({
-        success: false,
-        message: 'Play no encontrado',
-      });
-    }
-
+    const fechaPlay = play.fecha; // guardar antes de eliminar
     await play.deleteOne();
     console.log('✅ Play eliminado exitosamente');
 
-    res.status(200).json({
-      success: true,
-      message: 'Play eliminado exitosamente',
-      data: {},
-    });
+    // ✅ Regenerar reporte en background
+    regenerarReporteDeFecha(fechaPlay);
+
+    res.status(200).json({ success: true, message: 'Play eliminado exitosamente', data: {} });
   } catch (error) {
     console.error('❌ Error en deletePlay:', error);
-
-    res.status(500).json({
-      success: false,
-      message: 'Error al eliminar el play',
-      error: error.message,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-    });
+    res.status(500).json({ success: false, message: 'Error al eliminar el play', error: error.message });
   }
 };

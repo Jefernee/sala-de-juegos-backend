@@ -2,6 +2,12 @@ import Inventario from "../models/Inventario.js";
 import cloudinary from "../config/cloudinary.js";
 import { mongoose } from "../db.js";
 import Sale from "../models/sale.js";
+// Helper: fecha actual en zona horaria de Costa Rica
+// medianoche Costa Rica (UTC-6) = 06:00 UTC
+const getFechaCostaRica = () => {
+  const cr = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+  return new Date(Date.UTC(cr.getFullYear(), cr.getMonth(), cr.getDate(), 6, 0, 0, 0));
+};
 
 // GET
 export const getInventario = async (req, res) => {
@@ -49,7 +55,6 @@ export const addProducto = async (req, res) => {
     }
 
     // ✅ 2. VALIDAR IMAGEN BASE64
-    // (el middleware uploadBase64ToCloudinary ya la procesó y dejó la URL en req.cloudinaryUrl)
     if (!req.cloudinaryUrl) {
       console.error("❌ No se recibió imagen o falló la subida a Cloudinary");
       return res.status(400).json({
@@ -59,7 +64,7 @@ export const addProducto = async (req, res) => {
     }
 
     // ✅ 3. VALIDAR CAMPOS REQUERIDOS
-    const requiredFields = ["nombre", "cantidad", "precioCompra", "precioVenta", "fechaCompra"];
+    const requiredFields = ["nombre", "cantidad", "precioCompra", "precioVenta"];
     const missingFields = requiredFields.filter((field) => !body[field] && body[field] !== 0);
 
     if (missingFields.length > 0) {
@@ -80,8 +85,8 @@ export const addProducto = async (req, res) => {
       cantidad: Number(body.cantidad),
       precioCompra: Number(body.precioCompra),
       precioVenta: Number(body.precioVenta),
-      fechaCompra: new Date(body.fechaCompra),
-      imagen: req.cloudinaryUrl,                          // ✅ URL de Cloudinary
+      fechaCompra: getFechaCostaRica(), // ✅ Asignada automáticamente en hora Costa Rica
+      imagen: req.cloudinaryUrl,
       seVende: body.seVende === "true" || body.seVende === true,
       createdBy: userId,
     });
@@ -110,7 +115,6 @@ export const addProducto = async (req, res) => {
     } catch (mongoError) {
       console.error("❌ Fallo crítico en MongoDB:", mongoError);
 
-      // Limpiar imagen de Cloudinary si el save falló
       if (req.cloudinaryPublicId) {
         try {
           console.log("🧹 Limpiando imagen de Cloudinary...");
@@ -128,14 +132,12 @@ export const addProducto = async (req, res) => {
       });
     }
 
-    // ✅ RESUMEN FINAL
     const tiempoTotal = Date.now() - inicioTotal;
     console.log("\n📊 ========== RESUMEN DE TIEMPOS ==========");
     console.log(`⏱️ Creación objeto: ${tiempoCreacion}ms`);
     console.log(`⏱️ TIEMPO TOTAL: ${tiempoTotal}ms (${(tiempoTotal / 1000).toFixed(2)}s)`);
     console.log("==========================================\n");
 
-    // ✅ RESPUESTA EXITOSA
     return res.status(201).json({
       message: "Producto agregado exitosamente",
       producto: savedProducto,
@@ -160,7 +162,13 @@ export const addProducto = async (req, res) => {
   }
 };
 
-//put actaulizado con base 64
+// ============================================
+// PUT - ACTUALIZAR PRODUCTO
+// La cantidad NO se sobreescribe: se usa $inc
+// para agregar unidades (reposición de stock).
+// Si cantidadAAgregar es 0 o no viene, el stock
+// no se toca.
+// ============================================
 export const updateProducto = async (req, res) => {
   console.log("========================================");
   console.log("🔵 PETICIÓN PUT RECIBIDA");
@@ -177,7 +185,6 @@ export const updateProducto = async (req, res) => {
       return res.status(400).json({ error: "ID de producto inválido" });
     }
 
-    // Buscar producto actual
     const productoActual = await Inventario.findById(req.params.id);
 
     if (!productoActual) {
@@ -188,30 +195,28 @@ export const updateProducto = async (req, res) => {
     console.log("✅ Producto actual encontrado:", {
       id: productoActual._id,
       nombre: productoActual.nombre,
+      cantidadActual: productoActual.cantidad,
       imagenActual: productoActual.imagen,
     });
 
-    // Preparar datos de actualización
-    const updateData = {
+    // ✅ Campos editables (cantidad NO incluida aquí)
+    const $set = {
       nombre: req.body.nombre,
-      cantidad: Number(req.body.cantidad) || 0,
       precioCompra: Number(req.body.precioCompra) || 0,
       precioVenta: Number(req.body.precioVenta) || 0,
-      fechaCompra: req.body.fechaCompra,
       seVende: req.body.seVende === "true" || req.body.seVende === true,
       updatedAt: new Date(),
     };
 
-    console.log("📦 Datos preparados para actualizar:", updateData);
+    // ✅ Reposición de stock: solo suma, nunca sobreescribe
+    const cantidadAAgregar = Number(req.body.cantidadAAgregar) || 0;
+    console.log(`📦 Unidades a agregar al stock: ${cantidadAAgregar}`);
 
-    // ✅ Si hay nueva imagen (el middleware ya la subió a Cloudinary)
+    // ✅ Imagen: si viene nueva, actualizar URL y eliminar la anterior
     if (req.cloudinaryUrl) {
       console.log("🖼️ Nueva imagen detectada en Cloudinary:", req.cloudinaryUrl);
-      
-      // Agregar nueva URL de imagen
-      updateData.imagen = req.cloudinaryUrl;
+      $set.imagen = req.cloudinaryUrl;
 
-      // ✅ Eliminar imagen anterior de Cloudinary
       if (productoActual.imagen) {
         try {
           const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
@@ -236,22 +241,31 @@ export const updateProducto = async (req, res) => {
           }
         } catch (cloudinaryError) {
           console.error("⚠️ Error al eliminar imagen anterior:", cloudinaryError);
-          // Continuar aunque falle la eliminación
         }
       }
     } else {
       console.log("ℹ️ No se recibió nueva imagen, se mantiene la actual");
     }
 
-    console.log("📝 Datos finales para actualizar:", updateData);
+    // ✅ Construir operación de actualización
+    // $set: actualiza campos editables
+    // $inc: suma unidades al stock (solo si cantidadAAgregar > 0)
+    const updateOperation = { $set };
+    if (cantidadAAgregar > 0) {
+      updateOperation.$inc = { cantidad: cantidadAAgregar };
+      console.log(`➕ Stock: ${productoActual.cantidad} + ${cantidadAAgregar} = ${productoActual.cantidad + cantidadAAgregar}`);
+    } else {
+      console.log("ℹ️ Sin reposición, stock no modificado");
+    }
 
-    // Actualizar producto
+    console.log("📝 Operación final:", JSON.stringify(updateOperation, null, 2));
+
     const productoActualizado = await Inventario.findByIdAndUpdate(
       req.params.id,
-      updateData,
+      updateOperation,
       {
-        new: true, // Retorna el documento actualizado
-        runValidators: true, // Ejecuta validaciones del schema
+        new: true,          // retorna el documento actualizado
+        runValidators: true,
       }
     ).populate("createdBy", "nombre email");
 
@@ -263,6 +277,7 @@ export const updateProducto = async (req, res) => {
     console.log("✅ Producto actualizado exitosamente:", {
       id: productoActualizado._id,
       nombre: productoActualizado.nombre,
+      cantidadNueva: productoActualizado.cantidad,
       imagenNueva: productoActualizado.imagen,
     });
 
@@ -274,7 +289,7 @@ export const updateProducto = async (req, res) => {
   } catch (error) {
     console.error("❌ ERROR EN updateProducto:", error);
     console.error("Stack trace:", error.stack);
-    
+
     res.status(500).json({
       error: error.message || "Error al actualizar producto",
       code: error.code || "UPDATE_ERROR",
@@ -283,7 +298,7 @@ export const updateProducto = async (req, res) => {
   }
 };
 
-// DELETE - ✅ ACTUALIZADO: Elimina producto e imagen de Cloudinary
+// DELETE - Elimina producto e imagen de Cloudinary
 export const deleteProducto = async (req, res) => {
   try {
     const producto = await Inventario.findById(req.params.id);
@@ -310,33 +325,20 @@ export const deleteProducto = async (req, res) => {
         }
 
         if (publicId) {
-          console.log(
-            "Eliminando imagen de Cloudinary con public_id:",
-            publicId,
-          );
-
+          console.log("Eliminando imagen de Cloudinary con public_id:", publicId);
           const result = await cloudinary.uploader.destroy(publicId);
           console.log("Resultado de eliminación en Cloudinary:", result);
 
           if (result.result === "ok") {
             console.log("✅ Imagen eliminada de Cloudinary exitosamente");
           } else {
-            console.warn(
-              "⚠️ Cloudinary respondió pero la imagen puede no existir:",
-              result,
-            );
+            console.warn("⚠️ Cloudinary respondió pero la imagen puede no existir:", result);
           }
         } else {
-          console.error(
-            "❌ No se pudo extraer el public_id de la URL:",
-            producto.imagen,
-          );
+          console.error("❌ No se pudo extraer el public_id de la URL:", producto.imagen);
         }
       } catch (cloudinaryError) {
-        console.error(
-          "❌ Error al eliminar imagen de Cloudinary:",
-          cloudinaryError,
-        );
+        console.error("❌ Error al eliminar imagen de Cloudinary:", cloudinaryError);
       }
     }
 
@@ -352,7 +354,7 @@ export const deleteProducto = async (req, res) => {
   }
 };
 
-// GET PAGINADO - ✅ ACTUALIZADO CON POPULATE
+// GET PAGINADO
 export const getProductosPaginados = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -377,7 +379,7 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select(
-        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt",
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt"
       )
       .populate("createdBy", "nombre email")
       .limit(limit)
@@ -434,7 +436,7 @@ export const getProductosPublicos = async (req, res) => {
     const [productos, totalProducts] = await Promise.all([
       Inventario.find(filter)
         .select(
-          "nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad",
+          "nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad"
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -463,7 +465,7 @@ export const getProductosPublicos = async (req, res) => {
   }
 };
 
-// ⭐ NUEVA VERSIÓN: Obtener productos disponibles para venta ORDENADOS POR MÁS VENDIDOS
+// ⭐ Obtener productos disponibles para venta ORDENADOS POR MÁS VENDIDOS
 export const getProductosParaVenta = async (req, res) => {
   console.log("\n📦 ===== OBTENIENDO PRODUCTOS PARA VENTA =====");
 
@@ -471,13 +473,11 @@ export const getProductosParaVenta = async (req, res) => {
     const { search } = req.query;
     console.log(`🔍 Búsqueda: "${search || "sin filtro"}"`);
 
-    // 1️⃣ Filtro base: productos con stock y disponibles para venta
     let matchQuery = {
       cantidad: { $gt: 0 },
       seVende: true,
     };
 
-    // 2️⃣ Si hay búsqueda, agregar filtros
     if (search && search.trim() !== "") {
       const searchRegex = new RegExp(search.trim(), "i");
       matchQuery.$or = [
@@ -490,28 +490,21 @@ export const getProductosParaVenta = async (req, res) => {
 
     console.log("📊 Calculando productos ordenados por ventas...");
 
-    // 3️⃣ Agregación para obtener productos con total de ventas y ordenarlos
     const productos = await Inventario.aggregate([
-      // PASO 1: Filtrar productos disponibles (con stock y se venden)
       { $match: matchQuery },
-
-      // PASO 2: Buscar cuántas veces se vendió cada producto
       {
         $lookup: {
-          from: "sales", // ⚠️ Nombre de tu colección de ventas en MongoDB
-          let: { productoId: "$_id" }, // Usar _id directamente como ObjectId
+          from: "sales",
+          let: { productoId: "$_id" },
           pipeline: [
-            // Descomponer el array de productos de cada venta
             { $unwind: "$productos" },
-            // Filtrar solo los productos que coincidan con el ID actual
             {
               $match: {
                 $expr: {
-                  $eq: ["$productos.productoId", "$$productoId"], // Comparar ObjectId
+                  $eq: ["$productos.productoId", "$$productoId"],
                 },
               },
             },
-            // Sumar todas las cantidades vendidas
             {
               $group: {
                 _id: null,
@@ -522,8 +515,6 @@ export const getProductosParaVenta = async (req, res) => {
           as: "ventasData",
         },
       },
-
-      // PASO 3: Agregar campo totalVendido (0 si nunca se vendió)
       {
         $addFields: {
           totalVendido: {
@@ -531,29 +522,22 @@ export const getProductosParaVenta = async (req, res) => {
           },
         },
       },
-
-      // PASO 4: Eliminar campo temporal
       {
         $project: {
           ventasData: 0,
         },
       },
-
-      // PASO 5: 🔥 ORDENAR - MÁS VENDIDOS PRIMERO
       {
         $sort: {
-          totalVendido: -1, // -1 = descendente (más vendidos primero)
-          nombre: 1, // 1 = ascendente (alfabético como desempate)
+          totalVendido: -1,
+          nombre: 1,
         },
       },
-
-      // PASO 6: Limitar resultados
       { $limit: 100 },
     ]);
 
     console.log(`✅ ${productos.length} productos encontrados y ordenados`);
 
-    // Mostrar top 5 en consola para debug
     if (productos.length > 0) {
       console.log("\n🏆 Top 5 productos más vendidos:");
       productos.slice(0, 5).forEach((p, i) => {
@@ -564,15 +548,12 @@ export const getProductosParaVenta = async (req, res) => {
       });
     }
 
-    // Respuesta al frontend (mismo formato que antes)
     res.json({
       productos,
       totalEncontrados: productos.length,
     });
 
-    console.log(
-      "✅ Productos enviados al frontend (ordenados por más vendidos)\n",
-    );
+    console.log("✅ Productos enviados al frontend (ordenados por más vendidos)\n");
   } catch (error) {
     console.error("\n❌ Error al obtener productos para venta:", error);
     console.error("Mensaje:", error.message);
