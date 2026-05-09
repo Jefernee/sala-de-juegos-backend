@@ -57,6 +57,16 @@ const inventarioSchema = new Schema({
     default: 'producto',
   },
 
+  // Para ingredientes a granel (helado, sirope, etc.)
+  // unidad: qué representa cada número (ej. "bolas", "ml", "gr", "unidades")
+  // cantidadPorEnvase: cuántas unidades trae 1 compra (ej. 500 para botella de 500ml)
+  // nombreEnvase: cómo se llama el envase (ej. "botella", "balde", "paquete")
+  // Cuando cantidadPorEnvase está definido, el admin puede reponer por envases
+  // y el sistema multiplica automáticamente.
+  unidad: { type: String, default: 'unidades', trim: true },
+  cantidadPorEnvase: { type: Number, default: null, min: 0.01 },
+  nombreEnvase: { type: String, default: null, trim: true },
+
   // ─────────────────────────────────────────────────────────────────
   // Hecho por Claude Code — Lista de ingredientes que componen la receta.
   // Solo se usa cuando tipo === 'receta'.

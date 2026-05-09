@@ -179,10 +179,13 @@ export const addProducto = async (req, res) => {
       cantidad: Number(body.cantidad),
       precioCompra: Number(body.precioCompra),
       precioVenta: Number(body.precioVenta),
-      fechaCompra: getFechaCostaRica(), // ✅ Asignada automáticamente en hora Costa Rica
+      fechaCompra: getFechaCostaRica(),
       imagen: req.cloudinaryUrl,
       seVende: body.seVende === "true" || body.seVende === true,
       tipo: 'producto',
+      unidad: body.unidad?.trim() || 'unidades',
+      cantidadPorEnvase: body.cantidadPorEnvase ? Number(body.cantidadPorEnvase) : null,
+      nombreEnvase: body.nombreEnvase?.trim() || null,
       createdBy: userId,
     });
 
@@ -303,6 +306,10 @@ export const updateProducto = async (req, res) => {
       updatedAt: new Date(),
     };
 
+    if (req.body.unidad !== undefined)           $set.unidad           = req.body.unidad?.trim() || 'unidades';
+    if (req.body.cantidadPorEnvase !== undefined) $set.cantidadPorEnvase = req.body.cantidadPorEnvase ? Number(req.body.cantidadPorEnvase) : null;
+    if (req.body.nombreEnvase !== undefined)      $set.nombreEnvase      = req.body.nombreEnvase?.trim() || null;
+
     // ─────────────────────────────────────────────────────────────────
     // Hecho por Claude Code — Actualización de ingredientes de una receta.
     // Si viene el campo 'receta' en el body, se validan y actualizan
@@ -354,12 +361,25 @@ export const updateProducto = async (req, res) => {
       console.log(`📋 Receta actualizada con ${recetaValidada.length} ingrediente(s)`);
     }
 
-    // ✅ Reposición de stock: solo suma, nunca sobreescribe
-    // Hecho por Claude Code — Las recetas no tienen stock propio; se ignora cantidadAAgregar para ellas.
+    // ✅ Reposición de stock: solo suma, nunca sobreescribe.
+    // Soporta dos modos:
+    //   - cantidadAAgregar: número directo de unidades base (ej. 500 ml)
+    //   - envasesAAgregar: número de envases comprados; se multiplica por cantidadPorEnvase
+    //     (ej. 2 botellas × 500 ml/botella = 1000 ml). Requiere cantidadPorEnvase configurado.
+    // Las recetas no tienen stock propio; se ignora cualquier reposición.
     const esReceta = productoActual.tipo === 'receta' || req.body.tipo === 'receta';
-    const cantidadAAgregar = esReceta ? 0 : (Number(req.body.cantidadAAgregar) || 0);
-    if (esReceta && req.body.cantidadAAgregar > 0) {
-      console.log('ℹ️ Ignorando cantidadAAgregar en receta (las recetas no tienen stock propio)');
+    let cantidadAAgregar = 0;
+    if (!esReceta) {
+      const envasesAAgregar = Number(req.body.envasesAAgregar) || 0;
+      const porEnvase = productoActual.cantidadPorEnvase || ($set.cantidadPorEnvase ?? null);
+      if (envasesAAgregar > 0 && porEnvase) {
+        cantidadAAgregar = envasesAAgregar * porEnvase;
+        console.log(`📦 Reposición por envases: ${envasesAAgregar} ${productoActual.nombreEnvase || 'envase(s)'} × ${porEnvase} = ${cantidadAAgregar} ${productoActual.unidad || 'unidades'}`);
+      } else {
+        cantidadAAgregar = Number(req.body.cantidadAAgregar) || 0;
+      }
+    } else {
+      console.log('ℹ️ Ignorando reposición en receta (las recetas no tienen stock propio)');
     }
     console.log(`📦 Unidades a agregar al stock: ${cantidadAAgregar}`);
 
@@ -530,8 +550,7 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select(
-        // Hecho por Claude Code — se agregaron tipo y receta para soportar productos compuestos
-        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo receta createdBy createdAt updatedAt"
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo receta unidad cantidadPorEnvase nombreEnvase createdBy createdAt updatedAt"
       )
       .populate("createdBy", "nombre email")
       .limit(limit)
@@ -680,7 +699,7 @@ export const getProductosParaVenta = async (req, res) => {
     }
 
     const recetasRaw = await Inventario.find(matchRecetas)
-      .populate('receta.ingredienteId', 'nombre cantidad precioCompra')
+      .populate('receta.ingredienteId', 'nombre cantidad precioCompra unidad cantidadPorEnvase nombreEnvase')
       .lean();
 
     const recetasConStock = [];
@@ -794,7 +813,7 @@ export const getIngredientes = async (req, res) => {
     }
 
     const ingredientes = await Inventario.find(filtro)
-      .select('nombre cantidad precioCompra precioVenta imagen seVende tipo')
+      .select('nombre cantidad precioCompra precioVenta imagen seVende tipo unidad cantidadPorEnvase nombreEnvase')
       .sort({ nombre: 1 })
       .lean();
 
