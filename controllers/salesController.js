@@ -136,8 +136,17 @@ export const addSale = async (req, res) => {
     const vueltoCalculado = montoPagado - total;
     if (Math.abs(vuelto - vueltoCalculado) > 0.01) return res.status(400).json({ error: "El vuelto calculado no coincide", vueltoRecibido: vuelto, vueltoEsperado: vueltoCalculado });
 
-    const productosValidados = [];
-    const productosConCosto  = [];
+    const productosConCosto = [];
+
+    // ─────────────────────────────────────────────────────────────────
+    // Hecho por Claude Code — Mapa unificado de descuentos de inventario.
+    // Consolida los descuentos de productos simples Y de ingredientes de
+    // recetas en un solo lugar, para aplicarlos atómicamente al final.
+    // Esto evita problemas si el mismo ingrediente aparece en varias
+    // recetas vendidas en la misma transacción (ej. helado en cono y gelatina).
+    // Clave: id del ítem en Inventario | Valor: cantidad total a descontar
+    // ─────────────────────────────────────────────────────────────────
+    const decrementMap = new Map();
 
     for (let i = 0; i < productos.length; i++) {
       const item = productos[i];
@@ -147,17 +156,79 @@ export const addSale = async (req, res) => {
       const subtotalCalculado = item.cantidad * item.precioVenta;
       if (Math.abs(item.subtotal - subtotalCalculado) > 0.01) return res.status(400).json({ error: "Subtotal incorrecto", producto: item.nombre, subtotalRecibido: item.subtotal, subtotalEsperado: subtotalCalculado });
 
-      const productoDB = await Inventario.findById(item.productoId);
-      if (!productoDB)          return res.status(404).json({ error: `Producto "${item.nombre}" no encontrado` });
-      if (!productoDB.seVende)  return res.status(400).json({ error: `"${productoDB.nombre}" no está disponible para venta` });
-      if (productoDB.cantidad < item.cantidad) return res.status(400).json({ error: `Stock insuficiente para "${productoDB.nombre}"`, producto: { nombre: productoDB.nombre, solicitado: item.cantidad, disponible: productoDB.cantidad } });
+      // Hecho por Claude Code — Para recetas necesitamos los ingredientes poblados
+      const productoDB = await Inventario.findById(item.productoId)
+        .populate('receta.ingredienteId', 'nombre cantidad precioCompra tipo');
+
+      if (!productoDB)         return res.status(404).json({ error: `Producto "${item.nombre}" no encontrado` });
+      if (!productoDB.seVende) return res.status(400).json({ error: `"${productoDB.nombre}" no está disponible para venta` });
       if (Math.abs(productoDB.precioVenta - item.precioVenta) > 0.01) return res.status(400).json({ error: `El precio de "${productoDB.nombre}" ha cambiado`, producto: { nombre: productoDB.nombre, precioEnCarrito: item.precioVenta, precioActual: productoDB.precioVenta } });
 
-      const costoUnitario = productoDB.precioCompra || 0;
-      const costoSubtotal = costoUnitario * item.cantidad;
+      let costoUnitario;
+      let costoSubtotal;
+
+      if (productoDB.tipo === 'receta') {
+        // ─────────────────────────────────────────────────────────────
+        // Hecho por Claude Code — Lógica de venta para RECETAS.
+        // En lugar de descontar el stock de la receta misma (que no existe),
+        // se descuenta cada ingrediente individualmente.
+        // El costo se calcula en tiempo real sumando precioCompra de ingredientes.
+        // ─────────────────────────────────────────────────────────────
+        if (!productoDB.receta || productoDB.receta.length === 0) {
+          return res.status(400).json({ error: `La receta "${productoDB.nombre}" no tiene ingredientes configurados. Configúrela antes de vender.` });
+        }
+
+        costoUnitario = 0;
+
+        for (const comp of productoDB.receta) {
+          const ing = comp.ingredienteId;
+          if (!ing) {
+            return res.status(400).json({ error: `Un ingrediente de la receta "${productoDB.nombre}" ya no existe en inventario. Actualice la receta.` });
+          }
+
+          const cantidadNecesaria = comp.cantidad * item.cantidad;
+          const claveIng = ing._id.toString();
+
+          // Considerar lo ya planificado para descontar en esta misma venta
+          const yaDescontado = decrementMap.get(claveIng) || 0;
+          const stockReal = ing.cantidad - yaDescontado;
+
+          if (stockReal < cantidadNecesaria) {
+            return res.status(400).json({
+              error: `Stock insuficiente de "${ing.nombre}" para preparar "${productoDB.nombre}"`,
+              producto: {
+                receta: productoDB.nombre,
+                ingrediente: ing.nombre,
+                necesario: cantidadNecesaria,
+                disponible: stockReal,
+              },
+            });
+          }
+
+          decrementMap.set(claveIng, yaDescontado + cantidadNecesaria);
+          costoUnitario += (ing.precioCompra || 0) * comp.cantidad;
+        }
+
+        costoSubtotal = costoUnitario * item.cantidad;
+
+      } else {
+        // ─────────────────────────────────────────────────────────────
+        // Lógica original para PRODUCTOS SIMPLES
+        // ─────────────────────────────────────────────────────────────
+        const claveProducto = productoDB._id.toString();
+        const yaDescontado = decrementMap.get(claveProducto) || 0;
+        const stockReal = productoDB.cantidad - yaDescontado;
+
+        if (stockReal < item.cantidad) {
+          return res.status(400).json({ error: `Stock insuficiente para "${productoDB.nombre}"`, producto: { nombre: productoDB.nombre, solicitado: item.cantidad, disponible: stockReal } });
+        }
+
+        decrementMap.set(claveProducto, yaDescontado + item.cantidad);
+        costoUnitario = productoDB.precioCompra || 0;
+        costoSubtotal = costoUnitario * item.cantidad;
+      }
 
       productosConCosto.push({ productoId: item.productoId, nombre: item.nombre, cantidad: item.cantidad, precioVenta: item.precioVenta, subtotal: item.subtotal, costoUnitario, costoSubtotal });
-      productosValidados.push({ id: productoDB._id, cantidadVendida: item.cantidad, cantidadActual: productoDB.cantidad });
     }
 
     const totalCalculado = productos.reduce((sum, item) => sum + item.subtotal, 0);
@@ -171,8 +242,10 @@ export const addSale = async (req, res) => {
     const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email });
     const ventaGuardada = await newSale.save();
 
-    for (const prod of productosValidados) {
-      await Inventario.findByIdAndUpdate(prod.id, { cantidad: prod.cantidadActual - prod.cantidadVendida, updatedAt: new Date() });
+    // Hecho por Claude Code — Descontar inventario con $inc atómico para todos los ítems
+    // (tanto productos simples como ingredientes de recetas, ya consolidados en decrementMap).
+    for (const [id, cantidad] of decrementMap) {
+      await Inventario.findByIdAndUpdate(id, { $inc: { cantidad: -cantidad }, updatedAt: new Date() });
     }
 
     res.status(201).json({ message: "Venta registrada exitosamente", venta: ventaGuardada });

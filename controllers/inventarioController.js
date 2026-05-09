@@ -39,6 +39,7 @@ export const addProducto = async (req, res) => {
     precioVenta: body.precioVenta,
     fechaCompra: body.fechaCompra,
     seVende: body.seVende,
+    tipo: body.tipo || 'producto',
     imagenCloudinary: req.cloudinaryUrl ? `✅ URL presente: ${req.cloudinaryUrl}` : "❌ ausente",
   });
   console.log("👤 Usuario autenticado:", req.user);
@@ -53,6 +54,99 @@ export const addProducto = async (req, res) => {
         code: "UNAUTHORIZED",
       });
     }
+
+    const tipo = body.tipo === 'receta' ? 'receta' : 'producto';
+
+    // ─────────────────────────────────────────────────────────────────
+    // Hecho por Claude Code — Rama para crear una RECETA (producto compuesto).
+    // Las recetas no tienen stock propio ni requieren imagen obligatoria.
+    // Su costo se calcula dinámicamente al momento de la venta.
+    // ─────────────────────────────────────────────────────────────────
+    if (tipo === 'receta') {
+      if (!body.nombre || !body.precioVenta) {
+        return res.status(400).json({
+          error: 'Faltan campos obligatorios para la receta: nombre, precioVenta',
+          code: 'MISSING_FIELDS',
+        });
+      }
+
+      const recetaRaw = typeof body.receta === 'string'
+        ? JSON.parse(body.receta)
+        : body.receta;
+
+      if (!Array.isArray(recetaRaw) || recetaRaw.length === 0) {
+        return res.status(400).json({
+          error: 'La receta debe tener al menos un ingrediente',
+          code: 'RECETA_VACIA',
+        });
+      }
+
+      // Validar que no haya ingredientes duplicados
+      const idsUnicos = new Set(recetaRaw.map(r => r.ingredienteId?.toString()));
+      if (idsUnicos.size !== recetaRaw.length) {
+        return res.status(400).json({ error: 'La receta tiene ingredientes duplicados', code: 'INGREDIENTE_DUPLICADO' });
+      }
+
+      // Verificar que cada ingrediente exista y no sea otra receta
+      const ingredienteIds = recetaRaw.map(r => r.ingredienteId).filter(Boolean);
+      const ingredientesDB = await Inventario.find({
+        _id: { $in: ingredienteIds },
+        tipo: { $ne: 'receta' }, // Las recetas no pueden ser ingrediente de otra receta
+      }).lean();
+
+      if (ingredientesDB.length !== ingredienteIds.length) {
+        return res.status(400).json({
+          error: 'Uno o más ingredientes no existen o son recetas (las recetas no pueden ser ingrediente de otra receta)',
+          code: 'INGREDIENTE_INVALIDO',
+        });
+      }
+
+      const ingredientesMap = new Map(ingredientesDB.map(i => [i._id.toString(), i]));
+      const recetaValidada = [];
+
+      for (const comp of recetaRaw) {
+        if (!comp.ingredienteId || !comp.cantidad || Number(comp.cantidad) <= 0) {
+          return res.status(400).json({
+            error: 'Cada ingrediente debe tener un ID válido y una cantidad mayor a 0',
+            code: 'INGREDIENTE_DATOS_INVALIDOS',
+          });
+        }
+        const ingredienteDB = ingredientesMap.get(comp.ingredienteId.toString());
+        if (!ingredienteDB) {
+          return res.status(400).json({ error: `Ingrediente con ID "${comp.ingredienteId}" no encontrado`, code: 'INGREDIENTE_NO_ENCONTRADO' });
+        }
+        recetaValidada.push({
+          ingredienteId: comp.ingredienteId,
+          nombre: ingredienteDB.nombre, // guardado para referencia rápida
+          cantidad: Number(comp.cantidad),
+        });
+      }
+
+      const nuevaReceta = new Inventario({
+        nombre: body.nombre,
+        cantidad: 0,           // Las recetas no tienen stock propio
+        precioCompra: 0,       // Se calcula dinámicamente en cada venta
+        precioVenta: Number(body.precioVenta),
+        fechaCompra: getFechaCostaRica(),
+        imagen: req.cloudinaryUrl || null,
+        seVende: body.seVende === 'false' || body.seVende === false ? false : true,
+        tipo: 'receta',
+        receta: recetaValidada,
+        createdBy: userId,
+      });
+
+      const savedReceta = await nuevaReceta.save();
+      console.log(`✅ Receta "${savedReceta.nombre}" creada con ${recetaValidada.length} ingrediente(s)`);
+
+      return res.status(201).json({
+        message: 'Receta creada exitosamente',
+        producto: savedReceta,
+      });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Rama original: PRODUCTO SIMPLE (tipo: 'producto')
+    // ─────────────────────────────────────────────────────────────────
 
     // ✅ 2. VALIDAR IMAGEN BASE64
     if (!req.cloudinaryUrl) {
@@ -88,6 +182,7 @@ export const addProducto = async (req, res) => {
       fechaCompra: getFechaCostaRica(), // ✅ Asignada automáticamente en hora Costa Rica
       imagen: req.cloudinaryUrl,
       seVende: body.seVende === "true" || body.seVende === true,
+      tipo: 'producto',
       createdBy: userId,
     });
 
@@ -208,8 +303,64 @@ export const updateProducto = async (req, res) => {
       updatedAt: new Date(),
     };
 
+    // ─────────────────────────────────────────────────────────────────
+    // Hecho por Claude Code — Actualización de ingredientes de una receta.
+    // Si viene el campo 'receta' en el body, se validan y actualizan
+    // los ingredientes. Solo aplica cuando el item es tipo 'receta'.
+    // ─────────────────────────────────────────────────────────────────
+    if (req.body.receta !== undefined) {
+      const tipoFinal = req.body.tipo || productoActual.tipo || 'producto';
+      if (tipoFinal !== 'receta') {
+        return res.status(400).json({ error: 'Solo se puede actualizar la receta de un producto de tipo "receta"' });
+      }
+
+      const recetaRaw = typeof req.body.receta === 'string'
+        ? JSON.parse(req.body.receta)
+        : req.body.receta;
+
+      if (!Array.isArray(recetaRaw) || recetaRaw.length === 0) {
+        return res.status(400).json({ error: 'La receta debe tener al menos un ingrediente' });
+      }
+
+      // Validar duplicados
+      const idsUnicos = new Set(recetaRaw.map(r => r.ingredienteId?.toString()));
+      if (idsUnicos.size !== recetaRaw.length) {
+        return res.status(400).json({ error: 'La receta tiene ingredientes duplicados' });
+      }
+
+      const ingredienteIds = recetaRaw.map(r => r.ingredienteId).filter(Boolean);
+      const ingredientesDB = await Inventario.find({
+        _id: { $in: ingredienteIds },
+        tipo: { $ne: 'receta' },
+      }).lean();
+
+      if (ingredientesDB.length !== ingredienteIds.length) {
+        return res.status(400).json({ error: 'Uno o más ingredientes no existen o son recetas' });
+      }
+
+      const ingMap = new Map(ingredientesDB.map(i => [i._id.toString(), i]));
+      const recetaValidada = [];
+
+      for (const comp of recetaRaw) {
+        if (!comp.ingredienteId || !comp.cantidad || Number(comp.cantidad) <= 0) {
+          return res.status(400).json({ error: 'Cada ingrediente debe tener ID y cantidad mayor a 0' });
+        }
+        const ing = ingMap.get(comp.ingredienteId.toString());
+        if (!ing) return res.status(400).json({ error: `Ingrediente "${comp.ingredienteId}" no encontrado` });
+        recetaValidada.push({ ingredienteId: comp.ingredienteId, nombre: ing.nombre, cantidad: Number(comp.cantidad) });
+      }
+
+      $set.receta = recetaValidada;
+      console.log(`📋 Receta actualizada con ${recetaValidada.length} ingrediente(s)`);
+    }
+
     // ✅ Reposición de stock: solo suma, nunca sobreescribe
-    const cantidadAAgregar = Number(req.body.cantidadAAgregar) || 0;
+    // Hecho por Claude Code — Las recetas no tienen stock propio; se ignora cantidadAAgregar para ellas.
+    const esReceta = productoActual.tipo === 'receta' || req.body.tipo === 'receta';
+    const cantidadAAgregar = esReceta ? 0 : (Number(req.body.cantidadAAgregar) || 0);
+    if (esReceta && req.body.cantidadAAgregar > 0) {
+      console.log('ℹ️ Ignorando cantidadAAgregar en receta (las recetas no tienen stock propio)');
+    }
     console.log(`📦 Unidades a agregar al stock: ${cantidadAAgregar}`);
 
     // ✅ Imagen: si viene nueva, actualizar URL y eliminar la anterior
@@ -379,7 +530,8 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select(
-        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende createdBy createdAt updatedAt"
+        // Hecho por Claude Code — se agregaron tipo y receta para soportar productos compuestos
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo receta createdBy createdAt updatedAt"
       )
       .populate("createdBy", "nombre email")
       .limit(limit)
@@ -466,6 +618,9 @@ export const getProductosPublicos = async (req, res) => {
 };
 
 // ⭐ Obtener productos disponibles para venta ORDENADOS POR MÁS VENDIDOS
+// Hecho por Claude Code — Se extendió para incluir recetas con stock calculado
+// a partir de sus ingredientes. Ambos tipos (producto y receta) se mezclan
+// y ordenan por totalVendido antes de enviarse al frontend.
 export const getProductosParaVenta = async (req, res) => {
   console.log("\n📦 ===== OBTENIENDO PRODUCTOS PARA VENTA =====");
 
@@ -473,94 +628,179 @@ export const getProductosParaVenta = async (req, res) => {
     const { search } = req.query;
     console.log(`🔍 Búsqueda: "${search || "sin filtro"}"`);
 
-    let matchQuery = {
+    // ── 1. Productos simples (tipo != 'receta') ──────────────────────
+    let matchQuerySimples = {
       cantidad: { $gt: 0 },
       seVende: true,
+      tipo: { $ne: 'receta' }, // Excluir recetas de esta consulta
     };
 
     if (search && search.trim() !== "") {
       const searchRegex = new RegExp(search.trim(), "i");
-      matchQuery.$or = [
+      matchQuerySimples.$or = [
         { nombre: searchRegex },
         { categoria: searchRegex },
         { codigo: searchRegex },
       ];
-      console.log(`   Aplicando filtro de búsqueda: "${search}"`);
     }
 
-    console.log("📊 Calculando productos ordenados por ventas...");
+    console.log("📊 Calculando productos simples ordenados por ventas...");
 
-    const productos = await Inventario.aggregate([
-      { $match: matchQuery },
+    const productosSimples = await Inventario.aggregate([
+      { $match: matchQuerySimples },
       {
         $lookup: {
           from: "sales",
           let: { productoId: "$_id" },
           pipeline: [
             { $unwind: "$productos" },
-            {
-              $match: {
-                $expr: {
-                  $eq: ["$productos.productoId", "$$productoId"],
-                },
-              },
-            },
-            {
-              $group: {
-                _id: null,
-                totalVendido: { $sum: "$productos.cantidad" },
-              },
-            },
+            { $match: { $expr: { $eq: ["$productos.productoId", "$$productoId"] } } },
+            { $group: { _id: null, totalVendido: { $sum: "$productos.cantidad" } } },
           ],
           as: "ventasData",
         },
       },
       {
         $addFields: {
-          totalVendido: {
-            $ifNull: [{ $arrayElemAt: ["$ventasData.totalVendido", 0] }, 0],
-          },
+          totalVendido: { $ifNull: [{ $arrayElemAt: ["$ventasData.totalVendido", 0] }, 0] },
         },
       },
-      {
-        $project: {
-          ventasData: 0,
-        },
-      },
-      {
-        $sort: {
-          totalVendido: -1,
-          nombre: 1,
-        },
-      },
+      { $project: { ventasData: 0 } },
+      { $sort: { totalVendido: -1, nombre: 1 } },
       { $limit: 100 },
     ]);
 
-    console.log(`✅ ${productos.length} productos encontrados y ordenados`);
+    // ── 2. Recetas con stock calculado a partir de ingredientes ──────
+    // Hecho por Claude Code — Para cada receta activa, se verifica cuántas
+    // unidades pueden prepararse con el stock actual de sus ingredientes.
+    // stockDisponible = floor(min(ingrediente.cantidad / cantidadRequerida))
+    let matchRecetas = { tipo: 'receta', seVende: true };
+    if (search && search.trim() !== "") {
+      matchRecetas.nombre = { $regex: search.trim(), $options: 'i' };
+    }
 
-    if (productos.length > 0) {
-      console.log("\n🏆 Top 5 productos más vendidos:");
-      productos.slice(0, 5).forEach((p, i) => {
-        console.log(`   ${i + 1}. ${p.nombre}`);
-        console.log(`      - Vendidos: ${p.totalVendido || 0}`);
-        console.log(`      - Stock: ${p.cantidad}`);
-        console.log(`      - Precio: ₡${p.precioVenta}`);
+    const recetasRaw = await Inventario.find(matchRecetas)
+      .populate('receta.ingredienteId', 'nombre cantidad precioCompra')
+      .lean();
+
+    const recetasConStock = [];
+
+    for (const receta of recetasRaw) {
+      if (!receta.receta || receta.receta.length === 0) continue;
+
+      let stockDisponible = Infinity;
+      let costoCalculado = 0;
+      let ingredienteFaltante = false;
+
+      for (const comp of receta.receta) {
+        const ing = comp.ingredienteId;
+        if (!ing) { ingredienteFaltante = true; break; }
+
+        const unidadesHacibles = Math.floor(ing.cantidad / comp.cantidad);
+        stockDisponible = Math.min(stockDisponible, unidadesHacibles);
+        costoCalculado += (ing.precioCompra || 0) * comp.cantidad;
+      }
+
+      if (ingredienteFaltante || stockDisponible <= 0 || stockDisponible === Infinity) continue;
+
+      recetasConStock.push({
+        ...receta,
+        cantidad: stockDisponible,          // Stock calculado para el frontend
+        precioCompra: costoCalculado,        // Costo real calculado de ingredientes
+        totalVendido: 0,                     // Se calcula a continuación
       });
     }
 
-    res.json({
-      productos,
-      totalEncontrados: productos.length,
-    });
+    // Obtener totalVendido de las recetas en una sola consulta
+    if (recetasConStock.length > 0) {
+      const recetaIds = recetasConStock.map(r => r._id);
+      const ventasRecetas = await Sale.aggregate([
+        { $unwind: '$productos' },
+        { $match: { 'productos.productoId': { $in: recetaIds } } },
+        { $group: { _id: '$productos.productoId', totalVendido: { $sum: '$productos.cantidad' } } },
+      ]);
+      const ventasMap = new Map(ventasRecetas.map(v => [v._id.toString(), v.totalVendido]));
+      for (const r of recetasConStock) {
+        r.totalVendido = ventasMap.get(r._id.toString()) || 0;
+      }
+    }
 
-    console.log("✅ Productos enviados al frontend (ordenados por más vendidos)\n");
+    // ── 3. Combinar, ordenar y limitar a 100 ────────────────────────
+    const todos = [...productosSimples, ...recetasConStock]
+      .sort((a, b) => b.totalVendido - a.totalVendido || a.nombre.localeCompare(b.nombre))
+      .slice(0, 100);
+
+    console.log(`✅ ${productosSimples.length} producto(s) simple(s) + ${recetasConStock.length} receta(s) = ${todos.length} total`);
+
+    if (todos.length > 0) {
+      console.log("\n🏆 Top 5 más vendidos (productos + recetas):");
+      todos.slice(0, 5).forEach((p, i) => {
+        console.log(`   ${i + 1}. [${p.tipo || 'producto'}] ${p.nombre} — vendidos: ${p.totalVendido || 0} — stock: ${p.cantidad}`);
+      });
+    }
+
+    res.json({ productos: todos, totalEncontrados: todos.length });
+
+    console.log("✅ Productos y recetas enviados al frontend\n");
   } catch (error) {
     console.error("\n❌ Error al obtener productos para venta:", error);
     console.error("Mensaje:", error.message);
     console.error("Stack:", error.stack);
-    res.status(500).json({
-      error: "Error al obtener productos",
-      message: error.message,
-    });
+    res.status(500).json({ error: "Error al obtener productos", message: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Hecho por Claude Code — GET /api/products/:id
+// Devuelve un producto o receta por su ID incluyendo los campos
+// tipo y receta (con ingredientes populados) para que el frontend
+// pueda cargar el formulario de edición correctamente.
+// ─────────────────────────────────────────────────────────────────
+export const getProductoById = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ error: 'ID de producto inválido' });
+    }
+
+    const producto = await Inventario.findById(req.params.id)
+      .populate('createdBy', 'nombre email')
+      .populate('receta.ingredienteId', 'nombre cantidad precioCompra precioVenta imagen seVende tipo')
+      .lean();
+
+    if (!producto) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+
+    res.json({ producto });
+  } catch (error) {
+    console.error('Error al obtener producto por ID:', error);
+    res.status(500).json({ error: 'Error al obtener producto', mensaje: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Hecho por Claude Code — GET /api/products/ingredientes
+// Retorna todos los ítems de inventario que pueden usarse como
+// ingredientes al armar una receta (solo tipo: 'producto').
+// El frontend lo usa para el selector de ingredientes en el
+// formulario de creación/edición de recetas.
+// ─────────────────────────────────────────────────────────────────
+export const getIngredientes = async (req, res) => {
+  try {
+    const { search } = req.query;
+    const filtro = { tipo: { $ne: 'receta' } };
+    if (search && search.trim()) {
+      filtro.nombre = { $regex: search.trim(), $options: 'i' };
+    }
+
+    const ingredientes = await Inventario.find(filtro)
+      .select('nombre cantidad precioCompra precioVenta imagen seVende tipo')
+      .sort({ nombre: 1 })
+      .lean();
+
+    res.json({ ingredientes, total: ingredientes.length });
+  } catch (error) {
+    console.error('Error al obtener ingredientes:', error);
+    res.status(500).json({ error: 'Error al obtener ingredientes', mensaje: error.message });
   }
 };
