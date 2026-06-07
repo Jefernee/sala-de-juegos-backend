@@ -129,11 +129,12 @@ export const uploadBase64ToCloudinary = async (req, res, next) => {
 
 // ─────────────────────────────────────────────────────────────────
 // Hecho por Claude Code — Subida de imágenes para ACTIVOS DE LA SALA
-// Procesa hasta DOS imágenes base64 del body con las mismas
+// Procesa hasta TRES imágenes base64 del body con las mismas
 // validaciones que uploadBase64ToCloudinary:
-//   - imagenBase64        → req.cloudinaryUrl        (foto del artículo)
-//   - imagenFacturaBase64 → req.cloudinaryFacturaUrl (foto de la factura)
-// Si una falla después de subir la otra, se hace rollback en Cloudinary.
+//   - imagenBase64                  → req.cloudinaryUrl                  (foto del artículo)
+//   - imagenFacturaBase64           → req.cloudinaryFacturaUrl           (factura de compra)
+//   - imagenFacturaReparacionBase64 → req.cloudinaryFacturaReparacionUrl (factura de reparación)
+// Si una falla después de subir las otras, se hace rollback en Cloudinary.
 // ─────────────────────────────────────────────────────────────────
 
 const ALLOWED_MIMES = ["data:image/jpeg", "data:image/jpg", "data:image/png", "data:image/webp"];
@@ -208,6 +209,14 @@ export const uploadActivoImagesToCloudinary = async (req, res, next) => {
       reqUrl: "cloudinaryFacturaUrl",
       reqPublicId: "cloudinaryFacturaPublicId",
       etiqueta: "imagen de la factura",
+    },
+    {
+      bodyBase64: "imagenFacturaReparacionBase64",
+      bodyNombre: "imagenFacturaReparacionNombre",
+      bodyMime: "imagenFacturaReparacionMimeType",
+      reqUrl: "cloudinaryFacturaReparacionUrl",
+      reqPublicId: "cloudinaryFacturaReparacionPublicId",
+      etiqueta: "imagen de la factura de reparación",
     },
   ];
 

@@ -52,7 +52,11 @@ const activoSalaSchema = new mongoose.Schema(
     reparadoPor: { type: String, default: null, trim: true },
     // URLs de Cloudinary (las imágenes llegan como base64 y se suben igual que inventario)
     imagenUrl: { type: String, default: null },
+    // Factura de compra del activo (no se toca al registrar reparaciones)
     imagenFacturaUrl: { type: String, default: null },
+    // Factura de la reparación, separada de la factura de compra.
+    // Solo aplica cuando tipoRegistro === "Reparación".
+    imagenFacturaReparacionUrl: { type: String, default: null },
   },
   { timestamps: true } // createdAt y updatedAt automáticos
 );

@@ -26,7 +26,7 @@ const parseFechaCompra = (valor) => {
 
 // Helper: limpia imágenes recién subidas si falla el guardado (rollback)
 const limpiarImagenesSubidas = async (req) => {
-  for (const publicId of [req.cloudinaryPublicId, req.cloudinaryFacturaPublicId]) {
+  for (const publicId of [req.cloudinaryPublicId, req.cloudinaryFacturaPublicId, req.cloudinaryFacturaReparacionPublicId]) {
     if (!publicId) continue;
     try {
       console.log('🧹 Limpiando imagen de Cloudinary:', publicId);
@@ -114,6 +114,8 @@ export const addActivo = async (req, res) => {
       reparadoPor: esReparacion ? req.body.reparadoPor?.trim() || null : null,
       imagenUrl: req.cloudinaryUrl || null,
       imagenFacturaUrl: req.cloudinaryFacturaUrl || null,
+      // La factura de reparación solo tiene sentido en reparaciones
+      imagenFacturaReparacionUrl: esReparacion ? req.cloudinaryFacturaReparacionUrl || null : null,
     });
 
     try {
@@ -301,10 +303,37 @@ export const updateActivo = async (req, res) => {
         }
         $set.costoReparacion = costoReparacionNum;
       }
+
+      // Factura de reparación: si llegó una nueva, reemplazar y borrar la anterior.
+      // NO toca imagenFacturaUrl (la factura de compra queda intacta).
+      if (req.cloudinaryFacturaReparacionUrl) {
+        console.log('🧾 Nueva imagen de factura de reparación:', req.cloudinaryFacturaReparacionUrl);
+        $set.imagenFacturaReparacionUrl = req.cloudinaryFacturaReparacionUrl;
+        if (activoActual.imagenFacturaReparacionUrl) {
+          await eliminarImagenCloudinary(activoActual.imagenFacturaReparacionUrl);
+        }
+      }
+
+      // Eliminar factura de reparación (solo si NO se subió una nueva en este request)
+      if (req.body.eliminarImagenFacturaReparacion === true && !req.cloudinaryFacturaReparacionUrl) {
+        $set.imagenFacturaReparacionUrl = null;
+        if (activoActual.imagenFacturaReparacionUrl) await eliminarImagenCloudinary(activoActual.imagenFacturaReparacionUrl);
+      }
     } else {
       $set.problemaTecnico = null;
       $set.reparadoPor = null;
       $set.costoReparacion = null;
+      // Al dejar de ser reparación, la factura de reparación deja de aplicar:
+      // limpiar la URL y borrar el archivo del storage si existía.
+      $set.imagenFacturaReparacionUrl = null;
+      if (activoActual.imagenFacturaReparacionUrl) {
+        await eliminarImagenCloudinary(activoActual.imagenFacturaReparacionUrl);
+      }
+      // Si en esta misma petición se subió una factura de reparación, queda
+      // huérfana al pasar a "Nueva Compra": borrarla del storage.
+      if (req.cloudinaryFacturaReparacionUrl) {
+        await eliminarImagenCloudinary(req.cloudinaryFacturaReparacionUrl);
+      }
     }
 
     // Imagen del artículo: si llegó una nueva, reemplazar y borrar la anterior
@@ -316,13 +345,25 @@ export const updateActivo = async (req, res) => {
       }
     }
 
-    // Imagen de la factura: igual
+    // Eliminar foto del artículo (solo si NO se subió una nueva en este request)
+    if (req.body.eliminarImagen === true && !req.cloudinaryUrl) {
+      $set.imagenUrl = null;
+      if (activoActual.imagenUrl) await eliminarImagenCloudinary(activoActual.imagenUrl);
+    }
+
+    // Factura de compra: igual. NO toca imagenFacturaReparacionUrl.
     if (req.cloudinaryFacturaUrl) {
-      console.log('🧾 Nueva imagen de factura:', req.cloudinaryFacturaUrl);
+      console.log('🧾 Nueva imagen de factura de compra:', req.cloudinaryFacturaUrl);
       $set.imagenFacturaUrl = req.cloudinaryFacturaUrl;
       if (activoActual.imagenFacturaUrl) {
         await eliminarImagenCloudinary(activoActual.imagenFacturaUrl);
       }
+    }
+
+    // Eliminar factura de compra (solo si NO se subió una nueva en este request)
+    if (req.body.eliminarImagenFactura === true && !req.cloudinaryFacturaUrl) {
+      $set.imagenFacturaUrl = null;
+      if (activoActual.imagenFacturaUrl) await eliminarImagenCloudinary(activoActual.imagenFacturaUrl);
     }
 
     if (Object.keys($set).length === 0) {
@@ -362,6 +403,7 @@ export const deleteActivo = async (req, res) => {
     // Si falla la limpieza no se bloquea la eliminación del registro.
     if (activo.imagenUrl) await eliminarImagenCloudinary(activo.imagenUrl);
     if (activo.imagenFacturaUrl) await eliminarImagenCloudinary(activo.imagenFacturaUrl);
+    if (activo.imagenFacturaReparacionUrl) await eliminarImagenCloudinary(activo.imagenFacturaReparacionUrl);
 
     await ActivoSala.findByIdAndDelete(req.params.id);
 
