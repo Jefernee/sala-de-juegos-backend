@@ -127,6 +127,180 @@ export const uploadBase64ToCloudinary = async (req, res, next) => {
   }
 };
 
+// ─────────────────────────────────────────────────────────────────
+// Hecho por Claude Code — Subida de imágenes para ACTIVOS DE LA SALA
+// Procesa hasta DOS imágenes base64 del body con las mismas
+// validaciones que uploadBase64ToCloudinary:
+//   - imagenBase64        → req.cloudinaryUrl        (foto del artículo)
+//   - imagenFacturaBase64 → req.cloudinaryFacturaUrl (foto de la factura)
+// Si una falla después de subir la otra, se hace rollback en Cloudinary.
+// ─────────────────────────────────────────────────────────────────
+
+const ALLOWED_MIMES = ["data:image/jpeg", "data:image/jpg", "data:image/png", "data:image/webp"];
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+
+/**
+ * Valida un data URL base64. Retorna null si es válido,
+ * o un objeto { status, body } con el error a responder.
+ */
+const validarImagenBase64 = (imagenBase64, etiqueta) => {
+  if (!imagenBase64.startsWith("data:image/")) {
+    return {
+      status: 400,
+      body: {
+        message: `La ${etiqueta} debe ser un data URL válido (data:image/...;base64,...)`,
+        code: "INVALID_IMAGE_FORMAT",
+      },
+    };
+  }
+
+  const mimePrefix = imagenBase64.substring(0, imagenBase64.indexOf(";"));
+  if (!ALLOWED_MIMES.some((m) => imagenBase64.startsWith(m))) {
+    return {
+      status: 415,
+      body: {
+        message: `Formato de ${etiqueta} no soportado. Usa JPG, PNG o WebP.`,
+        code: "UNSUPPORTED_FORMAT",
+        received: mimePrefix,
+      },
+    };
+  }
+
+  const base64Data = imagenBase64.split(",")[1];
+  if (!base64Data) {
+    return {
+      status: 400,
+      body: { message: `La ${etiqueta} base64 está malformada.`, code: "MALFORMED_BASE64" },
+    };
+  }
+
+  const approximateSizeBytes = Math.ceil((base64Data.length * 3) / 4);
+  if (approximateSizeBytes > MAX_IMAGE_SIZE) {
+    const sizeMB = (approximateSizeBytes / (1024 * 1024)).toFixed(2);
+    return {
+      status: 413,
+      body: {
+        message: `La ${etiqueta} es demasiado grande (${sizeMB} MB). El límite es 5 MB.`,
+        code: "FILE_TOO_LARGE",
+        limit: "5MB",
+      },
+    };
+  }
+
+  return null; // válida
+};
+
+export const uploadActivoImagesToCloudinary = async (req, res, next) => {
+  // Definición de los dos campos de imagen que puede traer el body
+  const campos = [
+    {
+      bodyBase64: "imagenBase64",
+      bodyNombre: "imagenNombre",
+      bodyMime: "imagenMimeType",
+      reqUrl: "cloudinaryUrl",
+      reqPublicId: "cloudinaryPublicId",
+      etiqueta: "imagen del artículo",
+    },
+    {
+      bodyBase64: "imagenFacturaBase64",
+      bodyNombre: "imagenFacturaNombre",
+      bodyMime: "imagenFacturaMimeType",
+      reqUrl: "cloudinaryFacturaUrl",
+      reqPublicId: "cloudinaryFacturaPublicId",
+      etiqueta: "imagen de la factura",
+    },
+  ];
+
+  const publicIdsSubidos = []; // para rollback si algo falla a medio camino
+
+  const rollback = async () => {
+    for (const publicId of publicIdsSubidos) {
+      try {
+        console.log("🧹 Rollback: eliminando imagen de Cloudinary:", publicId);
+        await cloudinary.uploader.destroy(publicId);
+      } catch (cleanupError) {
+        console.error("❌ No se pudo limpiar Cloudinary en rollback:", cleanupError.message);
+      }
+    }
+  };
+
+  try {
+    for (const campo of campos) {
+      const imagenBase64 = req.body[campo.bodyBase64];
+
+      // Imagen opcional: si no viene, continuar con la siguiente
+      if (!imagenBase64) continue;
+
+      // Validar antes de subir
+      const errorValidacion = validarImagenBase64(imagenBase64, campo.etiqueta);
+      if (errorValidacion) {
+        await rollback();
+        return res.status(errorValidacion.status).json(errorValidacion.body);
+      }
+
+      const base64Data = imagenBase64.split(",")[1];
+      const approximateSizeBytes = Math.ceil((base64Data.length * 3) / 4);
+
+      console.log(`📤 Subiendo ${campo.etiqueta} a Cloudinary:`, {
+        nombre: req.body[campo.bodyNombre] || "sin-nombre",
+        tamañoAprox: `${(approximateSizeBytes / 1024).toFixed(2)} KB`,
+      });
+
+      const inicioUpload = Date.now();
+
+      const result = await cloudinary.uploader.upload(imagenBase64, {
+        folder: "activos-sala",
+        allowed_formats: ["jpg", "jpeg", "png", "webp"],
+        transformation: [{ width: 1000, height: 1000, crop: "limit" }],
+        resource_type: "image",
+        timeout: 60000,
+      });
+
+      console.log(`✅ ${campo.etiqueta} subida en ${Date.now() - inicioUpload}ms → ${result.secure_url}`);
+
+      req[campo.reqUrl] = result.secure_url;
+      req[campo.reqPublicId] = result.public_id;
+      publicIdsSubidos.push(result.public_id);
+
+      // Limpiar campos base64 del body para no guardarlos en MongoDB
+      delete req.body[campo.bodyBase64];
+      delete req.body[campo.bodyNombre];
+      delete req.body[campo.bodyMime];
+    }
+
+    next();
+  } catch (error) {
+    console.error("❌ Error al subir imagen de activo a Cloudinary:", {
+      message: error.message,
+      http_code: error.http_code,
+      name: error.name,
+    });
+
+    await rollback();
+
+    if (error.http_code === 499 || error.message?.includes("timeout")) {
+      return res.status(504).json({
+        message: "Timeout al subir la imagen. Intenta con una imagen más pequeña o verifica tu conexión.",
+        code: "CLOUDINARY_TIMEOUT",
+      });
+    }
+
+    if (error.http_code === 400) {
+      return res.status(400).json({
+        message: "Formato de imagen inválido o datos corruptos.",
+        code: "INVALID_IMAGE",
+        details: process.env.NODE_ENV === "development" ? error.message : undefined,
+      });
+    }
+
+    return res.status(500).json({
+      message: "Error al subir la imagen a Cloudinary. Intenta nuevamente.",
+      code: "CLOUDINARY_ERROR",
+      details: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
 /**
  * Maneja errores de payload demasiado grande
  */

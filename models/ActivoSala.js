@@ -1,0 +1,63 @@
+// models/ActivoSala.js
+// Hecho por Claude Code — Módulo de Administración: Activos de la Sala
+// Compras y reparaciones del equipo físico (máquinas, muebles, etc.)
+import mongoose from 'mongoose';
+
+export const TIPOS_REGISTRO = ['Nueva Compra', 'Reparación'];
+export const ESTADOS_ACTIVO = ['En uso', 'En reparación', 'Reparado', 'Fuera de servicio', 'Almacenado'];
+
+const activoSalaSchema = new mongoose.Schema(
+  {
+    tipoRegistro: {
+      type: String,
+      enum: {
+        values: TIPOS_REGISTRO,
+        message: 'Tipo de registro inválido: {VALUE}',
+      },
+      required: [true, 'El tipo de registro es obligatorio'],
+    },
+    nombre: {
+      type: String,
+      required: [true, 'El nombre es obligatorio'],
+      trim: true,
+    },
+    // Costo del producto/compra. NO se modifica al registrar reparaciones.
+    costo: {
+      type: Number,
+      required: [true, 'El costo es obligatorio'],
+      min: [1, 'El costo debe ser mayor a 0'],
+    },
+    // Costo de la reparación, separado del costo del producto.
+    // Solo aplica cuando tipoRegistro === "Reparación".
+    costoReparacion: {
+      type: Number,
+      default: null,
+      min: [1, 'El costo de reparación debe ser mayor a 0'],
+    },
+    estado: {
+      type: String,
+      enum: {
+        values: ESTADOS_ACTIVO,
+        message: 'Estado inválido: {VALUE}',
+      },
+      default: 'En uso',
+    },
+    descripcion: { type: String, default: null, trim: true },
+    numeroFactura: { type: String, default: null, trim: true },
+    notas: { type: String, default: null, trim: true },
+    // Viene del frontend como "YYYY-MM-DD", se guarda como Date (puede ser null)
+    fechaCompraReparacion: { type: Date, default: null },
+    // Solo cuando tipoRegistro === "Reparación":
+    problemaTecnico: { type: String, default: null, trim: true },
+    reparadoPor: { type: String, default: null, trim: true },
+    // URLs de Cloudinary (las imágenes llegan como base64 y se suben igual que inventario)
+    imagenUrl: { type: String, default: null },
+    imagenFacturaUrl: { type: String, default: null },
+  },
+  { timestamps: true } // createdAt y updatedAt automáticos
+);
+
+// Índice para el listado ordenado por más reciente
+activoSalaSchema.index({ createdAt: -1 });
+
+export default mongoose.model('ActivoSala', activoSalaSchema);

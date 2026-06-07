@@ -111,6 +111,43 @@ export const logDateRanges = (ranges) => {
 
 
 /**
+ * Hecho por Claude Code — Crea un filtro de MongoDB para un mes completo
+ * en zona horaria de Costa Rica (UTC-6).
+ * Medianoche CR del día 1 = 06:00 UTC. Rango [inicio, fin) exclusivo:
+ * no hay huecos ni traslapes entre meses consecutivos.
+ * @param {number} mes - Mes (1-12)
+ * @param {number} anio - Año (ej. 2026)
+ * @returns {Object} Filtro para el campo fecha: { $gte, $lt }
+ */
+export const crearFiltroMes = (mes, anio) => {
+  const inicio = new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0));
+  const fin = new Date(Date.UTC(anio, mes, 1, 6, 0, 0, 0)); // día 1 del mes siguiente
+  return { $gte: inicio, $lt: fin };
+};
+
+/**
+ * Hecho por Claude Code — Genera la fecha que el backend guarda para un
+ * registro del mes elegido en el frontend. El frontend NUNCA envía fechas:
+ * solo elige mes y año, y el backend resuelve la fecha a guardar.
+ *   - Mes actual → fecha/hora actual (timestamp real)
+ *   - Mes pasado → día 1 de ese mes a medianoche de Costa Rica (06:00 UTC),
+ *     para que caiga dentro del filtro de ese mes
+ *   - Mes futuro → null (no permitido)
+ * @param {number} mes - Mes elegido (1-12)
+ * @param {number} anio - Año elegido (ej. 2026)
+ * @returns {Date|null} Fecha a guardar o null si el mes es futuro
+ */
+export const crearFechaParaMes = (mes, anio) => {
+  const cr = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+  const mesActual = cr.getMonth() + 1;
+  const anioActual = cr.getFullYear();
+
+  if (anio > anioActual || (anio === anioActual && mes > mesActual)) return null; // futuro
+  if (anio === anioActual && mes === mesActual) return new Date(); // ahora mismo
+  return new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0)); // día 1, medianoche CR
+};
+
+/**
  *  Nueva función Convierte fechas de formulario a filtro MongoDB
  * Convierte una fecha en formato YYYY-MM-DD a rango UTC de Costa Rica
  * @param {string} fechaInicio - Fecha inicio en formato YYYY-MM-DD

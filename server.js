@@ -15,6 +15,10 @@ import saleReportRoutes from './routes/Salereportroutes.js';
 import monthlyReportRoutes from './routes/Monthlyreportplaysroutes.js';
 import { handleMulterError } from './middlewares/upload.js';
 import ahorroRoutes from './routes/ahorroRoutes.js';
+// Hecho por Claude Code — Módulo de Administración
+import gananciasRoutes from './routes/ganancias.js';
+import pagosServiciosRoutes from './routes/pagosServicios.js';
+import activosSalaRoutes from './routes/activosSala.js';
 import dns from 'dns';
 
 // ============================================
@@ -168,6 +172,11 @@ app.use("/api/plays", playsRoutes);
 app.use('/api/ahorro', ahorroRoutes);
 app.use('/api/monthly-reports', monthlyReportRoutes);
 app.use('/api/ventas-reports', saleReportRoutes);
+
+// Hecho por Claude Code — Módulo de Administración (todas con Bearer token)
+app.use('/api/ganancias', gananciasRoutes);
+app.use('/api/pagos-servicios', pagosServiciosRoutes);
+app.use('/api/activos-sala', activosSalaRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
