@@ -33,8 +33,14 @@ export const migrarPlacasActivos = async () => {
     .lean();
 
   for (const activo of sinPlaca) {
-    // updateOne evita validadores/immutable: es una migración controlada.
-    await ActivoSala.updateOne({ _id: activo._id }, { $set: { numeroPlaca: siguiente } });
+    // IMPORTANTE: numeroPlaca es immutable en el schema, y Mongoose descarta
+    // silenciosamente los campos inmutables en update(). Por eso escribimos con
+    // el driver NATIVO (.collection), que sí persiste el valor. Es una migración
+    // controlada, así que saltarse esa protección es lo correcto aquí.
+    await ActivoSala.collection.updateOne(
+      { _id: activo._id },
+      { $set: { numeroPlaca: siguiente } }
+    );
     siguiente++;
   }
 
