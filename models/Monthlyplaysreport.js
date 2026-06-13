@@ -12,6 +12,8 @@ const empleadoResumenSchema = new mongoose.Schema(
     totalPlay5: { type: Number, default: 0 },
     totalPingPong: { type: Number, default: 0 },
     totalControlesAdicionales: { type: Number, default: 0 },
+    // Monto (₡) cobrado por controles extra de este empleado.
+    totalCostosControles: { type: Number, default: 0 },
     tiempoTotalMinutos: { type: Number, default: 0 },
   },
   { _id: false }

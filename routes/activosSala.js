@@ -10,6 +10,7 @@ import {
   addActivo,
   getActivos,
   getActivoById,
+  getProximaPlaca,
   updateActivo,
   deleteActivo,
 } from '../controllers/activosSalaController.js';
@@ -17,6 +18,9 @@ import {
 const router = express.Router();
 
 router.get('/', authMiddleware, getActivos);                // [?page=&limit=&search=&tipoRegistro=]
+
+// IMPORTANTE: va ANTES de '/:id' para que no se interprete como un id.
+router.get('/proxima-placa', authMiddleware, getProximaPlaca);
 
 router.post('/',
   authMiddleware,

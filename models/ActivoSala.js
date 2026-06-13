@@ -8,6 +8,18 @@ export const ESTADOS_ACTIVO = ['En uso', 'En reparación', 'Reparado', 'Fuera de
 
 const activoSalaSchema = new mongoose.Schema(
   {
+    // Número de placa: identificador consecutivo y único del activo.
+    // Se asigna automáticamente al crear (ver controlador) y es INMUTABLE:
+    // una vez puesto no se puede cambiar, para que sea estable y nunca se
+    // dupliquen placas. En el frontend se muestra con formato (ej. "PLACA-0007").
+    // sparse: permite que documentos antiguos sin placa convivan hasta el backfill.
+    numeroPlaca: {
+      type: Number,
+      unique: true,
+      sparse: true,
+      immutable: true,
+      min: [1, 'El número de placa debe ser mayor a 0'],
+    },
     tipoRegistro: {
       type: String,
       enum: {

@@ -65,7 +65,7 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
         nombre: emp,
         totalSesiones: 0, totalRecaudado: 0,
         totalPlay4: 0, totalPlay5: 0, totalPingPong: 0,
-        totalControlesAdicionales: 0, tiempoTotalMinutos: 0,
+        totalControlesAdicionales: 0, totalCostosControles: 0, tiempoTotalMinutos: 0,
       };
     }
     empleadosMap[emp].totalSesiones++;
@@ -74,6 +74,7 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     empleadosMap[emp].totalPlay5              += play.totalPlay5     || 0;
     empleadosMap[emp].totalPingPong           += play.totalPingPong  || 0;
     empleadosMap[emp].totalControlesAdicionales += play.controlAdicional || 0;
+    empleadosMap[emp].totalCostosControles    += play.costoControles || 0;
     empleadosMap[emp].tiempoTotalMinutos      += play.tiempoPagado   || 0;
  
     // ── Por lugar ─────────────────────────────

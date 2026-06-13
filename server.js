@@ -19,6 +19,8 @@ import ahorroRoutes from './routes/ahorroRoutes.js';
 import gananciasRoutes from './routes/ganancias.js';
 import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
+import activosReportRoutes from './routes/activosReportRoutes.js';
+import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import dns from 'dns';
 
 // ============================================
@@ -127,6 +129,22 @@ const connectDB = async () => {
 await connectDB();
 
 // ============================================
+// 🔢 MIGRACIÓN: número de placa de activos
+// Idempotente. Asegura que todos los activos existentes tengan placa.
+// Si falla, NO se detiene el servidor (no es crítico para arrancar).
+// ============================================
+try {
+  const { asignados, ultimaPlaca } = await migrarPlacasActivos();
+  if (asignados > 0) {
+    console.log(`🔢 Placas asignadas a ${asignados} activo(s) existentes (hasta #${ultimaPlaca}).`);
+  } else {
+    console.log('🔢 Activos: todos ya tienen número de placa.');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar placas de activos (no crítico):', e.message);
+}
+
+// ============================================
 // 📊 MONITOREO DE MEMORIA
 // ============================================
 const mem = process.memoryUsage();
@@ -177,6 +195,7 @@ app.use('/api/ventas-reports', saleReportRoutes);
 app.use('/api/ganancias', gananciasRoutes);
 app.use('/api/pagos-servicios', pagosServiciosRoutes);
 app.use('/api/activos-sala', activosSalaRoutes);
+app.use('/api/activos-reports', activosReportRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)

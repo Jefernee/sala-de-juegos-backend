@@ -7,8 +7,12 @@
 //   - Eliminar: borra el documento y sus imágenes de Cloudinary
 import mongoose from 'mongoose';
 import ActivoSala, { TIPOS_REGISTRO, ESTADOS_ACTIVO } from '../models/ActivoSala.js';
+import { siguienteSecuencia, fijarSecuenciaMinima, verSecuencia } from '../models/Counter.js';
 import { eliminarImagenCloudinary } from '../utils/cloudinaryUtils.js';
 import cloudinary from '../config/cloudinary.js';
+
+// Nombre del contador usado para el número de placa consecutivo de los activos.
+const CONTADOR_PLACA = 'numeroPlacaActivo';
 
 // Helper: convierte "YYYY-MM-DD" a Date en medianoche de COSTA RICA (06:00 UTC),
 // igual que el resto de la app (crearFiltroFechas, inventario). Si se guardara en
@@ -100,7 +104,12 @@ export const addActivo = async (req, res) => {
       }
     }
 
+    // Número de placa consecutivo y único, asignado automáticamente.
+    // Es inmutable: identifica el activo de forma estable de por vida.
+    const numeroPlaca = await siguienteSecuencia(CONTADOR_PLACA);
+
     const activo = new ActivoSala({
+      numeroPlaca,
       tipoRegistro,
       nombre: nombre.trim(),
       costo: costoNum,
@@ -119,8 +128,25 @@ export const addActivo = async (req, res) => {
     });
 
     try {
-      const savedActivo = await activo.save();
-      console.log(`✅ Activo "${savedActivo.nombre}" registrado (${savedActivo.tipoRegistro})`);
+      let savedActivo;
+      try {
+        savedActivo = await activo.save();
+      } catch (err) {
+        // Si por una carrera (o un contador desincronizado) la placa choca,
+        // resincronizamos el contador al máximo existente y reintentamos una vez.
+        if (err?.code === 11000 && err?.keyPattern?.numeroPlaca) {
+          const ultimo = await ActivoSala.findOne({ numeroPlaca: { $ne: null } })
+            .sort({ numeroPlaca: -1 })
+            .select('numeroPlaca')
+            .lean();
+          await fijarSecuenciaMinima(CONTADOR_PLACA, ultimo?.numeroPlaca || 0);
+          activo.numeroPlaca = await siguienteSecuencia(CONTADOR_PLACA);
+          savedActivo = await activo.save();
+        } else {
+          throw err;
+        }
+      }
+      console.log(`✅ Activo "${savedActivo.nombre}" registrado (${savedActivo.tipoRegistro}) — placa #${savedActivo.numeroPlaca}`);
       return res.status(201).json({ message: 'Activo registrado', data: savedActivo });
     } catch (mongoError) {
       // Rollback: si falla MongoDB, no dejar imágenes huérfanas en Cloudinary
@@ -192,6 +218,31 @@ export const getActivos = async (req, res) => {
   } catch (error) {
     console.error('❌ Error al obtener activos:', error);
     res.status(500).json({ message: 'Error al obtener los activos', error: error.message });
+  }
+};
+
+// ============================================
+// GET /api/activos-sala/proxima-placa — Previsualizar el próximo número de placa
+// Devuelve el número que se le asignará al PRÓXIMO activo creado, sin consumirlo.
+// Es solo una vista previa: el número real se asigna de forma atómica al guardar,
+// así que si dos personas crean a la vez podría diferir (poco probable en uso real).
+// ============================================
+export const getProximaPlaca = async (req, res) => {
+  try {
+    const [seqActual, ultimo] = await Promise.all([
+      verSecuencia(CONTADOR_PLACA),
+      ActivoSala.findOne({ numeroPlaca: { $ne: null } })
+        .sort({ numeroPlaca: -1 })
+        .select('numeroPlaca')
+        .lean(),
+    ]);
+    // Tomamos el mayor entre el contador y la placa más alta existente, por si
+    // el contador aún no está sincronizado (ej. antes de la primera creación).
+    const proximaPlaca = Math.max(seqActual, ultimo?.numeroPlaca || 0) + 1;
+    return res.status(200).json({ proximaPlaca });
+  } catch (error) {
+    console.error('❌ Error al obtener la próxima placa:', error);
+    return res.status(500).json({ message: 'Error al obtener la próxima placa', error: error.message });
   }
 };
 
