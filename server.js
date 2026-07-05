@@ -23,6 +23,8 @@ import activosReportRoutes from './routes/activosReportRoutes.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 // Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
+import { seedWhatsappRecipients } from './utils/seedWhatsappRecipients.js';
+import whatsappRecipientsRoutes from './routes/whatsappRecipients.js';
 import dns from 'dns';
 
 // ============================================
@@ -147,8 +149,20 @@ try {
 }
 
 // ============================================
+// 📇 SEMBRAR DESTINATARIOS DE WHATSAPP (idempotente)
+// Si la colección está vacía, siembra el número de CALLMEBOT_RECIPIENTS.
+// A partir de ahí, los destinatarios se administran desde el frontend.
+// ============================================
+try {
+  const { sembrados } = await seedWhatsappRecipients();
+  if (sembrados > 0) console.log(`📇 WhatsApp: ${sembrados} destinatario(s) sembrado(s) desde CALLMEBOT_RECIPIENTS.`);
+} catch (e) {
+  console.error('⚠️ No se pudo sembrar destinatarios de WhatsApp (no crítico):', e.message);
+}
+
+// ============================================
 // 🔔 NOTIFICACIONES DE FIN DE SESIÓN POR WHATSAPP
-// Chequeador que avisa al grupo cuando se agota el tiempo de una sesión.
+// Chequeador de respaldo (el motor principal es el Scheduled Trigger de Atlas).
 // Solo arranca si NOTIFICACIONES_WHATSAPP_ENABLED === 'true'.
 // No es crítico: si algo falla acá, el servidor sigue arrancando.
 // ============================================
@@ -210,6 +224,9 @@ app.use('/api/ganancias', gananciasRoutes);
 app.use('/api/pagos-servicios', pagosServiciosRoutes);
 app.use('/api/activos-sala', activosSalaRoutes);
 app.use('/api/activos-reports', activosReportRoutes);
+
+// Destinatarios de notificaciones WhatsApp (administrados desde el frontend)
+app.use('/api/whatsapp-recipients', whatsappRecipientsRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)

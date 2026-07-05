@@ -1,21 +1,21 @@
 // scripts/testNotificacionWhatsApp.js
 // Hecho por Claude Code — Prueba manual de la integración de WhatsApp (CallMeBot).
 //
-// Manda UN mensaje de prueba a TODOS los destinatarios configurados, para
-// verificar que las variables de entorno y las apikeys funcionan ANTES de
-// conectarlo al evento real. Muestra en consola el resultado de cada número.
+// Manda UN mensaje de prueba a TODOS los destinatarios ACTIVOS de la base de
+// datos, para verificar que las apikeys funcionan. Muestra el resultado de cada
+// número en consola.
 //
 // Uso:
 //   node scripts/testNotificacionWhatsApp.js
 //   node scripts/testNotificacionWhatsApp.js "Mensaje personalizado de prueba"
 //
-// Requiere en el .env:
-//   CALLMEBOT_RECIPIENTS   → lista "numero:apikey" separada por comas.
-// Nota: este script IGNORA NOTIFICACIONES_WHATSAPP_ENABLED a propósito (fuerza el
-// envío) para que puedas probar aunque las notificaciones estén apagadas en prod.
+// Requiere en el .env: MONGO_URI (y destinatarios cargados en la base).
+// Nota: fuerza el envío ignorando NOTIFICACIONES_WHATSAPP_ENABLED, para que
+// puedas probar aunque las notificaciones estén apagadas en prod.
 
+import mongoose from 'mongoose';
 import dotenv from 'dotenv';
-import { formatearHoraCR, parseDestinatarios } from '../utils/notificacionesWhatsApp.js';
+import { formatearHoraCR, obtenerDestinatarios } from '../utils/notificacionesWhatsApp.js';
 
 dotenv.config();
 
@@ -23,13 +23,20 @@ dotenv.config();
 process.env.NOTIFICACIONES_WHATSAPP_ENABLED = 'true';
 
 const run = async () => {
-  const destinatarios = parseDestinatarios();
+  if (!process.env.MONGO_URI) {
+    console.error('❌ Falta MONGO_URI en el archivo .env');
+    process.exit(1);
+  }
+
+  await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
+  console.log('✅ Conectado a MongoDB');
+
+  const destinatarios = await obtenerDestinatarios();
 
   if (destinatarios.length === 0) {
-    console.error('❌ CALLMEBOT_RECIPIENTS está vacío o mal formado en el .env');
-    console.error('   Formato esperado: numero:apikey,numero:apikey');
-    console.error('   Ejemplo: +50688881234:111111,+50677775678:222222');
-    console.error('   Copiá .env.example a .env y completá esa variable.');
+    console.error('❌ No hay destinatarios activos en la base (ni respaldo en CALLMEBOT_RECIPIENTS).');
+    console.error('   Agregá al menos uno desde el frontend, o cargá CALLMEBOT_RECIPIENTS en el .env.');
+    await mongoose.disconnect();
     process.exit(1);
   }
 
@@ -56,6 +63,8 @@ const run = async () => {
   const exitosos = resultados.filter((r) => r.ok).length;
   console.log('');
   console.log(`📊 Total: ${exitosos}/${resultados.length} enviado(s) correctamente.`);
+
+  await mongoose.disconnect();
 
   if (exitosos === 0) {
     console.error('❌ No llegó a nadie. Revisá que cada número tenga SU apikey correcta,');

@@ -15,10 +15,16 @@
 //   - Si falla uno, se loggea y se continúa con los demás.
 //   - Se puede apagar por completo con NOTIFICACIONES_WHATSAPP_ENABLED=false.
 //
+// Los destinatarios se administran desde el frontend y viven en la base de datos
+// (colección whatsapp_recipients). La variable de entorno CALLMEBOT_RECIPIENTS
+// solo se usa para SEMBRAR el primer destinatario si la base está vacía.
+//
 // Variables de entorno (ver .env.example):
-//   CALLMEBOT_RECIPIENTS            → lista "numero:apikey" separada por comas.
-//                                     Ej: +50688881234:111111,+50677775678:222222
+//   CALLMEBOT_RECIPIENTS            → (opcional) semilla inicial "numero:apikey"
+//                                     separada por comas. Ej: +50688881234:111111
 //   NOTIFICACIONES_WHATSAPP_ENABLED → 'true' para activar, cualquier otra cosa lo apaga
+
+import WhatsappRecipient from '../models/WhatsappRecipient.js';
 
 const CALLMEBOT_URL = 'https://api.callmebot.com/whatsapp.php';
 const TIMEOUT_MS = 10000;     // 10 segundos por intento
@@ -68,6 +74,25 @@ export const parseDestinatarios = () => {
       return { phone, apikey };
     })
     .filter(Boolean);
+};
+
+/**
+ * Obtiene los destinatarios ACTIVOS a los que hay que enviar. Fuente de verdad:
+ * la base de datos (colección whatsapp_recipients, administrada desde el frontend).
+ * Si la base falla o está vacía, cae a la variable de entorno como respaldo.
+ * @returns {Promise<Array<{phone: string, apikey: string}>>}
+ */
+export const obtenerDestinatarios = async () => {
+  try {
+    const docs = await WhatsappRecipient.find({ activo: true }).lean();
+    if (docs.length > 0) {
+      return docs.map((d) => ({ phone: d.telefono, apikey: d.apikey }));
+    }
+  } catch (err) {
+    console.error('⚠️ WhatsApp: no se pudo leer destinatarios de la base, uso el respaldo del entorno:', err.message);
+  }
+  // Respaldo: variable de entorno.
+  return parseDestinatarios();
 };
 
 /**
@@ -161,9 +186,9 @@ export const enviarNotificacion = async (texto) => {
     return []; // apagadas por configuración; silencioso a propósito
   }
 
-  const destinatarios = parseDestinatarios();
+  const destinatarios = await obtenerDestinatarios();
   if (destinatarios.length === 0) {
-    console.error('⚠️ WhatsApp: CALLMEBOT_RECIPIENTS vacío o inválido. No hay a quién enviar.');
+    console.error('⚠️ WhatsApp: no hay destinatarios activos (ni en la base ni en el entorno). No hay a quién enviar.');
     return [];
   }
 
