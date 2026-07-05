@@ -124,6 +124,64 @@ export const formatearHoraCR = (fecha) =>
   });
 
 /**
+ * Formatea un monto en colones: "₡1,200". Devuelve '' si no hay monto válido.
+ * @param {number} monto
+ * @returns {string}
+ */
+export const formatearColones = (monto) => {
+  const v = Number(monto);
+  if (!Number.isFinite(v) || v <= 0) return '';
+  // Separador de miles manual (mismo formato que el trigger de Atlas): "₡1,400"
+  const entero = String(Math.round(v));
+  let out = '';
+  for (let i = 0; i < entero.length; i++) {
+    if (i > 0 && (entero.length - i) % 3 === 0) out += ',';
+    out += entero[i];
+  }
+  return '₡' + out;
+};
+
+/**
+ * Construye el mensaje detallado de fin de sesión con toda la info del play.
+ * Solo incluye las líneas que tienen dato (no muestra campos vacíos).
+ * @param {Object} play
+ * @param {Date} [horaFin] - Instante de fin (default: finProgramado o ahora).
+ * @returns {string}
+ */
+export const construirMensajeFinSesion = (play, horaFin) => {
+  const fin = horaFin || play?.finProgramado || new Date();
+  const horaTexto = formatearHoraCR(fin instanceof Date ? fin : new Date(fin));
+
+  const lineas = ['✅ Terminó la partida', ''];
+  lineas.push(`🎮 Consola: ${play?.lugarDeJuego || 'Estación desconocida'}`);
+  if (play?.cliente) lineas.push(`👤 Cliente: ${play.cliente}`);
+  if (play?.atendio) lineas.push(`🧑‍💼 Atendió: ${play.atendio}`);
+  if (play?.horaInicio) lineas.push(`🕐 Inicio: ${play.horaInicio}`);
+  lineas.push(`🏁 Fin: ${horaTexto}`);
+
+  const duracion = formatearDuracion(play?.tiempoPagado);
+  if (duracion) lineas.push(`⏱️ Duración: ${duracion}`);
+
+  if (Number(play?.tiempoPendiente) > 0) {
+    lineas.push(`⏳ Tiempo pendiente: ${formatearDuracion(play.tiempoPendiente)}`);
+  }
+
+  const juegos = Array.isArray(play?.juegosJugados) ? play.juegosJugados.filter(Boolean) : [];
+  if (juegos.length) lineas.push(`🕹️ Juegos: ${juegos.join(', ')}`);
+
+  if (Number(play?.controlAdicional) > 0) {
+    lineas.push(`🎮 Controles adicionales: ${play.controlAdicional}`);
+  }
+
+  const total = formatearColones(play?.total);
+  if (total) lineas.push(`💰 Total: ${total}`);
+
+  if (play?.estadoPago) lineas.push(`💳 Estado: ${play.estadoPago}`);
+
+  return lineas.join('\n');
+};
+
+/**
  * Un intento único de envío con timeout. Lanza si falla (lo maneja enviarNotificacion).
  * @param {string} url
  */
@@ -218,14 +276,7 @@ export const enviarNotificacion = async (texto) => {
  */
 export const notificarFinSesion = async (play, horaFin) => {
   try {
-    const consola = play?.lugarDeJuego || 'Estación desconocida';
-    const fin = horaFin || play?.finProgramado || new Date();
-    const horaTexto = formatearHoraCR(fin instanceof Date ? fin : new Date(fin));
-    const duracion = formatearDuracion(play?.tiempoPagado);
-
-    let mensaje = `✅ Terminó la partida — ${consola} | ${horaTexto}`;
-    if (duracion) mensaje += ` | Duración: ${duracion}`;
-
+    const mensaje = construirMensajeFinSesion(play, horaFin);
     return await enviarNotificacion(mensaje);
   } catch (err) {
     // Blindaje extra: ni siquiera un error al armar el mensaje debe propagarse.

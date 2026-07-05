@@ -61,6 +61,50 @@ exports = async function () {
     return mins + "min";
   };
 
+  // Formatea colones con separador de miles, sin depender de Intl: "₡1,200"
+  const formatearColones = (monto) => {
+    const v = Number(monto);
+    if (!isFinite(v) || v <= 0) return "";
+    const entero = String(Math.round(v));
+    let out = "";
+    for (let i = 0; i < entero.length; i++) {
+      if (i > 0 && (entero.length - i) % 3 === 0) out += ",";
+      out += entero[i];
+    }
+    return "₡" + out;
+  };
+
+  // Arma el mensaje detallado con toda la info del play (omite campos vacíos).
+  const construirMensaje = (play) => {
+    const lineas = ["✅ Terminó la partida", ""];
+    lineas.push("🎮 Consola: " + (play.lugarDeJuego || "Estación desconocida"));
+    if (play.cliente) lineas.push("👤 Cliente: " + play.cliente);
+    if (play.atendio) lineas.push("🧑‍💼 Atendió: " + play.atendio);
+    if (play.horaInicio) lineas.push("🕐 Inicio: " + play.horaInicio);
+    lineas.push("🏁 Fin: " + horaCR(play.finProgramado));
+
+    const duracion = formatearDuracion(play.tiempoPagado);
+    if (duracion) lineas.push("⏱️ Duración: " + duracion);
+
+    if (Number(play.tiempoPendiente) > 0) {
+      lineas.push("⏳ Tiempo pendiente: " + formatearDuracion(play.tiempoPendiente));
+    }
+
+    const juegos = Array.isArray(play.juegosJugados) ? play.juegosJugados.filter(Boolean) : [];
+    if (juegos.length) lineas.push("🕹️ Juegos: " + juegos.join(", "));
+
+    if (Number(play.controlAdicional) > 0) {
+      lineas.push("🎮 Controles adicionales: " + play.controlAdicional);
+    }
+
+    const total = formatearColones(play.total);
+    if (total) lineas.push("💰 Total: " + total);
+
+    if (play.estadoPago) lineas.push("💳 Estado: " + play.estadoPago);
+
+    return lineas.join("\n");
+  };
+
   let procesados = 0;
 
   // Reclamo atómico uno por uno: marco la bandera al leer.
@@ -76,11 +120,7 @@ exports = async function () {
     if (!play) break;
     procesados++;
 
-    const consola = play.lugarDeJuego || "Estación";
-    const hora = horaCR(play.finProgramado);
-    const duracion = formatearDuracion(play.tiempoPagado);
-    let mensaje = "✅ Terminó la partida — " + consola + " | " + hora;
-    if (duracion) mensaje += " | Duración: " + duracion;
+    const mensaje = construirMensaje(play);
 
     for (let i = 0; i < recipients.length; i++) {
       const r = recipients[i];
