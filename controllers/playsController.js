@@ -2,6 +2,7 @@
 import Play from '../models/plays.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
 import { getUTCDateRanges } from '../utils/dateUtils.js';
+import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers de costo y tipo
@@ -341,5 +342,46 @@ export const deletePlay = async (req, res) => {
   } catch (error) {
     console.error('❌ Error en deletePlay:', error);
     res.status(500).json({ success: false, message: 'Error al eliminar el play', error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// POST - Notificar fin de sesión (lo dispara el FRONTEND cuando el
+// cronómetro llega a cero). Manda el WhatsApp al instante.
+//
+// Idempotente y a prueba de doble envío: reclama la notificación de forma
+// atómica (marca notificacionFinEnviada = true al leer). Así, aunque el
+// scheduler de respaldo o una segunda llamada intenten lo mismo, el mensaje
+// sale UNA sola vez. Nunca rompe el flujo del frontend.
+// ─────────────────────────────────────────────────────────────────
+
+export const notificarFinSesionManual = async (req, res) => {
+  try {
+    // Reclamo atómico: solo pasa si todavía NO se había notificado.
+    const play = await Play.findOneAndUpdate(
+      { _id: req.params.id, notificacionFinEnviada: { $ne: true } },
+      { $set: { notificacionFinEnviada: true } },
+      { new: false }
+    );
+
+    if (!play) {
+      // O el play no existe, o ya se había notificado antes.
+      const existe = await Play.exists({ _id: req.params.id });
+      if (!existe) {
+        return res.status(404).json({ success: false, message: 'Play no encontrado' });
+      }
+      return res.status(200).json({ success: true, yaEnviada: true, message: 'La notificación ya se había enviado' });
+    }
+
+    // Envío en background: respondemos YA, no bloqueamos al frontend.
+    // Usamos finProgramado como hora de fin (o ahora si no estuviera).
+    notificarFinSesion(play, play.finProgramado || new Date()).catch((err) =>
+      console.error('❌ Error al notificar fin de sesión (manual):', err?.message)
+    );
+
+    res.status(200).json({ success: true, message: 'Notificación de fin de sesión disparada' });
+  } catch (error) {
+    console.error('❌ Error en notificarFinSesionManual:', error);
+    res.status(500).json({ success: false, message: 'Error al notificar fin de sesión', error: error.message });
   }
 };
