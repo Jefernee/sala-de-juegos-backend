@@ -124,6 +124,26 @@ export const formatearHoraCR = (fecha) =>
   });
 
 /**
+ * Convierte una hora en texto a formato 12h con AM/PM. Ej: "17:12" → "5:12 PM".
+ * Si ya viene con AM/PM o el formato es desconocido, la devuelve tal cual.
+ * @param {string} str
+ * @returns {string}
+ */
+export const formatearHora12 = (str) => {
+  if (!str) return str;
+  const s = String(str).trim();
+  if (/[ap]\.?\s*m\.?/i.test(s)) return s; // ya tiene AM/PM
+  const m = s.match(/^(\d{1,2}):(\d{2})/);
+  if (!m) return s; // formato desconocido → sin tocar
+  let h = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = h >= 12 ? 'PM' : 'AM';
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${min} ${ampm}`;
+};
+
+/**
  * Formatea un monto en colones: "₡1,200". Devuelve '' si no hay monto válido.
  * @param {number} monto
  * @returns {string}
@@ -156,7 +176,7 @@ export const construirMensajeFinSesion = (play, horaFin) => {
   lineas.push(`🎮 Consola: ${play?.lugarDeJuego || 'Estación desconocida'}`);
   if (play?.cliente) lineas.push(`👤 Cliente: ${play.cliente}`);
   if (play?.atendio) lineas.push(`🧑‍💼 Atendió: ${play.atendio}`);
-  if (play?.horaInicio) lineas.push(`🕐 Inicio: ${play.horaInicio}`);
+  if (play?.horaInicio) lineas.push(`🕐 Inicio: ${formatearHora12(play.horaInicio)}`);
   lineas.push(`🏁 Fin: ${horaTexto}`);
 
   const duracion = formatearDuracion(play?.tiempoPagado);
@@ -176,7 +196,7 @@ export const construirMensajeFinSesion = (play, horaFin) => {
   const total = formatearColones(play?.total);
   if (total) lineas.push(`💰 Total: ${total}`);
 
-  if (play?.estadoPago) lineas.push(`💳 Estado: ${play.estadoPago}`);
+  if (play?.estadoPago) lineas.push(`💳 Estado del pago: ${play.estadoPago}`);
 
   return lineas.join('\n');
 };

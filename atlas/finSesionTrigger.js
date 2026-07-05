@@ -61,6 +61,21 @@ exports = async function () {
     return mins + "min";
   };
 
+  // Convierte "17:12" (24h) → "5:12 PM". Si ya tiene AM/PM o es raro, la deja igual.
+  const formatearHora12 = (str) => {
+    if (!str) return str;
+    const s = String(str).trim();
+    if (/[ap]\.?\s*m\.?/i.test(s)) return s;
+    const m = s.match(/^(\d{1,2}):(\d{2})/);
+    if (!m) return s;
+    let h = parseInt(m[1], 10);
+    const min = m[2];
+    const ampm = h >= 12 ? "PM" : "AM";
+    h = h % 12;
+    if (h === 0) h = 12;
+    return h + ":" + min + " " + ampm;
+  };
+
   // Formatea colones con separador de miles, sin depender de Intl: "₡1,200"
   const formatearColones = (monto) => {
     const v = Number(monto);
@@ -80,7 +95,7 @@ exports = async function () {
     lineas.push("🎮 Consola: " + (play.lugarDeJuego || "Estación desconocida"));
     if (play.cliente) lineas.push("👤 Cliente: " + play.cliente);
     if (play.atendio) lineas.push("🧑‍💼 Atendió: " + play.atendio);
-    if (play.horaInicio) lineas.push("🕐 Inicio: " + play.horaInicio);
+    if (play.horaInicio) lineas.push("🕐 Inicio: " + formatearHora12(play.horaInicio));
     lineas.push("🏁 Fin: " + horaCR(play.finProgramado));
 
     const duracion = formatearDuracion(play.tiempoPagado);
@@ -100,7 +115,7 @@ exports = async function () {
     const total = formatearColones(play.total);
     if (total) lineas.push("💰 Total: " + total);
 
-    if (play.estadoPago) lineas.push("💳 Estado: " + play.estadoPago);
+    if (play.estadoPago) lineas.push("💳 Estado del pago: " + play.estadoPago);
 
     return lineas.join("\n");
   };
