@@ -26,15 +26,91 @@ const determinarTipoPlay = (lugarDeJuego) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Fin de sesión para notificaciones WhatsApp (ver utils/finSesionScheduler.js)
-// El play se registra al INICIO de la sesión, así que el tiempo se agota en:
-//   ahora + tiempoPagado minutos.
-// El scheduler dispara el aviso de WhatsApp cuando ese instante ya pasó.
+// Fin de sesión para notificaciones WhatsApp (ver utils/finSesionScheduler.js
+// y atlas/finSesionTrigger.js).
+//
+// finProgramado debe salir del MISMO origen y con la MISMA precisión que la UI,
+// para que BD, interfaz y notificación digan siempre lo mismo. La UI muestra
+// horaInicio/horaFinal (strings a minutos enteros). Por eso finProgramado se
+// deriva de horaFinal (la hora de fin exacta que ve el encargado), anclada al
+// día CR de la creación y con segundos en cero. Respaldos si horaFinal falla.
 // ─────────────────────────────────────────────────────────────────
-const calcularFinProgramado = (tiempoPagado) => {
+
+const DIA_MS = 24 * 60 * 60 * 1000;
+const CR_OFFSET_MS = 6 * 60 * 60 * 1000; // Costa Rica = UTC-6 (sin horario de verano)
+
+// Parsea "5:30 PM", "17:30", "12:30 AM", etc. → { h, min } en 24h. null si no matchea.
+const parseHoraComponentes = (str) => {
+  if (!str) return null;
+  const s = String(str).trim();
+  const m = s.match(/(\d{1,2}):(\d{2})/);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  if (h > 23 || min > 59) return null;
+  const esPM = /p\.?\s*m\.?/i.test(s);
+  const esAM = /a\.?\s*m\.?/i.test(s);
+  if (esPM && h < 12) h += 12;   // 5 PM → 17
+  if (esAM && h === 12) h = 0;   // 12 AM → 0
+  return { h, min };
+};
+
+// Date (UTC) de una hora de pared CR (comp) en el día CR del instante refMs.
+// CR wall-clock → UTC sumando 6h (Date.UTC absorbe el desborde de día si h+6 >= 24).
+const fechaEnDiaCR = (comp, refMs) => {
+  const crRef = new Date(refMs - CR_OFFSET_MS);
+  return new Date(Date.UTC(
+    crRef.getUTCFullYear(), crRef.getUTCMonth(), crRef.getUTCDate(),
+    comp.h + 6, comp.min, 0, 0,
+  ));
+};
+
+/**
+ * Calcula finProgramado con el mismo origen que la UI. Nunca lanza.
+ * 1º) desde horaFinal; 2º) horaInicio + tiempoPagado; 3º) Date.now() + tiempoPagado.
+ * Contempla el cruce de medianoche.
+ * @param {string} horaInicio
+ * @param {string} horaFinal
+ * @param {number} tiempoPagado - minutos
+ * @param {number} [refMs] - instante de referencia (default: ahora)
+ * @returns {Date|null}
+ */
+const calcularFinProgramado = (horaInicio, horaFinal, tiempoPagado, refMs = Date.now()) => {
   const minutos = Number(tiempoPagado);
-  if (!Number.isFinite(minutos) || minutos <= 0) return null;
-  return new Date(Date.now() + minutos * 60 * 1000);
+  const compInicio = parseHoraComponentes(horaInicio);
+
+  // 1º) Origen preferido: horaFinal (lo que la UI muestra como fin)
+  const compFin = parseHoraComponentes(horaFinal);
+  if (compFin) {
+    let fin = fechaEnDiaCR(compFin, refMs);
+    // Guardia de medianoche: si el fin quedó en/antes del inicio, es de mañana.
+    if (compInicio) {
+      const inicio = fechaEnDiaCR(compInicio, refMs);
+      if (fin.getTime() <= inicio.getTime()) fin = new Date(fin.getTime() + DIA_MS);
+    } else if (fin.getTime() < refMs) {
+      fin = new Date(fin.getTime() + DIA_MS);
+    }
+    return fin;
+  }
+
+  // 2º) Respaldo: horaInicio + tiempoPagado
+  if (compInicio && Number.isFinite(minutos) && minutos > 0) {
+    console.warn('⚠️ finProgramado: horaFinal no parseable, uso respaldo horaInicio + tiempoPagado. horaFinal recibido:', JSON.stringify(horaFinal));
+    let inicio = fechaEnDiaCR(compInicio, refMs);
+    // Si el inicio quedó en el futuro (registrado apenas pasada la medianoche), era de ayer.
+    if (inicio.getTime() - refMs > 5 * 60 * 1000) inicio = new Date(inicio.getTime() - DIA_MS);
+    return new Date(inicio.getTime() + minutos * 60 * 1000); // +duración cruza medianoche solo
+  }
+
+  // 3º) Último recurso: Date.now() + tiempoPagado, con segundos en cero
+  if (Number.isFinite(minutos) && minutos > 0) {
+    console.warn('⚠️ finProgramado: horaFinal y horaInicio no parseables, uso respaldo Date.now() + tiempoPagado. horaInicio:', JSON.stringify(horaInicio), '| horaFinal:', JSON.stringify(horaFinal));
+    const base = new Date();
+    base.setSeconds(0, 0);
+    return new Date(base.getTime() + minutos * 60 * 1000);
+  }
+
+  return null;
 };
 
 // ─────────────────────────────────────────────────────────────────
@@ -244,8 +320,9 @@ export const createPlay = async (req, res) => {
       totalPlay5:      tipoPlay === 'Play 5'    ? costos.total : 0,
       totalPingPong:   tipoPlay === 'Ping Pong' ? costos.total : 0,
       estadoPago:      req.body.estadoPago || 'En Proceso',
-      // Instante en que se agota el tiempo → dispara el aviso de WhatsApp
-      finProgramado:   calcularFinProgramado(req.body.tiempoPagado),
+      // Instante en que se agota el tiempo → dispara el aviso de WhatsApp.
+      // Se deriva de horaFinal para coincidir exactamente con lo que muestra la UI.
+      finProgramado:   calcularFinProgramado(req.body.horaInicio, req.body.horaFinal, req.body.tiempoPagado),
       notificacionFinEnviada: false,
     });
 
@@ -274,7 +351,10 @@ export const updatePlay = async (req, res) => {
     if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
 
     const fechaOriginal = play.fecha; // guardar antes de modificar
-    const tiempoPagadoOriginal = play.tiempoPagado; // para detectar cambios de tiempo
+    // Para detectar cambios que afecten el fin programado
+    const tiempoPagadoOriginal = play.tiempoPagado;
+    const horaInicioOriginal   = play.horaInicio;
+    const horaFinalOriginal    = play.horaFinal;
 
     if (req.body.cliente          !== undefined) play.cliente          = req.body.cliente;
     if (req.body.atendio          !== undefined) play.atendio          = req.body.atendio;
@@ -296,14 +376,17 @@ export const updatePlay = async (req, res) => {
     play.totalPlay5     = play.tipoPlay === 'Play 5'    ? costos.total : 0;
     play.totalPingPong  = play.tipoPlay === 'Ping Pong' ? costos.total : 0;
 
-    // Si cambió el tiempo pagado, recalculamos el fin (base: inicio real = createdAt)
-    // y reseteamos la bandera para que el nuevo fin genere un aviso fresco de WhatsApp.
-    if (req.body.tiempoPagado !== undefined && Number(req.body.tiempoPagado) !== Number(tiempoPagadoOriginal)) {
-      const minutos = Number(play.tiempoPagado);
-      const base = play.createdAt ? play.createdAt.getTime() : Date.now();
-      play.finProgramado = (Number.isFinite(minutos) && minutos > 0)
-        ? new Date(base + minutos * 60 * 1000)
-        : null;
+    // Si cambió algún dato de tiempo (horaInicio, horaFinal o tiempoPagado),
+    // recalculamos el fin desde el MISMO origen que la UI (horaFinal) y reseteamos
+    // la bandera para que el nuevo fin genere un aviso fresco de WhatsApp.
+    const cambioTiempo =
+      (req.body.tiempoPagado !== undefined && Number(req.body.tiempoPagado) !== Number(tiempoPagadoOriginal)) ||
+      (req.body.horaInicio   !== undefined && req.body.horaInicio !== horaInicioOriginal) ||
+      (req.body.horaFinal    !== undefined && req.body.horaFinal  !== horaFinalOriginal);
+
+    if (cambioTiempo) {
+      const refMs = play.createdAt ? play.createdAt.getTime() : Date.now();
+      play.finProgramado = calcularFinProgramado(play.horaInicio, play.horaFinal, play.tiempoPagado, refMs);
       play.notificacionFinEnviada = false;
     }
 
