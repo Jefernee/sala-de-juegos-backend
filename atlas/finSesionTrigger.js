@@ -13,15 +13,18 @@
 //   4. Manda el WhatsApp a cada uno vía CallMeBot.
 //
 // CONFIG que asume (ajustá si tu nombre difiere):
-//   - Data source (cluster linkeado):  "mongodb-atlas"
+//   - Data source (cluster linkeado):  "Cluster0"
 //   - Base de datos:                   "salaDeJuegos"
 //   - Colecciones:                     "plays", "whatsapp_recipients"
 //   - Ventana de catch-up:             2 horas
 //
+// NOTA: el runtime de Atlas lanza "no documents in result" en findOneAndUpdate
+// cuando no hay coincidencias (en vez de devolver null) → se maneja con try/catch.
+//
 // La función debe correr como "System" para poder escribir la bandera.
 
 exports = async function () {
-  const db = context.services.get("mongodb-atlas").db("salaDeJuegos");
+  const db = context.services.get("Cluster0").db("salaDeJuegos");
   const plays = db.collection("plays");
   const recipientsCol = db.collection("whatsapp_recipients");
 
@@ -124,14 +127,22 @@ exports = async function () {
 
   // Reclamo atómico uno por uno: marco la bandera al leer.
   while (true) {
-    const play = await plays.findOneAndUpdate(
-      {
-        notificacionFinEnviada: { $ne: true },
-        finProgramado: { $ne: null, $lte: AHORA, $gte: DESDE },
-      },
-      { $set: { notificacionFinEnviada: true } },
-      { sort: { finProgramado: 1 } } // returnNewDocument false → devuelve el doc previo
-    );
+    let play;
+    try {
+      play = await plays.findOneAndUpdate(
+        {
+          notificacionFinEnviada: { $ne: true },
+          finProgramado: { $ne: null, $lte: AHORA, $gte: DESDE },
+        },
+        { $set: { notificacionFinEnviada: true } },
+        { sort: { finProgramado: 1 } } // returnNewDocument false → devuelve el doc previo
+      );
+    } catch (e) {
+      // El runtime de Atlas lanza este error en vez de devolver null cuando no hay
+      // coincidencias → lo tratamos como "no quedan pendientes".
+      if (e.message && e.message.includes("no documents in result")) break;
+      throw e; // cualquier otro error sí es real
+    }
     if (!play) break;
     procesados++;
 
