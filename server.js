@@ -21,6 +21,8 @@ import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
+// Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp
+import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
 
 // ============================================
@@ -142,6 +144,18 @@ try {
   }
 } catch (e) {
   console.error('⚠️ No se pudo migrar placas de activos (no crítico):', e.message);
+}
+
+// ============================================
+// 🔔 NOTIFICACIONES DE FIN DE SESIÓN POR WHATSAPP
+// Chequeador que avisa al grupo cuando se agota el tiempo de una sesión.
+// Solo arranca si NOTIFICACIONES_WHATSAPP_ENABLED === 'true'.
+// No es crítico: si algo falla acá, el servidor sigue arrancando.
+// ============================================
+try {
+  iniciarSchedulerFinSesion();
+} catch (e) {
+  console.error('⚠️ No se pudo iniciar el scheduler de WhatsApp (no crítico):', e.message);
 }
 
 // ============================================

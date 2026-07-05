@@ -25,6 +25,18 @@ const determinarTipoPlay = (lugarDeJuego) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
+// Fin de sesión para notificaciones WhatsApp (ver utils/finSesionScheduler.js)
+// El play se registra al INICIO de la sesión, así que el tiempo se agota en:
+//   ahora + tiempoPagado minutos.
+// El scheduler dispara el aviso de WhatsApp cuando ese instante ya pasó.
+// ─────────────────────────────────────────────────────────────────
+const calcularFinProgramado = (tiempoPagado) => {
+  const minutos = Number(tiempoPagado);
+  if (!Number.isFinite(minutos) || minutos <= 0) return null;
+  return new Date(Date.now() + minutos * 60 * 1000);
+};
+
+// ─────────────────────────────────────────────────────────────────
 // Auto-regeneración del reporte mensual
 // Se llama después de crear, editar o eliminar un play.
 // Trabaja en background (no bloquea la respuesta al cliente).
@@ -231,6 +243,9 @@ export const createPlay = async (req, res) => {
       totalPlay5:      tipoPlay === 'Play 5'    ? costos.total : 0,
       totalPingPong:   tipoPlay === 'Ping Pong' ? costos.total : 0,
       estadoPago:      req.body.estadoPago || 'En Proceso',
+      // Instante en que se agota el tiempo → dispara el aviso de WhatsApp
+      finProgramado:   calcularFinProgramado(req.body.tiempoPagado),
+      notificacionFinEnviada: false,
     });
 
     const nuevoPlay = await play.save();
@@ -258,6 +273,7 @@ export const updatePlay = async (req, res) => {
     if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
 
     const fechaOriginal = play.fecha; // guardar antes de modificar
+    const tiempoPagadoOriginal = play.tiempoPagado; // para detectar cambios de tiempo
 
     if (req.body.cliente          !== undefined) play.cliente          = req.body.cliente;
     if (req.body.atendio          !== undefined) play.atendio          = req.body.atendio;
@@ -278,6 +294,17 @@ export const updatePlay = async (req, res) => {
     play.totalPlay4     = play.tipoPlay === 'Play 4'    ? costos.total : 0;
     play.totalPlay5     = play.tipoPlay === 'Play 5'    ? costos.total : 0;
     play.totalPingPong  = play.tipoPlay === 'Ping Pong' ? costos.total : 0;
+
+    // Si cambió el tiempo pagado, recalculamos el fin (base: inicio real = createdAt)
+    // y reseteamos la bandera para que el nuevo fin genere un aviso fresco de WhatsApp.
+    if (req.body.tiempoPagado !== undefined && Number(req.body.tiempoPagado) !== Number(tiempoPagadoOriginal)) {
+      const minutos = Number(play.tiempoPagado);
+      const base = play.createdAt ? play.createdAt.getTime() : Date.now();
+      play.finProgramado = (Number.isFinite(minutos) && minutos > 0)
+        ? new Date(base + minutos * 60 * 1000)
+        : null;
+      play.notificacionFinEnviada = false;
+    }
 
     const playActualizado = await play.save();
     console.log('✅ Play actualizado exitosamente:', playActualizado._id);
