@@ -9,13 +9,12 @@
 //   1. Busca sesiones (plays) cuyo tiempo ya venció y que no fueron notificadas.
 //   2. Marca cada una como notificada de forma ATÓMICA (evita duplicados con el
 //      scheduler de respaldo de Koyeb).
-//   3. Lee los destinatarios ACTIVOS de la colección whatsapp_recipients.
-//   4. Manda el WhatsApp a cada uno vía CallMeBot.
+//   3. Manda UN WhatsApp al GRUPO vía WAHA (WhatsApp HTTP API en la VM propia).
 //
 // CONFIG que asume (ajustá si tu nombre difiere):
 //   - Data source (cluster linkeado):  "Cluster0"
 //   - Base de datos:                   "salaDeJuegos"
-//   - Colecciones:                     "plays", "whatsapp_recipients"
+//   - Colección:                       "plays"
 //   - Ventana de catch-up:             2 horas
 //
 // NOTA: el runtime de Atlas lanza "no documents in result" en findOneAndUpdate
@@ -23,24 +22,23 @@
 //
 // La función debe correr como "System" para poder escribir la bandera.
 
+// ── Configuración de WAHA (WhatsApp HTTP API) ──────────────────────────────
+// ⚠️ La API KEY es un SECRETO: NO se sube al repo. Antes de guardar esta función
+//    en el panel de Atlas, reemplazá el placeholder de abajo por la key real
+//    (la misma X-Api-Key que está en el .env / Koyeb). Ideal: moverla a un
+//    Secret de Atlas (Values & Secrets) y leerla con context.values.get(...).
+const WAHA_URL = "http://157.151.183.29:3000";
+const WAHA_API_KEY = "PEGA-AQUI-LA-API-KEY-DE-WAHA"; // ← reemplazar en el panel de Atlas
+const WAHA_SESSION = "default";
+const WAHA_CHAT_ID = "120363403807399844@g.us"; // grupo "Hogar 2"
+// ───────────────────────────────────────────────────────────────────────────
+
 exports = async function () {
   const db = context.services.get("Cluster0").db("salaDeJuegos");
   const plays = db.collection("plays");
-  const recipientsCol = db.collection("whatsapp_recipients");
 
   const AHORA = new Date();
   const DESDE = new Date(AHORA.getTime() - 2 * 60 * 60 * 1000); // catch-up 2h
-
-  // Destinatarios activos
-  const recipients = await recipientsCol.find({ activo: true }).toArray();
-  if (recipients.length === 0) {
-    console.log("Sin destinatarios activos; nada que enviar.");
-    return;
-  }
-
-  // Sleep defensivo (por si el runtime no expone setTimeout)
-  const sleep = (ms) =>
-    typeof setTimeout === "function" ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve();
 
   // Hora de Costa Rica SIN depender de Intl/timeZone (CR = UTC-6, sin horario de verano)
   const horaCR = (date) => {
@@ -123,6 +121,31 @@ exports = async function () {
     return lineas.join("\n");
   };
 
+  // Manda UN mensaje al grupo vía WAHA, con 1 reintento. Devuelve true/false.
+  const enviarWaha = async (texto) => {
+    for (let intento = 1; intento <= 2; intento++) {
+      try {
+        const resp = await context.http.post({
+          url: WAHA_URL + "/api/sendText",
+          headers: {
+            "Content-Type": ["application/json"],
+            "X-Api-Key": [WAHA_API_KEY],
+          },
+          body: JSON.stringify({
+            session: WAHA_SESSION,
+            chatId: WAHA_CHAT_ID,
+            text: texto,
+          }),
+        });
+        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
+        console.error("WAHA respondió " + resp.statusCode + " (intento " + intento + ")");
+      } catch (e) {
+        console.error("Error enviando a WAHA (intento " + intento + "): " + e.message);
+      }
+    }
+    return false;
+  };
+
   let procesados = 0;
 
   // Reclamo atómico uno por uno: marco la bandera al leer.
@@ -147,29 +170,8 @@ exports = async function () {
     procesados++;
 
     const mensaje = construirMensaje(play);
-
-    for (let i = 0; i < recipients.length; i++) {
-      const r = recipients[i];
-      const url =
-        "https://api.callmebot.com/whatsapp.php?phone=" + encodeURIComponent(r.telefono) +
-        "&text=" + encodeURIComponent(mensaje) +
-        "&apikey=" + encodeURIComponent(r.apikey);
-
-      let ok = false;
-      for (let intento = 1; intento <= 2 && !ok; intento++) {
-        try {
-          const resp = await context.http.get({ url });
-          if (resp.statusCode >= 200 && resp.statusCode < 300) ok = true;
-          else console.error("CallMeBot respondió " + resp.statusCode + " para " + r.telefono);
-        } catch (e) {
-          console.error("Error enviando a " + r.telefono + " (intento " + intento + "): " + e.message);
-        }
-      }
-      console.log((ok ? "✅ OK " : "❌ FALLO ") + r.telefono + " :: " + mensaje);
-
-      // Pausa entre destinatarios (CallMeBot limita frecuencia), no tras el último.
-      if (i < recipients.length - 1) await sleep(2500);
-    }
+    const ok = await enviarWaha(mensaje);
+    console.log((ok ? "✅ OK grupo" : "❌ FALLO grupo") + " :: " + mensaje);
   }
 
   console.log("Trigger listo. Sesiones notificadas en este ciclo: " + procesados);

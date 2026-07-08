@@ -1,21 +1,19 @@
 // scripts/testNotificacionWhatsApp.js
-// Hecho por Claude Code — Prueba manual de la integración de WhatsApp (CallMeBot).
+// Hecho por Claude Code — Prueba manual de la integración de WhatsApp (WAHA).
 //
-// Manda UN mensaje de prueba a TODOS los destinatarios ACTIVOS de la base de
-// datos, para verificar que las apikeys funcionan. Muestra el resultado de cada
-// número en consola.
+// Manda UN mensaje de prueba al GRUPO configurado (WAHA_CHAT_ID) para verificar
+// que la conexión con WAHA funciona. Muestra el resultado en consola.
 //
 // Uso:
 //   node scripts/testNotificacionWhatsApp.js
 //   node scripts/testNotificacionWhatsApp.js "Mensaje personalizado de prueba"
 //
-// Requiere en el .env: MONGO_URI (y destinatarios cargados en la base).
+// Requiere en el .env: WAHA_URL, WAHA_API_KEY, WAHA_SESSION, WAHA_CHAT_ID.
 // Nota: fuerza el envío ignorando NOTIFICACIONES_WHATSAPP_ENABLED, para que
 // puedas probar aunque las notificaciones estén apagadas en prod.
 
-import mongoose from 'mongoose';
 import dotenv from 'dotenv';
-import { formatearHoraCR, obtenerDestinatarios } from '../utils/notificacionesWhatsApp.js';
+import { formatearHoraCR, configWaha } from '../utils/notificacionesWhatsApp.js';
 
 dotenv.config();
 
@@ -23,20 +21,10 @@ dotenv.config();
 process.env.NOTIFICACIONES_WHATSAPP_ENABLED = 'true';
 
 const run = async () => {
-  if (!process.env.MONGO_URI) {
-    console.error('❌ Falta MONGO_URI en el archivo .env');
-    process.exit(1);
-  }
-
-  await mongoose.connect(process.env.MONGO_URI, { serverSelectionTimeoutMS: 10000 });
-  console.log('✅ Conectado a MongoDB');
-
-  const destinatarios = await obtenerDestinatarios();
-
-  if (destinatarios.length === 0) {
-    console.error('❌ No hay destinatarios activos en la base (ni respaldo en CALLMEBOT_RECIPIENTS).');
-    console.error('   Agregá al menos uno desde el frontend, o cargá CALLMEBOT_RECIPIENTS en el .env.');
-    await mongoose.disconnect();
+  const cfg = configWaha();
+  if (!cfg.url || !cfg.apiKey || !cfg.chatId) {
+    console.error('❌ Falta configuración de WAHA en el .env.');
+    console.error('   Necesitás WAHA_URL, WAHA_API_KEY y WAHA_CHAT_ID (y opcional WAHA_SESSION).');
     process.exit(1);
   }
 
@@ -47,35 +35,22 @@ const run = async () => {
   const mensaje = personalizado ||
     `🧪 Prueba de notificaciones — Sala de Juegos | ${formatearHoraCR(new Date())}`;
 
-  console.log(`📤 Enviando mensaje de prueba a ${destinatarios.length} destinatario(s), en serie...`);
+  console.log(`📤 Enviando mensaje de prueba al grupo ${cfg.chatId} vía WAHA (${cfg.url})...`);
   console.log(`   Texto: "${mensaje}"`);
-  console.log(`   Números: ${destinatarios.map((d) => d.phone).join(', ')}`);
   console.log('');
 
-  const resultados = await enviarNotificacion(mensaje);
+  const resultado = await enviarNotificacion(mensaje);
 
   console.log('');
-  console.log('─── Resultado por destinatario ───');
-  for (const r of resultados) {
-    console.log(`   ${r.ok ? '✅' : '❌'} ${r.phone} ${r.ok ? 'OK' : 'FALLÓ'}`);
-  }
-
-  const exitosos = resultados.filter((r) => r.ok).length;
-  console.log('');
-  console.log(`📊 Total: ${exitosos}/${resultados.length} enviado(s) correctamente.`);
-
-  await mongoose.disconnect();
-
-  if (exitosos === 0) {
-    console.error('❌ No llegó a nadie. Revisá que cada número tenga SU apikey correcta,');
-    console.error('   que cada persona haya activado CallMeBot en su WhatsApp, y los logs de arriba.');
-    process.exit(1);
-  } else if (exitosos < resultados.length) {
-    console.warn('⚠️ Llegó a algunos pero no a todos. Revisá los que fallaron arriba.');
+  if (resultado.ok) {
+    console.log('✅ Enviado. Revisá el grupo de WhatsApp para confirmar que llegó.');
     process.exit(0);
   } else {
-    console.log('✅ Llegó a todos. Revisá los WhatsApp para confirmar.');
-    process.exit(0);
+    console.error('❌ No se pudo enviar. Revisá los logs de arriba:');
+    console.error('   - ¿WAHA_URL/WAHA_API_KEY correctos y la VM encendida?');
+    console.error('   - ¿La sesión de WhatsApp en WAHA está en estado WORKING?');
+    console.error('   - ¿WAHA_CHAT_ID es el ID correcto del grupo ("...@g.us")?');
+    process.exit(1);
   }
 };
 

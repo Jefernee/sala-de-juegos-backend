@@ -939,6 +939,18 @@ GET /api/reports/ventas-periodo?days=30
 
 ---
 
+## 🔔 Notificaciones por WhatsApp
+
+El sistema avisa por WhatsApp (a un grupo) cuando se **agota el tiempo de una sesión
+de juego**. El envío usa **WAHA** (WhatsApp HTTP API) corriendo en una VM propia, con
+dos motores redundantes: un Scheduled Trigger de MongoDB Atlas (principal, siempre
+encendido) y un scheduler dentro del backend (respaldo).
+
+📄 **Guía completa de mantenimiento y troubleshooting:** [`NOTIFICACIONES_WHATSAPP.md`](NOTIFICACIONES_WHATSAPP.md)
+(cómo funciona, variables de entorno, cómo probar, y qué revisar si dejan de llegar los avisos).
+
+---
+
 ## 📝 Scripts Disponibles
 
 ```json
