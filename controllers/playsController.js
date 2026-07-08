@@ -301,6 +301,15 @@ export const createPlay = async (req, res) => {
 
     const fechaPlay = getUTCDateRanges().hoy.inicio;
 
+    // Instante en que se agota el tiempo. Un play NUEVO real termina siempre en el
+    // futuro; si finProgramado ya quedó en el pasado (típicamente porque el
+    // frontend mandó una hora atrasada), es dato inválido → no disparamos un falso
+    // aviso de "se acabó el tiempo". Marcamos notificacionFinEnviada = true para
+    // que ningún scheduler lo tome. (Si luego se corrige la hora al editar y el
+    // nuevo fin queda en el futuro, updatePlay vuelve a armar el aviso.)
+    const finProgramado = calcularFinProgramado(req.body.horaInicio, req.body.horaFinal, req.body.tiempoPagado);
+    const finEnFuturo   = finProgramado instanceof Date && finProgramado.getTime() > Date.now();
+
     const play = new Play({
       fecha:           fechaPlay,
       cliente:         req.body.cliente,
@@ -320,10 +329,10 @@ export const createPlay = async (req, res) => {
       totalPlay5:      tipoPlay === 'Play 5'    ? costos.total : 0,
       totalPingPong:   tipoPlay === 'Ping Pong' ? costos.total : 0,
       estadoPago:      req.body.estadoPago || 'En Proceso',
-      // Instante en que se agota el tiempo → dispara el aviso de WhatsApp.
       // Se deriva de horaFinal para coincidir exactamente con lo que muestra la UI.
-      finProgramado:   calcularFinProgramado(req.body.horaInicio, req.body.horaFinal, req.body.tiempoPagado),
-      notificacionFinEnviada: false,
+      finProgramado,
+      // Solo se avisa si el fin está en el futuro (ver comentario arriba).
+      notificacionFinEnviada: !finEnFuturo,
     });
 
     const nuevoPlay = await play.save();
@@ -386,8 +395,16 @@ export const updatePlay = async (req, res) => {
 
     if (cambioTiempo) {
       const refMs = play.createdAt ? play.createdAt.getTime() : Date.now();
-      play.finProgramado = calcularFinProgramado(play.horaInicio, play.horaFinal, play.tiempoPagado, refMs);
-      play.notificacionFinEnviada = false;
+      const nuevoFin = calcularFinProgramado(play.horaInicio, play.horaFinal, play.tiempoPagado, refMs);
+      play.finProgramado = nuevoFin;
+      // Re-armamos el aviso SOLO si el nuevo fin está en el FUTURO (extensión de
+      // tiempo real). Si el nuevo fin ya pasó (p.ej. editar una sesión que ya
+      // terminó y de la que ya se avisó), NO reseteamos la bandera → así no sale
+      // un segundo WhatsApp casi idéntico.
+      const nuevoFinEnFuturo = nuevoFin instanceof Date && nuevoFin.getTime() > Date.now();
+      if (nuevoFinEnFuturo) {
+        play.notificacionFinEnviada = false;
+      }
     }
 
     const playActualizado = await play.save();
@@ -415,6 +432,16 @@ export const deletePlay = async (req, res) => {
     if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
 
     const fechaPlay = play.fecha; // guardar antes de eliminar
+
+    // Cancelamos cualquier aviso pendiente ANTES de borrar: marcamos el play como
+    // ya notificado para que, si un scheduler (Koyeb/Atlas) estuviera por tomarlo
+    // en este mismo instante, lo salte. Así borrar una sesión no dispara un aviso
+    // de algo que se está eliminando.
+    if (play.notificacionFinEnviada !== true) {
+      play.notificacionFinEnviada = true;
+      await play.save();
+    }
+
     await play.deleteOne();
     console.log('✅ Play eliminado exitosamente');
 
