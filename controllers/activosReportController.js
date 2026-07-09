@@ -2,18 +2,14 @@
 // Hecho por Claude Code — Módulo de Reportes: Reporte de Activos de la Sala.
 //
 // Reporte tipo "snapshot": fotografía completa del estado actual de los activos.
-// A diferencia de los reportes de ventas/plays (que son mensuales), los activos
-// son un inventario de equipo, así que el reporte muestra TODO de una vez:
-//   - Totales: cantidad de activos, inversión en compras, costo de reparaciones.
-//   - Desglose por estado (En uso, En reparación, etc.).
-//   - Desglose por tipo de registro (Nueva Compra / Reparación).
-//   - Lista completa de activos con su número de placa.
+// Es "solo números": KPIs (tarjetas) + desgloses (por estado y con/sin reparación)
+// + una tabla con un objeto por activo. SIN filtros ni buscador (eso vive en
+// Administración). La respuesta va envuelta en { ok: true, reporte: {...} }.
 //
-// Nota sobre montos:
-//   - "costo" se cuenta como inversión solo en registros de tipo "Nueva Compra"
-//     (en una reparación, "costo" es el costo del producto y NO se vuelve a sumar).
-//   - "costoReparacion" se cuenta solo en registros de tipo "Reparación".
-import ActivoSala, { TIPOS_REGISTRO, ESTADOS_ACTIVO } from '../models/ActivoSala.js';
+// Montos:
+//   - "costo" = inversión en la COMPRA del producto (cada activo tiene uno).
+//   - reparaciones: se suma el costo de TODAS las reparaciones[].costo de cada activo.
+import ActivoSala, { ESTADOS_ACTIVO } from '../models/ActivoSala.js';
 
 // ============================================
 // GET /api/activos-reports
@@ -24,81 +20,85 @@ export const getReporteActivos = async (req, res) => {
     // Ordenados por número de placa ascendente (los sin placa quedan al final).
     const activos = await ActivoSala.find().sort({ numeroPlaca: 1, createdAt: 1 }).lean();
 
-    // ── Totales generales ────────────────────────────
-    let totalCompras = 0;
+    // ── KPIs ─────────────────────────────────────────
+    let conReparacion = 0;
+    let sinReparacion = 0;
     let totalReparaciones = 0;
-    let totalInvertidoCompras = 0;   // suma de "costo" en Nueva Compra
-    let totalCostoReparaciones = 0;  // suma de "costoReparacion" en Reparación
+    let totalInvertidoCompras = 0;
+    let totalCostoReparaciones = 0;
 
-    // ── Mapas de desglose ────────────────────────────
-    // Inicializados con todos los valores posibles para que ninguno falte,
-    // aunque tengan 0 (reporte "completo").
+    // ── Desglose por estado ──────────────────────────
+    // Inicializado con los 5 estados SIEMPRE (en 0 si no hay). Cada fila lleva
+    // DOS montos separados para no confundirlos:
+    //   costoTotal        = suma del costo de COMPRA de los activos en ese estado.
+    //   costoReparaciones = suma de reparaciones[].costo de los activos en ese estado.
     const porEstado = {};
     for (const estado of ESTADOS_ACTIVO) {
-      porEstado[estado] = { estado, cantidad: 0, costoTotal: 0 };
+      porEstado[estado] = { estado, cantidad: 0, costoTotal: 0, costoReparaciones: 0 };
     }
-    const porTipo = {};
-    for (const tipo of TIPOS_REGISTRO) {
-      porTipo[tipo] = { tipoRegistro: tipo, cantidad: 0, montoTotal: 0 };
-    }
+
+    // ── Desglose con / sin reparación ────────────────
+    //   montoTotal        = suma del costo de COMPRA de los activos del grupo.
+    //   costoReparaciones = suma de reparaciones[].costo de los activos del grupo.
+    const porRep = {
+      con: { clave: 'con', label: 'Con reparación', cantidad: 0, montoTotal: 0, costoReparaciones: 0 },
+      sin: { clave: 'sin', label: 'Sin reparación', cantidad: 0, montoTotal: 0, costoReparaciones: 0 },
+    };
+
+    // ── Tabla: un objeto por activo ──────────────────
+    const lista = [];
 
     for (const activo of activos) {
       const costo = activo.costo || 0;
-      const costoRep = activo.costoReparacion || 0;
+      const reparaciones = activo.reparaciones || [];
+      const numReparaciones = reparaciones.length;
+      const costoReparaciones = reparaciones.reduce((suma, r) => suma + (r.costo || 0), 0);
 
-      if (activo.tipoRegistro === 'Reparación') {
-        totalReparaciones++;
-        totalCostoReparaciones += costoRep;
-      } else {
-        totalCompras++;
-        totalInvertidoCompras += costo;
-      }
+      totalInvertidoCompras += costo;
+      totalReparaciones += numReparaciones;
+      totalCostoReparaciones += costoReparaciones;
 
-      // Por estado: cantidad y suma del costo del producto.
+      const grupo = numReparaciones > 0 ? porRep.con : porRep.sin;
+      grupo.cantidad++;
+      grupo.montoTotal += costo;
+      grupo.costoReparaciones += costoReparaciones;
+      if (numReparaciones > 0) conReparacion++;
+      else sinReparacion++;
+
       const estado = activo.estado || 'En uso';
-      if (!porEstado[estado]) porEstado[estado] = { estado, cantidad: 0, costoTotal: 0 };
+      if (!porEstado[estado]) porEstado[estado] = { estado, cantidad: 0, costoTotal: 0, costoReparaciones: 0 };
       porEstado[estado].cantidad++;
       porEstado[estado].costoTotal += costo;
+      porEstado[estado].costoReparaciones += costoReparaciones;
 
-      // Por tipo: cantidad y monto (compra usa costo, reparación usa costoReparacion).
-      const tipo = activo.tipoRegistro || 'Nueva Compra';
-      if (!porTipo[tipo]) porTipo[tipo] = { tipoRegistro: tipo, cantidad: 0, montoTotal: 0 };
-      porTipo[tipo].cantidad++;
-      porTipo[tipo].montoTotal += tipo === 'Reparación' ? costoRep : costo;
+      lista.push({
+        numeroPlaca: activo.numeroPlaca ?? null,
+        nombre: activo.nombre,
+        categoria: activo.categoria || 'Otros',
+        estado: activo.estado,
+        estadoOverride: activo.estadoOverride ?? null,
+        costo,
+        numReparaciones,
+        costoReparaciones,
+        fechaCompra: activo.fechaCompra || null,
+      });
     }
 
     const inversionTotal = totalInvertidoCompras + totalCostoReparaciones;
-
-    // ── Lista limpia de activos para mostrar ─────────
-    const lista = activos.map((a) => ({
-      _id: a._id,
-      numeroPlaca: a.numeroPlaca ?? null,
-      nombre: a.nombre,
-      tipoRegistro: a.tipoRegistro,
-      estado: a.estado,
-      costo: a.costo || 0,
-      costoReparacion: a.costoReparacion || null,
-      descripcion: a.descripcion || null,
-      numeroFactura: a.numeroFactura || null,
-      problemaTecnico: a.problemaTecnico || null,
-      reparadoPor: a.reparadoPor || null,
-      fechaCompraReparacion: a.fechaCompraReparacion || null,
-      imagenUrl: a.imagenUrl || null,
-      createdAt: a.createdAt,
-    }));
 
     return res.status(200).json({
       ok: true,
       reporte: {
         generadoEn: new Date(),
         totalActivos: activos.length,
-        totalCompras,
+        conReparacion,
+        sinReparacion,
         totalReparaciones,
         totalInvertidoCompras,
         totalCostoReparaciones,
         inversionTotal,
         porEstado: Object.values(porEstado),
-        porTipo: Object.values(porTipo),
+        porReparacion: [porRep.con, porRep.sin],
         activos: lista,
       },
     });

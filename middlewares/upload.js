@@ -128,13 +128,13 @@ export const uploadBase64ToCloudinary = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Hecho por Claude Code — Subida de imágenes para ACTIVOS DE LA SALA
-// Procesa hasta TRES imágenes base64 del body con las mismas
-// validaciones que uploadBase64ToCloudinary:
-//   - imagenBase64                  → req.cloudinaryUrl                  (foto del artículo)
-//   - imagenFacturaBase64           → req.cloudinaryFacturaUrl           (factura de compra)
-//   - imagenFacturaReparacionBase64 → req.cloudinaryFacturaReparacionUrl (factura de reparación)
-// Si una falla después de subir las otras, se hace rollback en Cloudinary.
+// Hecho por Claude Code — Subida de imágenes base64 para ACTIVOS DE LA SALA
+// procesarImagenesBase64(campos) es una fábrica de middlewares que sube uno o
+// más campos de imagen base64 con las mismas validaciones que uploadBase64ToCloudinary.
+// Abajo se arman dos middlewares concretos:
+//   - uploadActivoImagesToCloudinary     (foto del artículo + factura de compra)
+//   - uploadReparacionFacturaToCloudinary (factura de una reparación)
+// Si una imagen falla después de subir otras, se hace rollback en Cloudinary.
 // ─────────────────────────────────────────────────────────────────
 
 const ALLOWED_MIMES = ["data:image/jpeg", "data:image/jpg", "data:image/png", "data:image/webp"];
@@ -191,35 +191,10 @@ const validarImagenBase64 = (imagenBase64, etiqueta) => {
   return null; // válida
 };
 
-export const uploadActivoImagesToCloudinary = async (req, res, next) => {
-  // Definición de los dos campos de imagen que puede traer el body
-  const campos = [
-    {
-      bodyBase64: "imagenBase64",
-      bodyNombre: "imagenNombre",
-      bodyMime: "imagenMimeType",
-      reqUrl: "cloudinaryUrl",
-      reqPublicId: "cloudinaryPublicId",
-      etiqueta: "imagen del artículo",
-    },
-    {
-      bodyBase64: "imagenFacturaBase64",
-      bodyNombre: "imagenFacturaNombre",
-      bodyMime: "imagenFacturaMimeType",
-      reqUrl: "cloudinaryFacturaUrl",
-      reqPublicId: "cloudinaryFacturaPublicId",
-      etiqueta: "imagen de la factura",
-    },
-    {
-      bodyBase64: "imagenFacturaReparacionBase64",
-      bodyNombre: "imagenFacturaReparacionNombre",
-      bodyMime: "imagenFacturaReparacionMimeType",
-      reqUrl: "cloudinaryFacturaReparacionUrl",
-      reqPublicId: "cloudinaryFacturaReparacionPublicId",
-      etiqueta: "imagen de la factura de reparación",
-    },
-  ];
-
+// Sube a Cloudinary los campos de imagen base64 indicados en `campos`.
+// Cada `campo` define { bodyBase64, bodyNombre, bodyMime, reqUrl, reqPublicId, etiqueta }.
+// Si una falla después de subir las otras, hace rollback de todas.
+const procesarImagenesBase64 = (campos) => async (req, res, next) => {
   const publicIdsSubidos = []; // para rollback si algo falla a medio camino
 
   const rollback = async () => {
@@ -309,6 +284,41 @@ export const uploadActivoImagesToCloudinary = async (req, res, next) => {
     });
   }
 };
+
+// Crear/editar ACTIVO: foto del artículo + factura de COMPRA.
+//   imagenBase64        → req.cloudinaryUrl        (foto del artículo)
+//   imagenFacturaBase64 → req.cloudinaryFacturaUrl (factura de compra)
+export const uploadActivoImagesToCloudinary = procesarImagenesBase64([
+  {
+    bodyBase64: "imagenBase64",
+    bodyNombre: "imagenNombre",
+    bodyMime: "imagenMimeType",
+    reqUrl: "cloudinaryUrl",
+    reqPublicId: "cloudinaryPublicId",
+    etiqueta: "imagen del artículo",
+  },
+  {
+    bodyBase64: "imagenFacturaBase64",
+    bodyNombre: "imagenFacturaNombre",
+    bodyMime: "imagenFacturaMimeType",
+    reqUrl: "cloudinaryFacturaUrl",
+    reqPublicId: "cloudinaryFacturaPublicId",
+    etiqueta: "imagen de la factura",
+  },
+]);
+
+// Crear/editar REPARACIÓN: una sola factura de la reparación.
+//   facturaBase64 → req.cloudinaryReparacionFacturaUrl / ...PublicId
+export const uploadReparacionFacturaToCloudinary = procesarImagenesBase64([
+  {
+    bodyBase64: "facturaBase64",
+    bodyNombre: "facturaNombre",
+    bodyMime: "facturaMimeType",
+    reqUrl: "cloudinaryReparacionFacturaUrl",
+    reqPublicId: "cloudinaryReparacionFacturaPublicId",
+    etiqueta: "factura de la reparación",
+  },
+]);
 
 /**
  * Maneja errores de payload demasiado grande

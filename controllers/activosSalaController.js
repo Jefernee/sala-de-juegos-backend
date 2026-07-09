@@ -1,12 +1,15 @@
 // controllers/activosSalaController.js
 // Hecho por Claude Code — Módulo de Administración: Activos de la Sala
-// Compras y reparaciones del equipo físico. CRUD completo con imágenes
-// en Cloudinary (artículo + factura), igual que el módulo de inventario:
-//   - Crear: sube imágenes (middleware) y hace rollback si falla MongoDB
-//   - Editar: si llega imagen nueva, reemplaza y elimina la anterior
-//   - Eliminar: borra el documento y sus imágenes de Cloudinary
+// CRUD del activo (producto) + historial de reparaciones. Imágenes en
+// Cloudinary (foto del artículo + factura de compra a nivel activo; factura
+// por reparación dentro de cada item). El `estado` es CALCULADO por el backend
+// (ver derivarEstado): el front solo lo lee y setea/limpia `estadoOverride`.
 import mongoose from 'mongoose';
-import ActivoSala, { TIPOS_REGISTRO, ESTADOS_ACTIVO, CATEGORIAS_ACTIVO } from '../models/ActivoSala.js';
+import ActivoSala, {
+  ESTADOS_OVERRIDE,
+  CATEGORIAS_ACTIVO,
+  derivarEstado,
+} from '../models/ActivoSala.js';
 import { siguienteSecuencia, fijarSecuenciaMinima, verSecuencia } from '../models/Counter.js';
 import { eliminarImagenCloudinary } from '../utils/cloudinaryUtils.js';
 import cloudinary from '../config/cloudinary.js';
@@ -18,7 +21,7 @@ const CONTADOR_PLACA = 'numeroPlacaActivo';
 // igual que el resto de la app (crearFiltroFechas, inventario). Si se guardara en
 // medianoche UTC, al mostrarla en hora CR (UTC-6) se vería el día anterior.
 // Retorna: Date válida | null (si viene vacío/null) | undefined (si es inválida)
-const parseFechaCompra = (valor) => {
+const parseFecha = (valor) => {
   if (valor === null || valor === '') return null;
   if (typeof valor !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(valor)) return undefined;
   const [anio, mes, dia] = valor.split('-').map(Number);
@@ -28,9 +31,21 @@ const parseFechaCompra = (valor) => {
   return fecha;
 };
 
-// Helper: limpia imágenes recién subidas si falla el guardado (rollback)
+// Fecha de hoy a medianoche CR (para default de la fecha de reparación).
+const hoyCostaRica = () => {
+  const ahora = new Date();
+  return new Date(Date.UTC(ahora.getUTCFullYear(), ahora.getUTCMonth(), ahora.getUTCDate(), 6, 0, 0, 0));
+};
+
+// Helper: limpia imágenes recién subidas si falla el guardado (rollback).
+// Cubre tanto los public_id del middleware de activo como el de reparación.
 const limpiarImagenesSubidas = async (req) => {
-  for (const publicId of [req.cloudinaryPublicId, req.cloudinaryFacturaPublicId, req.cloudinaryFacturaReparacionPublicId]) {
+  const ids = [
+    req.cloudinaryPublicId,
+    req.cloudinaryFacturaPublicId,
+    req.cloudinaryReparacionFacturaPublicId,
+  ];
+  for (const publicId of ids) {
     if (!publicId) continue;
     try {
       console.log('🧹 Limpiando imagen de Cloudinary:', publicId);
@@ -42,22 +57,15 @@ const limpiarImagenesSubidas = async (req) => {
 };
 
 // ============================================
-// POST /api/activos-sala — Registrar compra o reparación
+// POST /api/activos-sala — Registrar un activo (solo producto).
+// NO recibe datos de reparación: arranca con reparaciones:[] y estado calculado.
 // Las imágenes ya fueron procesadas por uploadActivoImagesToCloudinary:
 //   req.cloudinaryUrl        → imagen del artículo
-//   req.cloudinaryFacturaUrl → imagen de la factura
+//   req.cloudinaryFacturaUrl → imagen de la factura de compra
 // ============================================
 export const addActivo = async (req, res) => {
   try {
-    const { tipoRegistro, nombre, costo, estado, descripcion, numeroFactura, notas, categoria } = req.body;
-
-    // Validaciones de campos obligatorios
-    if (!tipoRegistro || !TIPOS_REGISTRO.includes(tipoRegistro)) {
-      await limpiarImagenesSubidas(req);
-      return res.status(400).json({
-        message: `El tipo de registro es obligatorio. Valores válidos: ${TIPOS_REGISTRO.join(', ')}`,
-      });
-    }
+    const { nombre, costo, descripcion, numeroFactura, notas, categoria } = req.body;
 
     if (!nombre || !nombre.trim()) {
       await limpiarImagenesSubidas(req);
@@ -70,13 +78,6 @@ export const addActivo = async (req, res) => {
       return res.status(400).json({ message: 'El costo es obligatorio y debe ser un número mayor a 0' });
     }
 
-    if (estado !== undefined && estado !== null && !ESTADOS_ACTIVO.includes(estado)) {
-      await limpiarImagenesSubidas(req);
-      return res.status(400).json({
-        message: `Estado inválido. Valores válidos: ${ESTADOS_ACTIVO.join(', ')}`,
-      });
-    }
-
     if (categoria !== undefined && categoria !== null && !CATEGORIAS_ACTIVO.includes(categoria)) {
       await limpiarImagenesSubidas(req);
       return res.status(400).json({
@@ -84,31 +85,23 @@ export const addActivo = async (req, res) => {
       });
     }
 
-    // fechaCompraReparacion: llega como "YYYY-MM-DD" o no viene
-    const fechaCompraReparacion = parseFechaCompra(req.body.fechaCompraReparacion ?? null);
-    if (fechaCompraReparacion === undefined) {
-      await limpiarImagenesSubidas(req);
-      return res.status(400).json({ message: 'fechaCompraReparacion debe tener formato YYYY-MM-DD' });
-    }
-
-    // problemaTecnico, reparadoPor y costoReparacion solo aplican a reparaciones
-    const esReparacion = tipoRegistro === 'Reparación';
-
-    // Costo de reparación: separado del costo del producto y obligatorio al reparar
-    let costoReparacionNum = null;
-    if (esReparacion) {
-      costoReparacionNum = Number(req.body.costoReparacion);
-      if (
-        req.body.costoReparacion === undefined ||
-        req.body.costoReparacion === null ||
-        isNaN(costoReparacionNum) ||
-        costoReparacionNum <= 0
-      ) {
+    // estadoOverride opcional al crear: null, "Fuera de servicio" o "Almacenado".
+    let estadoOverride = null;
+    if (req.body.estadoOverride !== undefined && req.body.estadoOverride !== null) {
+      if (!ESTADOS_OVERRIDE.includes(req.body.estadoOverride)) {
         await limpiarImagenesSubidas(req);
         return res.status(400).json({
-          message: 'El costo de reparación es obligatorio y debe ser un número mayor a 0',
+          message: `estadoOverride inválido. Valores válidos: ${ESTADOS_OVERRIDE.join(', ')} o null`,
         });
       }
+      estadoOverride = req.body.estadoOverride;
+    }
+
+    // fechaCompra: llega como "YYYY-MM-DD" o no viene
+    const fechaCompra = parseFecha(req.body.fechaCompra ?? null);
+    if (fechaCompra === undefined) {
+      await limpiarImagenesSubidas(req);
+      return res.status(400).json({ message: 'fechaCompra debe tener formato YYYY-MM-DD' });
     }
 
     // Número de placa consecutivo y único, asignado automáticamente.
@@ -117,22 +110,19 @@ export const addActivo = async (req, res) => {
 
     const activo = new ActivoSala({
       numeroPlaca,
-      tipoRegistro,
       nombre: nombre.trim(),
       categoria: categoria || 'Otros',
       costo: costoNum,
-      costoReparacion: costoReparacionNum,
-      estado: estado || 'En uso',
+      estadoOverride,
+      // Sin reparaciones aún → estado derivado (respeta override si vino).
+      estado: derivarEstado([], estadoOverride),
       descripcion: descripcion?.trim() || null,
       numeroFactura: numeroFactura?.trim() || null,
       notas: notas?.trim() || null,
-      fechaCompraReparacion,
-      problemaTecnico: esReparacion ? req.body.problemaTecnico?.trim() || null : null,
-      reparadoPor: esReparacion ? req.body.reparadoPor?.trim() || null : null,
+      fechaCompra,
+      reparaciones: [],
       imagenUrl: req.cloudinaryUrl || null,
       imagenFacturaUrl: req.cloudinaryFacturaUrl || null,
-      // La factura de reparación solo tiene sentido en reparaciones
-      imagenFacturaReparacionUrl: esReparacion ? req.cloudinaryFacturaReparacionUrl || null : null,
     });
 
     try {
@@ -154,7 +144,7 @@ export const addActivo = async (req, res) => {
           throw err;
         }
       }
-      console.log(`✅ Activo "${savedActivo.nombre}" registrado (${savedActivo.tipoRegistro}) — placa #${savedActivo.numeroPlaca}`);
+      console.log(`✅ Activo "${savedActivo.nombre}" registrado — placa #${savedActivo.numeroPlaca}`);
       return res.status(201).json({ message: 'Activo registrado', data: savedActivo });
     } catch (mongoError) {
       // Rollback: si falla MongoDB, no dejar imágenes huérfanas en Cloudinary
@@ -170,10 +160,12 @@ export const addActivo = async (req, res) => {
 };
 
 // ============================================
-// GET /api/activos-sala[?page=1&limit=12&search=futbolin&tipoRegistro=Reparación]
+// GET /api/activos-sala[?page=1&limit=12&search=futbolin&categoria=&conReparacion=true|false]
 // Ordenados por createdAt descendente (más reciente primero).
 // Paginación opcional: si viene "page" se pagina, si no, devuelve todos.
-// Filtros opcionales: search (por nombre) y tipoRegistro.
+// Filtros opcionales: search (por nombre), categoria y conReparacion.
+//   conReparacion=true  → activos con al menos 1 reparación
+//   conReparacion=false → activos sin ninguna reparación
 // ============================================
 export const getActivos = async (req, res) => {
   try {
@@ -184,17 +176,19 @@ export const getActivos = async (req, res) => {
       filtro.nombre = { $regex: search, $options: 'i' };
     }
 
-    const { tipoRegistro } = req.query;
-    if (tipoRegistro) {
-      if (!TIPOS_REGISTRO.includes(tipoRegistro)) {
-        return res.status(400).json({
-          message: `tipoRegistro inválido. Valores válidos: ${TIPOS_REGISTRO.join(', ')}`,
-        });
+    // Filtro por presencia de reparaciones (reemplaza el viejo tipoRegistro).
+    const { conReparacion } = req.query;
+    if (conReparacion !== undefined) {
+      if (conReparacion === 'true') {
+        filtro['reparaciones.0'] = { $exists: true }; // tiene al menos 1
+      } else if (conReparacion === 'false') {
+        filtro['reparaciones.0'] = { $exists: false }; // no tiene ninguna
+      } else {
+        return res.status(400).json({ message: 'conReparacion debe ser "true" o "false"' });
       }
-      filtro.tipoRegistro = tipoRegistro;
     }
 
-    // Los conteos por categoría (chips) se calculan con search + tipoRegistro
+    // Los conteos por categoría (chips) se calculan con search + conReparacion
     // pero SIN el filtro de categoría, para que muestren cuántos hay en cada
     // una aunque haya una seleccionada. Por eso se toma este "filtroBase" antes
     // de aplicar la categoría.
@@ -283,7 +277,7 @@ export const getProximaPlaca = async (req, res) => {
 };
 
 // ============================================
-// GET /api/activos-sala/:id — Ver un activo
+// GET /api/activos-sala/:id — Ver un activo (incluye reparaciones y estadoOverride)
 // ============================================
 export const getActivoById = async (req, res) => {
   try {
@@ -304,9 +298,9 @@ export const getActivoById = async (req, res) => {
 };
 
 // ============================================
-// PUT /api/activos-sala/:id — Editar activo
-// Si llegan imágenes nuevas (ya subidas por el middleware), se reemplazan
-// las URLs y se eliminan las imágenes anteriores de Cloudinary.
+// PUT /api/activos-sala/:id — Editar activo (SOLO campos de producto + estadoOverride)
+// NO toca `reparaciones` (para eso están los endpoints anidados).
+// Recalcula y persiste `estado` (por si cambió estadoOverride).
 // ============================================
 export const updateActivo = async (req, res) => {
   try {
@@ -321,18 +315,8 @@ export const updateActivo = async (req, res) => {
       return res.status(404).json({ message: 'Activo no encontrado' });
     }
 
-    const { tipoRegistro, nombre, costo, estado, descripcion, numeroFactura, notas, categoria } = req.body;
+    const { nombre, costo, descripcion, numeroFactura, notas, categoria } = req.body;
     const $set = {};
-
-    if (tipoRegistro !== undefined) {
-      if (!TIPOS_REGISTRO.includes(tipoRegistro)) {
-        await limpiarImagenesSubidas(req);
-        return res.status(400).json({
-          message: `Tipo de registro inválido. Valores válidos: ${TIPOS_REGISTRO.join(', ')}`,
-        });
-      }
-      $set.tipoRegistro = tipoRegistro;
-    }
 
     if (nombre !== undefined) {
       if (!nombre || !nombre.trim()) {
@@ -351,16 +335,6 @@ export const updateActivo = async (req, res) => {
       $set.costo = costoNum;
     }
 
-    if (estado !== undefined) {
-      if (!ESTADOS_ACTIVO.includes(estado)) {
-        await limpiarImagenesSubidas(req);
-        return res.status(400).json({
-          message: `Estado inválido. Valores válidos: ${ESTADOS_ACTIVO.join(', ')}`,
-        });
-      }
-      $set.estado = estado;
-    }
-
     if (categoria !== undefined) {
       if (!CATEGORIAS_ACTIVO.includes(categoria)) {
         await limpiarImagenesSubidas(req);
@@ -371,66 +345,31 @@ export const updateActivo = async (req, res) => {
       $set.categoria = categoria;
     }
 
+    // estadoOverride: null vuelve a estado automático; si no, debe ser uno de los 2 manuales.
+    // Recalculamos `estado` con las reparaciones ACTUALES + el override resultante.
+    if (req.body.estadoOverride !== undefined) {
+      const nuevoOverride = req.body.estadoOverride;
+      if (nuevoOverride !== null && !ESTADOS_OVERRIDE.includes(nuevoOverride)) {
+        await limpiarImagenesSubidas(req);
+        return res.status(400).json({
+          message: `estadoOverride inválido. Valores válidos: ${ESTADOS_OVERRIDE.join(', ')} o null`,
+        });
+      }
+      $set.estadoOverride = nuevoOverride;
+      $set.estado = derivarEstado(activoActual.reparaciones, nuevoOverride);
+    }
+
     if (descripcion !== undefined) $set.descripcion = descripcion?.trim() || null;
     if (numeroFactura !== undefined) $set.numeroFactura = numeroFactura?.trim() || null;
     if (notas !== undefined) $set.notas = notas?.trim() || null;
 
-    if (req.body.fechaCompraReparacion !== undefined) {
-      const fecha = parseFechaCompra(req.body.fechaCompraReparacion);
+    if (req.body.fechaCompra !== undefined) {
+      const fecha = parseFecha(req.body.fechaCompra);
       if (fecha === undefined) {
         await limpiarImagenesSubidas(req);
-        return res.status(400).json({ message: 'fechaCompraReparacion debe tener formato YYYY-MM-DD' });
+        return res.status(400).json({ message: 'fechaCompra debe tener formato YYYY-MM-DD' });
       }
-      $set.fechaCompraReparacion = fecha;
-    }
-
-    // problemaTecnico / reparadoPor / costoReparacion: solo tienen sentido en
-    // reparaciones. Si el registro queda como "Nueva Compra", se fuerzan a null.
-    // El costo de reparación va SEPARADO del costo del producto: registrar una
-    // reparación nunca modifica el campo costo.
-    const tipoFinal = $set.tipoRegistro || activoActual.tipoRegistro;
-    if (tipoFinal === 'Reparación') {
-      if (req.body.problemaTecnico !== undefined) $set.problemaTecnico = req.body.problemaTecnico?.trim() || null;
-      if (req.body.reparadoPor !== undefined) $set.reparadoPor = req.body.reparadoPor?.trim() || null;
-      if (req.body.costoReparacion !== undefined) {
-        const costoReparacionNum = Number(req.body.costoReparacion);
-        if (req.body.costoReparacion === null || isNaN(costoReparacionNum) || costoReparacionNum <= 0) {
-          await limpiarImagenesSubidas(req);
-          return res.status(400).json({ message: 'El costo de reparación debe ser un número mayor a 0' });
-        }
-        $set.costoReparacion = costoReparacionNum;
-      }
-
-      // Factura de reparación: si llegó una nueva, reemplazar y borrar la anterior.
-      // NO toca imagenFacturaUrl (la factura de compra queda intacta).
-      if (req.cloudinaryFacturaReparacionUrl) {
-        console.log('🧾 Nueva imagen de factura de reparación:', req.cloudinaryFacturaReparacionUrl);
-        $set.imagenFacturaReparacionUrl = req.cloudinaryFacturaReparacionUrl;
-        if (activoActual.imagenFacturaReparacionUrl) {
-          await eliminarImagenCloudinary(activoActual.imagenFacturaReparacionUrl);
-        }
-      }
-
-      // Eliminar factura de reparación (solo si NO se subió una nueva en este request)
-      if (req.body.eliminarImagenFacturaReparacion === true && !req.cloudinaryFacturaReparacionUrl) {
-        $set.imagenFacturaReparacionUrl = null;
-        if (activoActual.imagenFacturaReparacionUrl) await eliminarImagenCloudinary(activoActual.imagenFacturaReparacionUrl);
-      }
-    } else {
-      $set.problemaTecnico = null;
-      $set.reparadoPor = null;
-      $set.costoReparacion = null;
-      // Al dejar de ser reparación, la factura de reparación deja de aplicar:
-      // limpiar la URL y borrar el archivo del storage si existía.
-      $set.imagenFacturaReparacionUrl = null;
-      if (activoActual.imagenFacturaReparacionUrl) {
-        await eliminarImagenCloudinary(activoActual.imagenFacturaReparacionUrl);
-      }
-      // Si en esta misma petición se subió una factura de reparación, queda
-      // huérfana al pasar a "Nueva Compra": borrarla del storage.
-      if (req.cloudinaryFacturaReparacionUrl) {
-        await eliminarImagenCloudinary(req.cloudinaryFacturaReparacionUrl);
-      }
+      $set.fechaCompra = fecha;
     }
 
     // Imagen del artículo: si llegó una nueva, reemplazar y borrar la anterior
@@ -448,7 +387,7 @@ export const updateActivo = async (req, res) => {
       if (activoActual.imagenUrl) await eliminarImagenCloudinary(activoActual.imagenUrl);
     }
 
-    // Factura de compra: igual. NO toca imagenFacturaReparacionUrl.
+    // Factura de compra: igual.
     if (req.cloudinaryFacturaUrl) {
       console.log('🧾 Nueva imagen de factura de compra:', req.cloudinaryFacturaUrl);
       $set.imagenFacturaUrl = req.cloudinaryFacturaUrl;
@@ -483,7 +422,8 @@ export const updateActivo = async (req, res) => {
 };
 
 // ============================================
-// DELETE /api/activos-sala/:id — Eliminar activo + sus imágenes de Cloudinary
+// DELETE /api/activos-sala/:id — Eliminar activo + TODAS sus imágenes de Cloudinary
+// (foto del artículo, factura de compra y las facturas de cada reparación).
 // ============================================
 export const deleteActivo = async (req, res) => {
   try {
@@ -496,11 +436,13 @@ export const deleteActivo = async (req, res) => {
       return res.status(404).json({ message: 'Activo no encontrado' });
     }
 
-    // Eliminar imágenes de Cloudinary (si las tiene), igual que en productos.
-    // Si falla la limpieza no se bloquea la eliminación del registro.
+    // Eliminar imágenes de Cloudinary (si las tiene). Si falla la limpieza no se
+    // bloquea la eliminación del registro.
     if (activo.imagenUrl) await eliminarImagenCloudinary(activo.imagenUrl);
     if (activo.imagenFacturaUrl) await eliminarImagenCloudinary(activo.imagenFacturaUrl);
-    if (activo.imagenFacturaReparacionUrl) await eliminarImagenCloudinary(activo.imagenFacturaReparacionUrl);
+    for (const rep of activo.reparaciones || []) {
+      if (rep.facturaUrl) await eliminarImagenCloudinary(rep.facturaUrl);
+    }
 
     await ActivoSala.findByIdAndDelete(req.params.id);
 
@@ -509,5 +451,215 @@ export const deleteActivo = async (req, res) => {
   } catch (error) {
     console.error('❌ Error al eliminar activo:', error);
     res.status(500).json({ message: 'Error al eliminar el activo', error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// REPARACIONES (historial dentro de cada activo).
+// Las 3 recalculan y persisten `estado` y devuelven el activo COMPLETO.
+// La factura (facturaBase64) la sube uploadReparacionFacturaToCloudinary:
+//   req.cloudinaryReparacionFacturaUrl / req.cloudinaryReparacionFacturaPublicId
+// ─────────────────────────────────────────────────────────────────
+
+// Valida y normaliza el `costo` de una reparación. Retorna { error } o { value }.
+const parseCostoReparacion = (valor) => {
+  const num = Number(valor);
+  if (valor === undefined || valor === null || valor === '' || isNaN(num) || num <= 0) {
+    return { error: 'El costo de la reparación es obligatorio y debe ser un número mayor a 0' };
+  }
+  return { value: num };
+};
+
+// ============================================
+// POST /api/activos-sala/:id/reparaciones — Agregar una reparación (push)
+// ============================================
+export const addReparacion = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      await limpiarImagenesSubidas(req);
+      return res.status(400).json({ message: 'ID de activo inválido' });
+    }
+
+    const activo = await ActivoSala.findById(req.params.id);
+    if (!activo) {
+      await limpiarImagenesSubidas(req);
+      return res.status(404).json({ message: 'Activo no encontrado' });
+    }
+
+    const { value: costo, error: errorCosto } = parseCostoReparacion(req.body.costo);
+    if (errorCosto) {
+      await limpiarImagenesSubidas(req);
+      return res.status(400).json({ message: errorCosto });
+    }
+
+    // fecha: "YYYY-MM-DD" opcional; si no viene, hoy (CR). No puede ser futura.
+    let fecha;
+    if (req.body.fecha === undefined || req.body.fecha === null || req.body.fecha === '') {
+      fecha = hoyCostaRica();
+    } else {
+      fecha = parseFecha(req.body.fecha);
+      if (fecha === undefined) {
+        await limpiarImagenesSubidas(req);
+        return res.status(400).json({ message: 'fecha debe tener formato YYYY-MM-DD' });
+      }
+    }
+    if (fecha > hoyCostaRica()) {
+      await limpiarImagenesSubidas(req);
+      return res.status(400).json({ message: 'La fecha de la reparación no puede ser futura' });
+    }
+
+    activo.reparaciones.push({
+      costo,
+      problemaTecnico: req.body.problemaTecnico?.trim() || null,
+      reparadoPor: req.body.reparadoPor?.trim() || null,
+      fecha,
+      finalizada: req.body.finalizada === true || req.body.finalizada === 'true',
+      facturaUrl: req.cloudinaryReparacionFacturaUrl || null,
+      facturaPublicId: req.cloudinaryReparacionFacturaPublicId || null,
+    });
+
+    // Recalcular estado con el historial actualizado (respeta override existente).
+    activo.estado = derivarEstado(activo.reparaciones, activo.estadoOverride);
+
+    try {
+      const guardado = await activo.save();
+      console.log(`✅ Reparación agregada al activo "${guardado.nombre}" (${guardado.reparaciones.length} en total)`);
+      return res.status(201).json({ message: 'Reparación agregada', data: guardado });
+    } catch (mongoError) {
+      console.error('❌ Fallo en MongoDB al agregar reparación:', mongoError.message);
+      await limpiarImagenesSubidas(req);
+      return res.status(500).json({ message: 'No se pudo guardar la reparación', error: mongoError.message });
+    }
+  } catch (error) {
+    console.error('❌ Error al agregar reparación:', error);
+    await limpiarImagenesSubidas(req);
+    res.status(500).json({ message: 'Error al agregar la reparación', error: error.message });
+  }
+};
+
+// ============================================
+// PUT /api/activos-sala/:id/reparaciones/:repId — Editar una reparación
+// Solo actualiza lo que llega. facturaBase64 nueva reemplaza la anterior;
+// eliminarFactura:true la borra sin reemplazar.
+// ============================================
+export const updateReparacion = async (req, res) => {
+  try {
+    const { id, repId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(repId)) {
+      await limpiarImagenesSubidas(req);
+      return res.status(400).json({ message: 'ID inválido' });
+    }
+
+    const activo = await ActivoSala.findById(id);
+    if (!activo) {
+      await limpiarImagenesSubidas(req);
+      return res.status(404).json({ message: 'Activo no encontrado' });
+    }
+
+    const rep = activo.reparaciones.id(repId);
+    if (!rep) {
+      await limpiarImagenesSubidas(req);
+      return res.status(404).json({ message: 'Reparación no encontrada' });
+    }
+
+    if (req.body.costo !== undefined) {
+      const { value, error } = parseCostoReparacion(req.body.costo);
+      if (error) {
+        await limpiarImagenesSubidas(req);
+        return res.status(400).json({ message: error });
+      }
+      rep.costo = value;
+    }
+
+    if (req.body.problemaTecnico !== undefined) rep.problemaTecnico = req.body.problemaTecnico?.trim() || null;
+    if (req.body.reparadoPor !== undefined) rep.reparadoPor = req.body.reparadoPor?.trim() || null;
+
+    if (req.body.fecha !== undefined) {
+      const fecha = parseFecha(req.body.fecha);
+      if (fecha === undefined) {
+        await limpiarImagenesSubidas(req);
+        return res.status(400).json({ message: 'fecha debe tener formato YYYY-MM-DD' });
+      }
+      if (fecha && fecha > hoyCostaRica()) {
+        await limpiarImagenesSubidas(req);
+        return res.status(400).json({ message: 'La fecha de la reparación no puede ser futura' });
+      }
+      rep.fecha = fecha;
+    }
+
+    if (req.body.finalizada !== undefined) {
+      rep.finalizada = req.body.finalizada === true || req.body.finalizada === 'true';
+    }
+
+    // Factura: nueva imagen reemplaza y borra la anterior.
+    if (req.cloudinaryReparacionFacturaUrl) {
+      const anterior = rep.facturaUrl;
+      rep.facturaUrl = req.cloudinaryReparacionFacturaUrl;
+      rep.facturaPublicId = req.cloudinaryReparacionFacturaPublicId || null;
+      if (anterior) await eliminarImagenCloudinary(anterior);
+    } else if (req.body.eliminarFactura === true && rep.facturaUrl) {
+      // Borrar la factura sin reemplazarla.
+      const anterior = rep.facturaUrl;
+      rep.facturaUrl = null;
+      rep.facturaPublicId = null;
+      await eliminarImagenCloudinary(anterior);
+    }
+
+    // Recalcular estado por si cambió `finalizada`.
+    activo.estado = derivarEstado(activo.reparaciones, activo.estadoOverride);
+
+    try {
+      const guardado = await activo.save();
+      console.log(`✅ Reparación ${repId} del activo "${guardado.nombre}" actualizada`);
+      return res.status(200).json({ message: 'Reparación actualizada', data: guardado });
+    } catch (mongoError) {
+      console.error('❌ Fallo en MongoDB al actualizar reparación:', mongoError.message);
+      await limpiarImagenesSubidas(req);
+      return res.status(500).json({ message: 'No se pudo actualizar la reparación', error: mongoError.message });
+    }
+  } catch (error) {
+    console.error('❌ Error al actualizar reparación:', error);
+    await limpiarImagenesSubidas(req);
+    res.status(500).json({ message: 'Error al actualizar la reparación', error: error.message });
+  }
+};
+
+// ============================================
+// DELETE /api/activos-sala/:id/reparaciones/:repId — Eliminar una reparación
+// Borra el item del arreglo + su factura de Cloudinary. Recalcula estado.
+// ============================================
+export const deleteReparacion = async (req, res) => {
+  try {
+    const { id, repId } = req.params;
+    if (!mongoose.Types.ObjectId.isValid(id) || !mongoose.Types.ObjectId.isValid(repId)) {
+      return res.status(400).json({ message: 'ID inválido' });
+    }
+
+    const activo = await ActivoSala.findById(id);
+    if (!activo) {
+      return res.status(404).json({ message: 'Activo no encontrado' });
+    }
+
+    const rep = activo.reparaciones.id(repId);
+    if (!rep) {
+      return res.status(404).json({ message: 'Reparación no encontrada' });
+    }
+
+    const facturaABorrar = rep.facturaUrl;
+    rep.deleteOne(); // quita el subdocumento del arreglo
+
+    // Recalcular estado con el historial ya reducido.
+    activo.estado = derivarEstado(activo.reparaciones, activo.estadoOverride);
+
+    const guardado = await activo.save();
+
+    // Borrar la factura del storage después de persistir (no crítico si falla).
+    if (facturaABorrar) await eliminarImagenCloudinary(facturaABorrar);
+
+    console.log(`✅ Reparación ${repId} eliminada del activo "${guardado.nombre}"`);
+    return res.status(200).json({ message: 'Reparación eliminada', data: guardado });
+  } catch (error) {
+    console.error('❌ Error al eliminar reparación:', error);
+    res.status(500).json({ message: 'Error al eliminar la reparación', error: error.message });
   }
 };

@@ -24,6 +24,7 @@ import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
 import { migrarCategoriaActivos } from './utils/migrarCategoriaActivos.js';
+import { migrarReparacionesActivos } from './utils/migrarReparacionesActivos.js';
 // Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
@@ -221,6 +222,23 @@ try {
   }
 } catch (e) {
   console.error('⚠️ No se pudo migrar la categoría de activos (no crítico):', e.message);
+}
+
+// ============================================
+// 🔧 MIGRACIÓN: reparaciones[] + estado automático de activos
+// Idempotente. Pasa los campos sueltos de reparación al arreglo `reparaciones`,
+// mueve fechaCompraReparacion→fechaCompra, deriva estado/estadoOverride y
+// elimina los campos viejos. Si falla, NO se detiene el servidor (no es crítico).
+// ============================================
+try {
+  const { migrados } = await migrarReparacionesActivos();
+  if (migrados > 0) {
+    console.log(`🔧 ${migrados} activo(s) migrados al modelo de reparaciones[].`);
+  } else {
+    console.log('🔧 Activos: todos ya están en el modelo de reparaciones[].');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar reparaciones de activos (no crítico):', e.message);
 }
 
 // ============================================
