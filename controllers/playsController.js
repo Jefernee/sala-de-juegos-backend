@@ -162,13 +162,14 @@ const calcularDatosReporte = (plays, año, mes, inicio, fin) => {
     else                                        sesionesEnProceso++;
 
     const emp = play.atendio || 'Desconocido';
-    if (!empleadosMap[emp]) empleadosMap[emp] = { nombre: emp, totalSesiones: 0, totalRecaudado: 0, totalPlay4: 0, totalPlay5: 0, totalPingPong: 0, totalControlesAdicionales: 0, tiempoTotalMinutos: 0 };
+    if (!empleadosMap[emp]) empleadosMap[emp] = { nombre: emp, totalSesiones: 0, totalRecaudado: 0, totalPlay4: 0, totalPlay5: 0, totalPingPong: 0, totalControlesAdicionales: 0, totalCostosControles: 0, tiempoTotalMinutos: 0 };
     empleadosMap[emp].totalSesiones++;
     empleadosMap[emp].totalRecaudado           += play.total           || 0;
     empleadosMap[emp].totalPlay4               += play.totalPlay4      || 0;
     empleadosMap[emp].totalPlay5               += play.totalPlay5      || 0;
     empleadosMap[emp].totalPingPong            += play.totalPingPong   || 0;
     empleadosMap[emp].totalControlesAdicionales += play.controlAdicional || 0;
+    empleadosMap[emp].totalCostosControles     += play.costoControles  || 0;
     empleadosMap[emp].tiempoTotalMinutos       += play.tiempoPagado    || 0;
 
     const lugar = play.lugarDeJuego || 'Desconocido';
