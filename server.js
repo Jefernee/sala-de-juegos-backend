@@ -65,12 +65,18 @@ let firstRequest = true;
 const PORT = process.env.PORT || 8000;
 
 // Permitir localhost SIEMPRE (desarrollo y producción)
+// Normaliza quitando la barra final para que la comparación de orígenes no
+// dependa de si la URL fue escrita con "/" al final o no. El navegador manda
+// el header Origin SIN barra final; si la variable de entorno la trae, sin
+// esta normalización el frontend quedaría bloqueado por CORS.
+const normalizarOrigen = (url) => (url || '').replace(/\/+$/, '');
+
 const allowedOrigins = [
   process.env.FRONTEND_URL, // Netlify
   "http://localhost:3000", // Para npm run prod
   "http://localhost:3001",
   "http://localhost:5173", // 🔥 Vite
-].filter(Boolean);
+].filter(Boolean).map(normalizarOrigen);
 
 console.log("🌍 Entorno:", process.env.NODE_ENV);
 console.log("✅ CORS permitido desde:", allowedOrigins);
@@ -84,7 +90,9 @@ app.use(
       // Permitir peticiones sin origin (Postman, Thunder Client)
       if (!origin) return callback(null, true);
 
-      if (allowedOrigins.indexOf(origin) !== -1) {
+      // Comparamos ambos lados normalizados (sin barra final) para no depender
+      // de cómo esté escrita la URL.
+      if (allowedOrigins.indexOf(normalizarOrigen(origin)) !== -1) {
         callback(null, true);
       } else {
         console.log("❌ Origen bloqueado por CORS:", origin);
@@ -114,8 +122,26 @@ console.log("✅ Límites de Express configurados: 10mb");
 // ============================================
 // CONEXIÓN A MONGODB
 // ============================================
+// Vigilantes de la conexión: si Atlas cierra la conexión (inactividad, corte de
+// red), mongoose reintenta reconectar solo. Estos eventos lo dejan registrado
+// en los logs para poder diagnosticar. No detienen el servidor.
+mongoose.connection.on('disconnected', () => {
+  console.warn('⚠️ MongoDB DESCONECTADO. Mongoose intentará reconectar automáticamente...');
+});
+mongoose.connection.on('reconnected', () => {
+  console.log('✅ MongoDB RECONECTADO correctamente.');
+});
+mongoose.connection.on('error', (err) => {
+  console.error('❌ Error de conexión MongoDB:', err.message);
+});
+
 const connectDB = async () => {
   try {
+    // Si la conexión está caída, una query espera como máximo 8s y falla con un
+    // error claro, en vez de quedarse "buffereada" colgada indefinidamente.
+    // En Mongoose es una opción global (no de connect()).
+    mongoose.set('bufferTimeoutMS', 8000);
+
     await mongoose.connect(process.env.MONGO_URI, {
       // Timeouts configurados para mejor manejo
       serverSelectionTimeoutMS: 5000,
