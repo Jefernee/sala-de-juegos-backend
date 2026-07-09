@@ -98,6 +98,15 @@ const playSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'El total no puede ser negativo']
   },
+  // Monto REAL cobrado por el play. Es la fuente de verdad del ingreso: se usa
+  // tal cual (no se recalcula desde el tiempo) para que el reporte sume el monto
+  // exacto que se cobró. En "modo por tiempo" coincide con total; en "modo por
+  // monto" el empleado escribe el monto y el tiempo se deriva. Igual a `total`.
+  montoPagado: {
+    type: Number,
+    default: 0,
+    min: [0, 'El monto no puede ser negativo']
+  },
   // Totales separados para reportes
   totalPlay4: {
     type: Number,

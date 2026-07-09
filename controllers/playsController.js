@@ -8,14 +8,27 @@ import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
 // Helpers de costo y tipo
 // ─────────────────────────────────────────────────────────────────
 
-const calcularCostos = (lugarDeJuego, tiempoPagado, controlAdicional) => {
+const calcularCostos = (lugarDeJuego, tiempoPagado, controlAdicional, montoPagado) => {
   let precioPorHora = 0;
   if (lugarDeJuego.includes('Play 5'))      precioPorHora = 1000;
   else if (lugarDeJuego.includes('Play 4')) precioPorHora = 800;
   else if (lugarDeJuego === 'Ping Pong')    precioPorHora = 800;
-  const subtotal      = (tiempoPagado / 60) * precioPorHora;
+
   const costoControles = controlAdicional * 200;
-  return { subtotal: Math.round(subtotal), costoControles, total: Math.round(subtotal + costoControles) };
+
+  // Ingreso REAL del play = montoPagado (fuente de verdad). Si el frontend lo
+  // manda (modo por monto, o por tiempo ya calculado), se usa tal cual; si no
+  // llega (compatibilidad), se deriva del tiempo: tiempo×precio + controles.
+  const montoPorTiempo = Math.round((tiempoPagado / 60) * precioPorHora) + costoControles;
+  const total = (Number.isFinite(Number(montoPagado)) && Number(montoPagado) >= 0)
+    ? Math.round(Number(montoPagado))
+    : montoPorTiempo;
+
+  // Desglose limpio para reportes: los controles van a su bucket y el resto
+  // (ingreso por tiempo) al del tipo de play → así los buckets suman el total.
+  const subtotal = Math.max(0, total - costoControles);
+
+  return { subtotal, costoControles, total };
 };
 
 const determinarTipoPlay = (lugarDeJuego) => {
@@ -317,7 +330,7 @@ export const createPlay = async (req, res) => {
 
     const tipoPlay = determinarTipoPlay(req.body.lugarDeJuego);
     const { totalControles, controlAdicional } = normalizarControles(req.body);
-    const costos   = calcularCostos(req.body.lugarDeJuego, req.body.tiempoPagado, controlAdicional);
+    const costos   = calcularCostos(req.body.lugarDeJuego, req.body.tiempoPagado, controlAdicional, req.body.montoPagado);
 
     const fechaPlay = getUTCDateRanges().hoy.inicio;
 
@@ -346,9 +359,12 @@ export const createPlay = async (req, res) => {
       subtotal:        costos.subtotal,
       costoControles:  costos.costoControles,
       total:           costos.total,
-      totalPlay4:      tipoPlay === 'Play 4'    ? costos.total : 0,
-      totalPlay5:      tipoPlay === 'Play 5'    ? costos.total : 0,
-      totalPingPong:   tipoPlay === 'Ping Pong' ? costos.total : 0,
+      montoPagado:     costos.total,
+      // Solo el ingreso por TIEMPO va al bucket del tipo de play; los controles
+      // van aparte (costoControles → totalCostosControles en el reporte).
+      totalPlay4:      tipoPlay === 'Play 4'    ? costos.subtotal : 0,
+      totalPlay5:      tipoPlay === 'Play 5'    ? costos.subtotal : 0,
+      totalPingPong:   tipoPlay === 'Ping Pong' ? costos.subtotal : 0,
       estadoPago:      req.body.estadoPago || 'En Proceso',
       // Se deriva de horaFinal para coincidir exactamente con lo que muestra la UI.
       finProgramado,
@@ -407,13 +423,16 @@ export const updatePlay = async (req, res) => {
     play.controlAdicional = controles.controlAdicional;
 
     play.tipoPlay       = determinarTipoPlay(play.lugarDeJuego);
-    const costos        = calcularCostos(play.lugarDeJuego, play.tiempoPagado, play.controlAdicional);
+    // montoPagado del body es la fuente de verdad; si no viene, se deriva del tiempo.
+    const costos        = calcularCostos(play.lugarDeJuego, play.tiempoPagado, play.controlAdicional, req.body.montoPagado);
     play.subtotal       = costos.subtotal;
     play.costoControles = costos.costoControles;
     play.total          = costos.total;
-    play.totalPlay4     = play.tipoPlay === 'Play 4'    ? costos.total : 0;
-    play.totalPlay5     = play.tipoPlay === 'Play 5'    ? costos.total : 0;
-    play.totalPingPong  = play.tipoPlay === 'Ping Pong' ? costos.total : 0;
+    play.montoPagado    = costos.total;
+    // Solo el ingreso por TIEMPO va al bucket del tipo; los controles van aparte.
+    play.totalPlay4     = play.tipoPlay === 'Play 4'    ? costos.subtotal : 0;
+    play.totalPlay5     = play.tipoPlay === 'Play 5'    ? costos.subtotal : 0;
+    play.totalPingPong  = play.tipoPlay === 'Ping Pong' ? costos.subtotal : 0;
 
     // Si cambió algún dato de tiempo (horaInicio, horaFinal o tiempoPagado),
     // recalculamos el fin desde el MISMO origen que la UI (horaFinal) y reseteamos

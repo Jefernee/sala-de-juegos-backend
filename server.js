@@ -22,6 +22,7 @@ import activosSalaRoutes from './routes/activosSala.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
+import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
 // Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
@@ -187,6 +188,22 @@ try {
   }
 } catch (e) {
   console.error('⚠️ No se pudo migrar totalControles (no crítico):', e.message);
+}
+
+// ============================================
+// 💰 MIGRACIÓN: montoPagado en plays
+// Idempotente. Backfillea montoPagado y re-desglosa los buckets en plays viejos.
+// Si falla, NO se detiene el servidor (no es crítico para arrancar).
+// ============================================
+try {
+  const { modificados } = await migrarMontoPagado();
+  if (modificados > 0) {
+    console.log(`💰 montoPagado asignado/redesglosado en ${modificados} play(s) antiguos.`);
+  } else {
+    console.log('💰 Plays: todos ya tienen montoPagado.');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar montoPagado (no crítico):', e.message);
 }
 
 // ============================================
