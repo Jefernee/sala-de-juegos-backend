@@ -23,6 +23,7 @@ import activosReportRoutes from './routes/activosReportRoutes.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
+import { migrarCategoriaActivos } from './utils/migrarCategoriaActivos.js';
 // Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
@@ -204,6 +205,22 @@ try {
   }
 } catch (e) {
   console.error('⚠️ No se pudo migrar montoPagado (no crítico):', e.message);
+}
+
+// ============================================
+// 🏷️ MIGRACIÓN: categoría de activos de la sala
+// Idempotente. Clasifica por nombre los activos que aún no tienen categoría.
+// Si falla, NO se detiene el servidor (no es crítico para arrancar).
+// ============================================
+try {
+  const { asignados } = await migrarCategoriaActivos();
+  if (asignados > 0) {
+    console.log(`🏷️ Categoría asignada a ${asignados} activo(s) existentes.`);
+  } else {
+    console.log('🏷️ Activos: todos ya tienen categoría.');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar la categoría de activos (no crítico):', e.message);
 }
 
 // ============================================

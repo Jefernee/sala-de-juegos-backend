@@ -5,6 +5,7 @@ import mongoose from 'mongoose';
 
 export const TIPOS_REGISTRO = ['Nueva Compra', 'Reparación'];
 export const ESTADOS_ACTIVO = ['En uso', 'En reparación', 'Reparado', 'Fuera de servicio', 'Almacenado'];
+export const CATEGORIAS_ACTIVO = ['Control PS4', 'Control PS5', 'Consola PS4', 'Consola PS5', 'Pantalla', 'Otros'];
 
 const activoSalaSchema = new mongoose.Schema(
   {
@@ -32,6 +33,16 @@ const activoSalaSchema = new mongoose.Schema(
       type: String,
       required: [true, 'El nombre es obligatorio'],
       trim: true,
+    },
+    // Categoría para filtrar el panel de activos (chips). Se envía desde el
+    // frontend; los activos viejos se clasifican con una migración por nombre.
+    categoria: {
+      type: String,
+      enum: {
+        values: CATEGORIAS_ACTIVO,
+        message: 'Categoría inválida: {VALUE}',
+      },
+      default: 'Otros',
     },
     // Costo del producto/compra. NO se modifica al registrar reparaciones.
     costo: {
@@ -75,5 +86,7 @@ const activoSalaSchema = new mongoose.Schema(
 
 // Índice para el listado ordenado por más reciente
 activoSalaSchema.index({ createdAt: -1 });
+// Índice para el filtro por categoría (chips del panel)
+activoSalaSchema.index({ categoria: 1 });
 
 export default mongoose.model('ActivoSala', activoSalaSchema);

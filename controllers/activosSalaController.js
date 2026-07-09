@@ -6,7 +6,7 @@
 //   - Editar: si llega imagen nueva, reemplaza y elimina la anterior
 //   - Eliminar: borra el documento y sus imágenes de Cloudinary
 import mongoose from 'mongoose';
-import ActivoSala, { TIPOS_REGISTRO, ESTADOS_ACTIVO } from '../models/ActivoSala.js';
+import ActivoSala, { TIPOS_REGISTRO, ESTADOS_ACTIVO, CATEGORIAS_ACTIVO } from '../models/ActivoSala.js';
 import { siguienteSecuencia, fijarSecuenciaMinima, verSecuencia } from '../models/Counter.js';
 import { eliminarImagenCloudinary } from '../utils/cloudinaryUtils.js';
 import cloudinary from '../config/cloudinary.js';
@@ -49,7 +49,7 @@ const limpiarImagenesSubidas = async (req) => {
 // ============================================
 export const addActivo = async (req, res) => {
   try {
-    const { tipoRegistro, nombre, costo, estado, descripcion, numeroFactura, notas } = req.body;
+    const { tipoRegistro, nombre, costo, estado, descripcion, numeroFactura, notas, categoria } = req.body;
 
     // Validaciones de campos obligatorios
     if (!tipoRegistro || !TIPOS_REGISTRO.includes(tipoRegistro)) {
@@ -74,6 +74,13 @@ export const addActivo = async (req, res) => {
       await limpiarImagenesSubidas(req);
       return res.status(400).json({
         message: `Estado inválido. Valores válidos: ${ESTADOS_ACTIVO.join(', ')}`,
+      });
+    }
+
+    if (categoria !== undefined && categoria !== null && !CATEGORIAS_ACTIVO.includes(categoria)) {
+      await limpiarImagenesSubidas(req);
+      return res.status(400).json({
+        message: `Categoría inválida. Valores válidos: ${CATEGORIAS_ACTIVO.join(', ')}`,
       });
     }
 
@@ -112,6 +119,7 @@ export const addActivo = async (req, res) => {
       numeroPlaca,
       tipoRegistro,
       nombre: nombre.trim(),
+      categoria: categoria || 'Otros',
       costo: costoNum,
       costoReparacion: costoReparacionNum,
       estado: estado || 'En uso',
@@ -186,6 +194,22 @@ export const getActivos = async (req, res) => {
       filtro.tipoRegistro = tipoRegistro;
     }
 
+    // Los conteos por categoría (chips) se calculan con search + tipoRegistro
+    // pero SIN el filtro de categoría, para que muestren cuántos hay en cada
+    // una aunque haya una seleccionada. Por eso se toma este "filtroBase" antes
+    // de aplicar la categoría.
+    const filtroBase = { ...filtro };
+
+    const { categoria } = req.query;
+    if (categoria) {
+      if (!CATEGORIAS_ACTIVO.includes(categoria)) {
+        return res.status(400).json({
+          message: `categoria inválida. Valores válidos: ${CATEGORIAS_ACTIVO.join(', ')}`,
+        });
+      }
+      filtro.categoria = categoria;
+    }
+
     // Paginación opcional
     const page = parseInt(req.query.page) || null;
     const limit = Math.min(parseInt(req.query.limit) || 12, 100);
@@ -195,12 +219,24 @@ export const getActivos = async (req, res) => {
       consulta = consulta.skip((page - 1) * limit).limit(limit);
     }
 
-    const [data, totalItems] = await Promise.all([
+    const [data, totalItems, conteoAgg] = await Promise.all([
       consulta.lean(),
       ActivoSala.countDocuments(filtro),
+      ActivoSala.aggregate([
+        { $match: filtroBase },
+        { $group: { _id: '$categoria', count: { $sum: 1 } } },
+      ]),
     ]);
 
-    const respuesta = { data };
+    // Conteo por categoría con TODAS las categorías presentes (0 si no hay).
+    // Los docs viejos sin categoría (antes de la migración) se cuentan en "Otros".
+    const conteoPorCategoria = Object.fromEntries(CATEGORIAS_ACTIVO.map((c) => [c, 0]));
+    for (const { _id, count } of conteoAgg) {
+      const key = _id || 'Otros';
+      conteoPorCategoria[key] = (conteoPorCategoria[key] || 0) + count;
+    }
+
+    const respuesta = { data, conteoPorCategoria };
 
     if (page) {
       const totalPages = Math.ceil(totalItems / limit);
@@ -285,7 +321,7 @@ export const updateActivo = async (req, res) => {
       return res.status(404).json({ message: 'Activo no encontrado' });
     }
 
-    const { tipoRegistro, nombre, costo, estado, descripcion, numeroFactura, notas } = req.body;
+    const { tipoRegistro, nombre, costo, estado, descripcion, numeroFactura, notas, categoria } = req.body;
     const $set = {};
 
     if (tipoRegistro !== undefined) {
@@ -323,6 +359,16 @@ export const updateActivo = async (req, res) => {
         });
       }
       $set.estado = estado;
+    }
+
+    if (categoria !== undefined) {
+      if (!CATEGORIAS_ACTIVO.includes(categoria)) {
+        await limpiarImagenesSubidas(req);
+        return res.status(400).json({
+          message: `Categoría inválida. Valores válidos: ${CATEGORIAS_ACTIVO.join(', ')}`,
+        });
+      }
+      $set.categoria = categoria;
     }
 
     if (descripcion !== undefined) $set.descripcion = descripcion?.trim() || null;
