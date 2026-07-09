@@ -47,6 +47,7 @@ const playSchema = new mongoose.Schema({
       'Play 4 número 3',
       'Play 5 número 1',
       'Play 5 número 2',
+      'Play 5 número 3',
       'Ping Pong'
     ],
     trim: true
