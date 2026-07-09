@@ -21,6 +21,7 @@ import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
+import { migrarTotalControles } from './utils/migrarTotalControles.js';
 // Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
@@ -170,6 +171,22 @@ try {
   }
 } catch (e) {
   console.error('⚠️ No se pudo migrar placas de activos (no crítico):', e.message);
+}
+
+// ============================================
+// 🎮 MIGRACIÓN: totalControles en plays
+// Idempotente. Backfillea los plays viejos que no tengan el campo.
+// Si falla, NO se detiene el servidor (no es crítico para arrancar).
+// ============================================
+try {
+  const { modificados } = await migrarTotalControles();
+  if (modificados > 0) {
+    console.log(`🎮 totalControles asignado a ${modificados} play(s) antiguos.`);
+  } else {
+    console.log('🎮 Plays: todos ya tienen totalControles.');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar totalControles (no crítico):', e.message);
 }
 
 // ============================================

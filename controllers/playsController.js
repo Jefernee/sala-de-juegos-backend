@@ -25,6 +25,24 @@ const determinarTipoPlay = (lugarDeJuego) => {
   return '';
 };
 
+// Normaliza los controles de un body. totalControles (1-4) es la fuente de
+// verdad; controlAdicional (los que se cobran) SIEMPRE se deriva como
+// max(0, totalControles - 2), así el cobro y el mensaje nunca quedan
+// inconsistentes. Acepta bodies viejos que solo manden controlAdicional, y
+// cae en 2 controles / 0 cobrados si no llega ninguno.
+const normalizarControles = ({ totalControles, controlAdicional } = {}) => {
+  let total = Number(totalControles);
+  const adic = Number(controlAdicional);
+  if (Number.isFinite(total) && total >= 1) {
+    total = Math.min(4, Math.max(1, Math.round(total)));
+  } else if (Number.isFinite(adic) && adic > 0) {
+    total = Math.min(4, Math.round(adic) + 2); // 2 gratis + los cobrados
+  } else {
+    total = 2; // por defecto: 2 controles (ambos gratis)
+  }
+  return { totalControles: total, controlAdicional: Math.max(0, total - 2) };
+};
+
 // ─────────────────────────────────────────────────────────────────
 // Fin de sesión para notificaciones WhatsApp (ver utils/finSesionScheduler.js
 // y atlas/finSesionTrigger.js).
@@ -298,7 +316,8 @@ export const createPlay = async (req, res) => {
     console.log('📝 Datos recibidos para crear play:', req.body);
 
     const tipoPlay = determinarTipoPlay(req.body.lugarDeJuego);
-    const costos   = calcularCostos(req.body.lugarDeJuego, req.body.tiempoPagado, req.body.controlAdicional || 0);
+    const { totalControles, controlAdicional } = normalizarControles(req.body);
+    const costos   = calcularCostos(req.body.lugarDeJuego, req.body.tiempoPagado, controlAdicional);
 
     const fechaPlay = getUTCDateRanges().hoy.inicio;
 
@@ -322,7 +341,8 @@ export const createPlay = async (req, res) => {
       lugarDeJuego:    req.body.lugarDeJuego,
       tipoPlay,
       juegosJugados:   req.body.juegosJugados || [],
-      controlAdicional: req.body.controlAdicional || 0,
+      totalControles,
+      controlAdicional,
       subtotal:        costos.subtotal,
       costoControles:  costos.costoControles,
       total:           costos.total,
@@ -374,8 +394,17 @@ export const updatePlay = async (req, res) => {
     if (req.body.horaFinal        !== undefined) play.horaFinal        = req.body.horaFinal;
     if (req.body.lugarDeJuego     !== undefined) play.lugarDeJuego     = req.body.lugarDeJuego;
     if (req.body.juegosJugados    !== undefined) play.juegosJugados    = req.body.juegosJugados;
-    if (req.body.controlAdicional !== undefined) play.controlAdicional = req.body.controlAdicional;
     if (req.body.estadoPago       !== undefined) play.estadoPago       = req.body.estadoPago;
+
+    // Controles: totalControles manda; controlAdicional se re-deriva. Si el body
+    // no trae ninguno, se conservan los valores actuales (y se backfillea
+    // totalControles si el play era viejo y no lo tenía).
+    const controles = normalizarControles({
+      totalControles:   req.body.totalControles   !== undefined ? req.body.totalControles   : play.totalControles,
+      controlAdicional: req.body.controlAdicional !== undefined ? req.body.controlAdicional : play.controlAdicional,
+    });
+    play.totalControles  = controles.totalControles;
+    play.controlAdicional = controles.controlAdicional;
 
     play.tipoPlay       = determinarTipoPlay(play.lugarDeJuego);
     const costos        = calcularCostos(play.lugarDeJuego, play.tiempoPagado, play.controlAdicional);

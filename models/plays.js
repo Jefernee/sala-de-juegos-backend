@@ -67,6 +67,16 @@ const playSchema = new mongoose.Schema({
     },
     default: []
   },
+  // Total de controles usados en la partida (1 a 4). Es el dato "real": los 2
+  // primeros son gratis y del 3.º en adelante se cobran (ver controlAdicional).
+  totalControles: {
+    type: Number,
+    required: [true, 'El total de controles es requerido'],
+    min: [1, 'Mínimo 1 control'],
+    max: [4, 'Máximo 4 controles']
+  },
+  // Controles que se COBRAN = max(0, totalControles - 2). Base del costo y de
+  // los reportes; se mantiene para no cambiar ese cálculo.
   controlAdicional: {
     type: Number,
     default: 0,
