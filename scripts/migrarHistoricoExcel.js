@@ -34,10 +34,17 @@
 // Requiere en el .env: MONGO_URI (para todo menos `parse`).
 
 import dotenv from 'dotenv';
+import dns from 'dns';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import mongoose from 'mongoose';
+
+// Algunos ISP/routers no resuelven registros SRV (mongodb+srv), lo que hace fallar
+// la conexión a Atlas desde una máquina local con "querySrv ECONNREFUSED". Forzamos
+// resolutores DNS públicos (Google/Cloudflare) y priorizamos IPv4 para evitarlo.
+dns.setDefaultResultOrder('ipv4first');
+try { dns.setServers(['8.8.8.8', '1.1.1.1']); } catch { /* no crítico */ }
 
 import Play from '../models/plays.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
