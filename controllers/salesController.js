@@ -3,6 +3,7 @@ import Sale       from "../models/sale.js";
 import Inventario from "../models/Inventario.js";
 import SaleReport from "../models/Salereport.js";
 import { crearFiltroFechas } from "../utils/dateUtils.js";
+import { regenerarEstadoDeFecha } from "./estadoResultadosController.js";
 
 // ─────────────────────────────────────────────────────────────────
 // Auto-regeneración del reporte mensual de ventas
@@ -250,8 +251,9 @@ export const addSale = async (req, res) => {
 
     res.status(201).json({ message: "Venta registrada exitosamente", venta: ventaGuardada });
 
-    // ✅ Regenerar reporte en background
+    // ✅ Regenerar reportes en background (ventas + estado de resultados)
     regenerarReporteDeVenta(fechaVenta);
+    regenerarEstadoDeFecha(fechaVenta);
 
   } catch (error) {
     console.error("❌ ERROR EN PROCESO DE VENTA:", error.message);
@@ -324,8 +326,11 @@ export const updateSale = async (req, res) => {
     const ventaActualizada = await Sale.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
     res.json({ message: "Venta actualizada exitosamente", venta: ventaActualizada });
 
-    // ✅ Regenerar reporte en background
+    // ✅ Regenerar reportes en background. Si cambió la fecha de mes, se
+    // regeneran el mes viejo y el nuevo (ambas fechas).
     regenerarReporteDeVenta(ventaExistente.fecha);
+    if (ventaActualizada?.fecha) regenerarReporteDeVenta(ventaActualizada.fecha);
+    regenerarEstadoDeFecha(ventaExistente.fecha, ventaActualizada?.fecha);
   } catch (error) {
     if (error.name === "ValidationError") return res.status(400).json({ error: "Error de validación", detalles: Object.values(error.errors).map(e=>e.message).join(", ") });
     res.status(500).json({ error: "Error al actualizar la venta", mensaje: error.message });
@@ -344,8 +349,9 @@ export const deleteSale = async (req, res) => {
     await Sale.findByIdAndDelete(req.params.id);
     res.json({ message: "Venta eliminada exitosamente", ventaEliminada: { id: ventaExistente._id, total: ventaExistente.total, fecha: ventaExistente.fecha } });
 
-    // ✅ Regenerar reporte en background
+    // ✅ Regenerar reportes en background (ventas + estado de resultados)
     regenerarReporteDeVenta(fechaVenta);
+    regenerarEstadoDeFecha(fechaVenta);
   } catch (error) {
     res.status(500).json({ error: "Error al eliminar la venta", mensaje: error.message });
   }

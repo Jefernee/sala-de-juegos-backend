@@ -20,11 +20,15 @@ import gananciasRoutes from './routes/ganancias.js';
 import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
+import estadoResultadosRoutes from './routes/estadoResultados.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
 import { migrarCategoriaActivos } from './utils/migrarCategoriaActivos.js';
 import { migrarReparacionesActivos } from './utils/migrarReparacionesActivos.js';
+import { backfillEstadoResultados } from './utils/backfillEstadoResultados.js';
+import { regenerarReporteActivos } from './controllers/activosReportController.js';
+import { migrarAhorroMovimientos } from './utils/migrarAhorroMovimientos.js';
 // Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
@@ -242,6 +246,52 @@ try {
 }
 
 // ============================================
+// 💵 MIGRACIÓN: historial de ahorro (saldo inicial)
+// Idempotente. Si el fondo tenía saldo pero sin movimientos, crea uno inicial
+// para que `ahorroDelMes` del estado de resultados tenga historial.
+// ============================================
+try {
+  const { creado, monto } = await migrarAhorroMovimientos();
+  if (creado) {
+    console.log(`💵 Ahorro: movimiento inicial creado con el saldo actual (₡${monto}).`);
+  } else {
+    console.log('💵 Ahorro: historial de movimientos ya presente (o sin saldo).');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar el historial de ahorro (no crítico):', e.message);
+}
+
+// ============================================
+// 📊 BACKFILL: estado de resultados de meses con datos
+// Idempotente. Genera el estado de resultados guardado de los meses que ya
+// tienen datos (ventas/plays/ganancias/servicios/reparaciones/compras) y aún
+// no tienen reporte. Los meses nuevos se mantienen solos vía auto-regeneración.
+// Debe ir DESPUÉS de la migración de reparaciones.
+// ============================================
+try {
+  const { generados, meses } = await backfillEstadoResultados();
+  if (generados > 0) {
+    console.log(`📊 Estado de resultados: ${generados} mes(es) generados (de ${meses} con datos).`);
+  } else {
+    console.log(`📊 Estado de resultados: todos los meses con datos ya estaban generados (${meses}).`);
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo backfillear el estado de resultados (no crítico):', e.message);
+}
+
+// ============================================
+// 🧰 BACKFILL: snapshot del reporte de activos
+// Idempotente (upsert de un único snapshot). Deja el reporte de activos listo
+// para leerse sin recalcular; luego se mantiene vía auto-regeneración.
+// ============================================
+try {
+  await regenerarReporteActivos();
+  console.log('🧰 Reporte de activos: snapshot inicial listo.');
+} catch (e) {
+  console.error('⚠️ No se pudo generar el snapshot de activos (no crítico):', e.message);
+}
+
+// ============================================
 // 🔔 NOTIFICACIONES DE FIN DE SESIÓN POR WHATSAPP
 // Chequeador de respaldo (el motor principal es el Scheduled Trigger de Atlas).
 // Solo arranca si NOTIFICACIONES_WHATSAPP_ENABLED === 'true'.
@@ -305,6 +355,7 @@ app.use('/api/ganancias', gananciasRoutes);
 app.use('/api/pagos-servicios', pagosServiciosRoutes);
 app.use('/api/activos-sala', activosSalaRoutes);
 app.use('/api/activos-reports', activosReportRoutes);
+app.use('/api/estado-resultados', estadoResultadosRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)

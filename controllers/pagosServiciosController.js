@@ -4,6 +4,7 @@
 import mongoose from 'mongoose';
 import PagoServicio, { TIPOS_SERVICIO } from '../models/PagoServicio.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
+import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 
 // Helper — Hecho por Claude Code:
 // Resuelve la fecha a guardar según el mes/año elegido en el frontend.
@@ -63,6 +64,9 @@ export const addPagoServicio = async (req, res) => {
     });
 
     res.status(201).json({ message: 'Pago registrado', data: pago });
+
+    // ✅ Regenerar estado de resultados del mes en background
+    regenerarEstadoDeFecha(pago.fecha);
   } catch (error) {
     console.error('❌ Error al registrar pago de servicio:', error);
     res.status(500).json({ message: 'Error al registrar el pago', error: error.message });
@@ -160,6 +164,9 @@ export const updatePagoServicio = async (req, res) => {
       return res.status(400).json({ message: 'ID de pago inválido' });
     }
 
+    // Fecha anterior: para regenerar también el mes viejo si el registro se mueve.
+    const pagoAnterior = await PagoServicio.findById(req.params.id).select('fecha').lean();
+
     const { servicio, monto, descripcion } = req.body;
     const $set = {};
 
@@ -208,6 +215,9 @@ export const updatePagoServicio = async (req, res) => {
     }
 
     res.status(200).json({ message: 'Pago actualizado', data: pago });
+
+    // ✅ Regenerar estado de resultados en background (mes viejo y nuevo)
+    regenerarEstadoDeFecha(pagoAnterior?.fecha, pago.fecha);
   } catch (error) {
     console.error('❌ Error al actualizar pago de servicio:', error);
     res.status(500).json({ message: 'Error al actualizar el pago', error: error.message });
@@ -229,6 +239,9 @@ export const deletePagoServicio = async (req, res) => {
     }
 
     res.status(200).json({ message: 'Pago eliminado', id: req.params.id });
+
+    // ✅ Regenerar estado de resultados del mes en background
+    regenerarEstadoDeFecha(pago.fecha);
   } catch (error) {
     console.error('❌ Error al eliminar pago de servicio:', error);
     res.status(500).json({ message: 'Error al eliminar el pago', error: error.message });

@@ -13,6 +13,8 @@ import ActivoSala, {
 import { siguienteSecuencia, fijarSecuenciaMinima, verSecuencia } from '../models/Counter.js';
 import { eliminarImagenCloudinary } from '../utils/cloudinaryUtils.js';
 import cloudinary from '../config/cloudinary.js';
+import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
+import { regenerarReporteActivos } from './activosReportController.js';
 
 // Nombre del contador usado para el número de placa consecutivo de los activos.
 const CONTADOR_PLACA = 'numeroPlacaActivo';
@@ -145,6 +147,9 @@ export const addActivo = async (req, res) => {
         }
       }
       console.log(`✅ Activo "${savedActivo.nombre}" registrado — placa #${savedActivo.numeroPlaca}`);
+      // Reportes en background: snapshot de activos + estado del mes de compra.
+      regenerarReporteActivos();
+      regenerarEstadoDeFecha(savedActivo.fechaCompra);
       return res.status(201).json({ message: 'Activo registrado', data: savedActivo });
     } catch (mongoError) {
       // Rollback: si falla MongoDB, no dejar imágenes huérfanas en Cloudinary
@@ -414,6 +419,10 @@ export const updateActivo = async (req, res) => {
 
     console.log(`✅ Activo "${activoActualizado.nombre}" actualizado`);
     res.status(200).json({ message: 'Activo actualizado', data: activoActualizado });
+
+    // Reportes en background. Si cambió fechaCompra de mes, regenera ambos meses.
+    regenerarReporteActivos();
+    regenerarEstadoDeFecha(activoActual.fechaCompra, activoActualizado.fechaCompra);
   } catch (error) {
     console.error('❌ Error al actualizar activo:', error);
     await limpiarImagenesSubidas(req);
@@ -448,6 +457,12 @@ export const deleteActivo = async (req, res) => {
 
     console.log(`✅ Activo "${activo.nombre}" eliminado junto a sus imágenes`);
     res.status(200).json({ message: 'Activo e imágenes eliminados correctamente', id: req.params.id });
+
+    // Reportes en background: snapshot de activos + estado del mes de compra y
+    // de cada mes que tuviera una reparación (todas las fechas afectadas).
+    regenerarReporteActivos();
+    const fechasAfectadas = [activo.fechaCompra, ...(activo.reparaciones || []).map((r) => r.fecha)];
+    regenerarEstadoDeFecha(...fechasAfectadas);
   } catch (error) {
     console.error('❌ Error al eliminar activo:', error);
     res.status(500).json({ message: 'Error al eliminar el activo', error: error.message });
@@ -524,6 +539,9 @@ export const addReparacion = async (req, res) => {
     try {
       const guardado = await activo.save();
       console.log(`✅ Reparación agregada al activo "${guardado.nombre}" (${guardado.reparaciones.length} en total)`);
+      // Reportes en background: snapshot de activos + estado del mes de la reparación.
+      regenerarReporteActivos();
+      regenerarEstadoDeFecha(fecha);
       return res.status(201).json({ message: 'Reparación agregada', data: guardado });
     } catch (mongoError) {
       console.error('❌ Fallo en MongoDB al agregar reparación:', mongoError.message);
@@ -561,6 +579,9 @@ export const updateReparacion = async (req, res) => {
       await limpiarImagenesSubidas(req);
       return res.status(404).json({ message: 'Reparación no encontrada' });
     }
+
+    // Fecha anterior: si la reparación cambia de mes, hay que regenerar ambos.
+    const fechaRepVieja = rep.fecha;
 
     if (req.body.costo !== undefined) {
       const { value, error } = parseCostoReparacion(req.body.costo);
@@ -611,6 +632,9 @@ export const updateReparacion = async (req, res) => {
     try {
       const guardado = await activo.save();
       console.log(`✅ Reparación ${repId} del activo "${guardado.nombre}" actualizada`);
+      // Reportes en background: snapshot + estado del mes viejo y nuevo de la reparación.
+      regenerarReporteActivos();
+      regenerarEstadoDeFecha(fechaRepVieja, rep.fecha);
       return res.status(200).json({ message: 'Reparación actualizada', data: guardado });
     } catch (mongoError) {
       console.error('❌ Fallo en MongoDB al actualizar reparación:', mongoError.message);
@@ -646,6 +670,7 @@ export const deleteReparacion = async (req, res) => {
     }
 
     const facturaABorrar = rep.facturaUrl;
+    const fechaRep = rep.fecha; // mes afectado en el estado de resultados
     rep.deleteOne(); // quita el subdocumento del arreglo
 
     // Recalcular estado con el historial ya reducido.
@@ -657,6 +682,9 @@ export const deleteReparacion = async (req, res) => {
     if (facturaABorrar) await eliminarImagenCloudinary(facturaABorrar);
 
     console.log(`✅ Reparación ${repId} eliminada del activo "${guardado.nombre}"`);
+    // Reportes en background: snapshot de activos + estado del mes de la reparación.
+    regenerarReporteActivos();
+    regenerarEstadoDeFecha(fechaRep);
     return res.status(200).json({ message: 'Reparación eliminada', data: guardado });
   } catch (error) {
     console.error('❌ Error al eliminar reparación:', error);

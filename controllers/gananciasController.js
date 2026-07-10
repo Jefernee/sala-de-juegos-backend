@@ -4,6 +4,7 @@
 import mongoose from 'mongoose';
 import Ganancia, { TIPOS_GANANCIA } from '../models/Ganancia.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
+import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 
 // Helper — Hecho por Claude Code:
 // Resuelve la fecha a guardar según el mes/año elegido en el frontend.
@@ -63,6 +64,9 @@ export const addGanancia = async (req, res) => {
     });
 
     res.status(201).json({ message: 'Ganancia registrada', data: ganancia });
+
+    // ✅ Regenerar estado de resultados del mes en background
+    regenerarEstadoDeFecha(ganancia.fecha);
   } catch (error) {
     console.error('❌ Error al registrar ganancia:', error);
     res.status(500).json({ message: 'Error al registrar la ganancia', error: error.message });
@@ -164,6 +168,9 @@ export const updateGanancia = async (req, res) => {
       return res.status(400).json({ message: 'ID de ganancia inválido' });
     }
 
+    // Fecha anterior: para regenerar también el mes viejo si el registro se mueve.
+    const gananciaAnterior = await Ganancia.findById(req.params.id).select('fecha').lean();
+
     const { tipo, monto, descripcion } = req.body;
     const $set = {};
 
@@ -212,6 +219,9 @@ export const updateGanancia = async (req, res) => {
     }
 
     res.status(200).json({ message: 'Ganancia actualizada', data: ganancia });
+
+    // ✅ Regenerar estado de resultados en background (mes viejo y nuevo)
+    regenerarEstadoDeFecha(gananciaAnterior?.fecha, ganancia.fecha);
   } catch (error) {
     console.error('❌ Error al actualizar ganancia:', error);
     res.status(500).json({ message: 'Error al actualizar la ganancia', error: error.message });
@@ -233,6 +243,9 @@ export const deleteGanancia = async (req, res) => {
     }
 
     res.status(200).json({ message: 'Ganancia eliminada', id: req.params.id });
+
+    // ✅ Regenerar estado de resultados del mes en background
+    regenerarEstadoDeFecha(ganancia.fecha);
   } catch (error) {
     console.error('❌ Error al eliminar ganancia:', error);
     res.status(500).json({ message: 'Error al eliminar la ganancia', error: error.message });

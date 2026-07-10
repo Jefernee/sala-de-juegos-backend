@@ -1,6 +1,7 @@
 // controllers/playsController.js
 import Play from '../models/plays.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
+import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 import { getUTCDateRanges } from '../utils/dateUtils.js';
 import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
 
@@ -375,8 +376,9 @@ export const createPlay = async (req, res) => {
     const nuevoPlay = await play.save();
     console.log('✅ Play creado exitosamente:', nuevoPlay._id);
 
-    // ✅ Regenerar reporte en background (no espera respuesta)
+    // ✅ Regenerar reportes en background (plays + estado de resultados)
     regenerarReporteDeFecha(fechaPlay);
+    regenerarEstadoDeFecha(fechaPlay);
 
     res.status(201).json({ success: true, message: 'Play creado exitosamente', data: nuevoPlay });
   } catch (error) {
@@ -459,8 +461,9 @@ export const updatePlay = async (req, res) => {
     const playActualizado = await play.save();
     console.log('✅ Play actualizado exitosamente:', playActualizado._id);
 
-    // ✅ Regenerar reporte en background
+    // ✅ Regenerar reportes en background (plays + estado de resultados)
     regenerarReporteDeFecha(fechaOriginal);
+    regenerarEstadoDeFecha(fechaOriginal);
 
     res.status(200).json({ success: true, message: 'Play actualizado exitosamente', data: playActualizado });
   } catch (error) {
@@ -494,8 +497,9 @@ export const deletePlay = async (req, res) => {
     await play.deleteOne();
     console.log('✅ Play eliminado exitosamente');
 
-    // ✅ Regenerar reporte en background
+    // ✅ Regenerar reportes en background (plays + estado de resultados)
     regenerarReporteDeFecha(fechaPlay);
+    regenerarEstadoDeFecha(fechaPlay);
 
     res.status(200).json({ success: true, message: 'Play eliminado exitosamente', data: {} });
   } catch (error) {
