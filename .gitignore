@@ -20,6 +20,12 @@ npm-debug.log*
 # Uploads (imágenes subidas)
 uploads/
 
+# Datos fuente del histórico (Excel/CSV) — no versionar
+*.xlsx
+*.xls
+*.csv
+scripts/data/
+
 # Build
 dist/
 build/

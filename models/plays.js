@@ -140,6 +140,18 @@ const playSchema = new mongoose.Schema({
   notificacionFinEnviada: {
     type: Boolean,
     default: false
+  },
+  // ─────────────────────────────────────────────────────────────
+  // Origen del registro. Los plays normales quedan en null (creados por el
+  // sistema). Los cierres mensuales importados del Excel histórico llevan
+  // 'excel_historico': son agregados (uno por rubro/mes), no sesiones reales.
+  // Sirve para el rollback de la migración (borrar solo lo migrado) y para que
+  // cualquier lógica que espere detalle de sesión pueda distinguirlos.
+  // Ver scripts/migrarHistoricoExcel.js
+  // ─────────────────────────────────────────────────────────────
+  origen: {
+    type: String,
+    default: null
   }
 }, {
   timestamps: true

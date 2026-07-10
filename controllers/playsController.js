@@ -247,9 +247,11 @@ const calcularDatosReporte = (plays, año, mes, inicio, fin) => {
 /**
  * Regenera el reporte del mes al que pertenece la fecha dada.
  * Se llama en background tras crear/editar/eliminar un play.
+ * Exportado para que la migración del histórico (scripts/migrarHistoricoExcel.js)
+ * reuse EXACTAMENTE este generador y no exista una tercera copia que mantener.
  * @param {Date} fechaPlay - Fecha UTC del play afectado
  */
-const regenerarReporteDeFecha = async (fechaPlay) => {
+export const regenerarReporteDeFecha = async (fechaPlay) => {
   try {
     const crDate = new Date(fechaPlay.toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
     const año    = crDate.getFullYear();
