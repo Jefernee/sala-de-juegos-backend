@@ -61,6 +61,7 @@
 - [🌐 Deploy en Render](#-deploy-en-render)
 - [📊 Casos de Uso](#-casos-de-uso)
 - [🐛 Troubleshooting](#-troubleshooting)
+- [📚 Migración del histórico del Excel](MIGRACION_HISTORICO.md) — qué se importó y **qué pasa si algún día hay que borrarlo por espacio**
 
 ---
 
