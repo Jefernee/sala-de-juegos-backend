@@ -1,6 +1,21 @@
+import mongoose from "mongoose";
 import User from "../models/User.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
+import { ROLES, ROL_ADMIN, ROL_COLABORADOR, ADMIN_EMAIL } from "../config/roles.js";
+
+// Lee el rol del que hace la petición a partir del Bearer token (si lo hay).
+// Sirve para que register solo permita asignar un rol distinto de 'colaborador'
+// cuando quien crea el usuario es un administrador autenticado. Nunca lanza.
+const rolDelSolicitante = (req) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  try {
+    return jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET).rol || null;
+  } catch {
+    return null;
+  }
+};
 
 // ============================================
 // REGISTRO DE USUARIO
@@ -39,6 +54,15 @@ export const register = async (req, res) => {
       });
     }
 
+    // Determinar el rol a asignar. Por seguridad, un registro PÚBLICO siempre
+    // crea 'colaborador'. Solo un administrador autenticado puede crear un
+    // usuario con otro rol (ej. un vendedor). Nunca se puede crear un segundo
+    // administrador desde acá (ese lo define el email del dueño en la migración).
+    let rolAsignado = ROL_COLABORADOR;
+    if (rolDelSolicitante(req) === ROL_ADMIN && ROLES.includes(req.body.rol) && req.body.rol !== ROL_ADMIN) {
+      rolAsignado = req.body.rol;
+    }
+
     // Hashear contraseña
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
@@ -48,19 +72,21 @@ export const register = async (req, res) => {
       email,
       password: hashedPassword,
       nombre,
+      rol: rolAsignado,
     });
 
     await user.save();
 
-    console.log("✅ Usuario creado exitosamente:", email);
+    console.log(`✅ Usuario creado exitosamente: ${email} (rol: ${user.rol})`);
 
     res.status(201).json({
       success: true,
       message: "Usuario creado exitosamente",
-      user: { 
-        id: user._id, 
-        email: user.email, 
-        nombre: user.nombre 
+      user: {
+        id: user._id,
+        email: user.email,
+        nombre: user.nombre,
+        rol: user.rol,
       },
     });
 
@@ -162,12 +188,13 @@ export const login = async (req, res) => {
       });
     }
 
-    // Crear token JWT
+    // Crear token JWT (incluye el rol para autorizar módulos en el backend)
     const token = jwt.sign(
       {
         id: user._id,
         email: user.email,
         nombre: user.nombre,
+        rol: user.rol,
       },
       process.env.JWT_SECRET,
       { expiresIn: "24h" }
@@ -197,6 +224,7 @@ export const login = async (req, res) => {
         id: user._id,
         email: user.email,
         nombre: user.nombre,
+        rol: user.rol,
       },
     });
 
@@ -264,13 +292,14 @@ export const verifyToken = async (req, res) => {
 
     console.log("✅ Token válido para:", user.email);
 
-    res.json({ 
+    res.json({
       success: true,
-      valid: true, 
+      valid: true,
       user: {
         id: user._id,
         email: user.email,
-        nombre: user.nombre
+        nombre: user.nombre,
+        rol: user.rol,
       }
     });
 
@@ -298,11 +327,79 @@ export const verifyToken = async (req, res) => {
     }
 
     // Error genérico
-    res.status(401).json({ 
+    res.status(401).json({
       success: false,
-      valid: false, 
+      valid: false,
       message: "Error al verificar token",
       error: process.env.NODE_ENV === 'development' ? error.message : 'Error de autenticación'
     });
+  }
+};
+
+// ============================================
+// LISTAR USUARIOS (solo administrador)
+// Hecho por Claude Code — Para el panel de gestión de roles del frontend.
+// ============================================
+export const getUsers = async (req, res) => {
+  try {
+    const users = await User.find()
+      .select("email nombre rol createdAt")
+      .sort({ createdAt: 1 })
+      .lean();
+    res.json({ success: true, users });
+  } catch (error) {
+    console.error("❌ ERROR AL LISTAR USUARIOS:", error);
+    res.status(500).json({ success: false, message: "Error al listar usuarios", error: error.message });
+  }
+};
+
+// ============================================
+// CAMBIAR EL ROL DE UN USUARIO (solo administrador)
+// Hecho por Claude Code — Recibe { rol } en el body. No se puede asignar el rol
+// 'administrador' desde acá (el admin lo define el email del dueño) ni cambiarle
+// el rol a la cuenta del dueño (para no dejar el sistema sin administrador).
+// ============================================
+export const updateUserRol = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rol } = req.body;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "ID de usuario inválido" });
+    }
+
+    // Solo se pueden asignar colaborador o vendedor (no administrador).
+    if (!ROLES.includes(rol) || rol === ROL_ADMIN) {
+      return res.status(400).json({
+        success: false,
+        message: `Rol inválido. Valores permitidos: ${ROLES.filter((r) => r !== ROL_ADMIN).join(", ")}`,
+      });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+    }
+
+    // Proteger la cuenta del dueño: no se le puede quitar el rol de administrador.
+    if (user.email === ADMIN_EMAIL) {
+      return res.status(400).json({
+        success: false,
+        message: "No se puede cambiar el rol de la cuenta del administrador (dueño).",
+      });
+    }
+
+    user.rol = rol;
+    await user.save();
+
+    console.log(`✅ Rol de ${user.email} cambiado a "${rol}"`);
+    res.json({
+      success: true,
+      message: "Rol actualizado",
+      user: { id: user._id, email: user.email, nombre: user.nombre, rol: user.rol },
+    });
+  } catch (error) {
+    console.error("❌ ERROR AL CAMBIAR ROL:", error);
+    res.status(500).json({ success: false, message: "Error al cambiar el rol", error: error.message });
   }
 };

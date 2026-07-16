@@ -11,7 +11,7 @@ import mongoose from 'mongoose';
 export const ESTADOS_ACTIVO = ['En uso', 'En reparación', 'Reparado', 'Fuera de servicio', 'Almacenado'];
 // Los dos estados que el usuario puede forzar a mano (los otros son automáticos).
 export const ESTADOS_OVERRIDE = ['Fuera de servicio', 'Almacenado'];
-export const CATEGORIAS_ACTIVO = ['Control PS4', 'Control PS5', 'Consola PS4', 'Consola PS5', 'Pantalla', 'Otros'];
+export const CATEGORIAS_ACTIVO = ['Control PS4', 'Control PS5', 'Consola PS4', 'Consola PS5', 'Pantalla', 'Juegos digitales', 'Juegos físicos', 'Otros'];
 
 // ============================================
 // Regla de estado automático (recalcular en CADA escritura que toque reparaciones):

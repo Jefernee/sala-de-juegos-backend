@@ -25,6 +25,9 @@ import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
 import { migrarCategoriaActivos } from './utils/migrarCategoriaActivos.js';
+import { migrarCategoriaCallOfDuty2 } from './utils/migrarCategoriaCallOfDuty2.js';
+import { migrarRolesUsuarios } from './utils/migrarRolesUsuarios.js';
+import { restringirVendedor } from './middlewares/roles.js';
 import { migrarReparacionesActivos } from './utils/migrarReparacionesActivos.js';
 import { backfillEstadoResultados } from './utils/backfillEstadoResultados.js';
 import { regenerarReporteActivos } from './controllers/activosReportController.js';
@@ -229,6 +232,38 @@ try {
 }
 
 // ============================================
+// 🎮 MIGRACIÓN: "Call of Duty 2" → categoría "Juegos digitales"
+// Idempotente. Reclasifica el activo existente (que la migración general no
+// toca por ya tener categoría). Si falla, NO se detiene el servidor.
+// ============================================
+try {
+  const { modificados } = await migrarCategoriaCallOfDuty2();
+  if (modificados > 0) {
+    console.log(`🎮 "Call of Duty 2" reclasificado a "Juegos digitales" (${modificados}).`);
+  } else {
+    console.log('🎮 "Call of Duty 2": ya está en "Juegos digitales" (o no existe).');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo reclasificar Call of Duty 2 (no crítico):', e.message);
+}
+
+// ============================================
+// 👤 MIGRACIÓN: roles de usuario
+// Idempotente. Pone 'colaborador' a los usuarios sin rol y fuerza la cuenta
+// del dueño (ADMIN_EMAIL) a 'administrador'. Si falla, NO se detiene el server.
+// ============================================
+try {
+  const { colaboradores, adminFijado } = await migrarRolesUsuarios();
+  if (colaboradores > 0 || adminFijado) {
+    console.log(`👤 Roles: ${colaboradores} usuario(s) → colaborador${adminFijado ? ', administrador fijado al dueño' : ''}.`);
+  } else {
+    console.log('👤 Roles: todos los usuarios ya tienen rol asignado.');
+  }
+} catch (e) {
+  console.error('⚠️ No se pudo migrar los roles de usuario (no crítico):', e.message);
+}
+
+// ============================================
 // 🔧 MIGRACIÓN: reparaciones[] + estado automático de activos
 // Idempotente. Pasa los campos sueltos de reparación al arreglo `reparaciones`,
 // mueve fechaCompraReparacion→fechaCompra, deriva estado/estadoOverride y
@@ -339,6 +374,11 @@ app.get("/api/health", (req, res) => {
 // ============================================
 // Rutas públicas
 app.use("/api/auth", authRoutes);
+
+// Guard de rol: un vendedor solo puede usar Ventas y Control de plays (más
+// leer productos para el POS). admin/colaborador pasan sin restricción.
+// Va antes de los módulos y después de /api/auth (login/verify siempre libres).
+app.use(restringirVendedor);
 
 // Rutas protegidas (requieren autenticación)
 app.use("/api/products", productsRoutes);

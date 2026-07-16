@@ -9,6 +9,31 @@ const getFechaCostaRica = () => {
   return new Date(Date.UTC(cr.getFullYear(), cr.getMonth(), cr.getDate(), 6, 0, 0, 0));
 };
 
+// ─────────────────────────────────────────────────────────────────
+// Hecho por Claude Code — Calcula el stock disponible de una RECETA a partir
+// del stock actual de sus ingredientes (deben venir populados en
+// receta.ingredienteId con al menos `cantidad` y `precioCompra`):
+//   stock = floor(min(ingrediente.cantidad / cantidadRequerida))
+//   costo = Σ (precioCompra del ingrediente × cantidad requerida)
+// Retorna null si la receta no tiene ingredientes, si falta/está sin populate
+// alguno, o si no alcanza para preparar ni una unidad. Devolver null permite
+// ocultar la receta agotada del catálogo. Compartido entre el catálogo público
+// y la pantalla de venta para que ambos usen la MISMA regla de disponibilidad.
+// ─────────────────────────────────────────────────────────────────
+const calcularStockReceta = (receta) => {
+  if (!receta?.receta || receta.receta.length === 0) return null;
+  let stock = Infinity;
+  let costo = 0;
+  for (const comp of receta.receta) {
+    const ing = comp.ingredienteId;
+    if (!ing) return null; // ingrediente borrado o sin populate
+    stock = Math.min(stock, Math.floor(ing.cantidad / comp.cantidad));
+    costo += (ing.precioCompra || 0) * comp.cantidad;
+  }
+  if (stock <= 0 || stock === Infinity) return null;
+  return { stock, costo };
+};
+
 // GET
 export const getInventario = async (req, res) => {
   try {
@@ -590,32 +615,70 @@ export const getProductosPaginados = async (req, res) => {
   }
 };
 
-// ✅ PRODUCTOS PÚBLICOS - Solo disponibles
+// ✅ PRODUCTOS PÚBLICOS — Catálogo externo (sin auth), solo lo DISPONIBLE.
+// Hecho por Claude Code — Actualizado para reflejar la disponibilidad real:
+//   • Solo aparecen ítems con seVende: true.
+//   • Productos simples: solo si tienen stock (cantidad > 0) → los agotados
+//     ya no se muestran.
+//   • Recetas: solo si se pueden preparar con el stock de sus ingredientes
+//     (stock calculado > 0); se devuelve ese stock calculado como `cantidad`.
+// Antes este endpoint mostraba productos agotados, mostraba las recetas
+// siempre con cantidad 0 (no entendía el tipo 'receta') y pedía campos
+// inexistentes (imagenOptimizada / imagenOriginal). Todo eso quedó corregido.
 export const getProductosPublicos = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 12;
-    const search = req.query.search || "";
+    const search = (req.query.search || "").trim();
+    const searchFiltro = search ? { nombre: { $regex: search, $options: "i" } } : {};
 
-    const skip = (page - 1) * limit;
-
-    const filter = {
+    // ── Productos simples disponibles (con stock) ──
+    const productosSimples = await Inventario.find({
       seVende: true,
-      ...(search && { nombre: { $regex: search, $options: "i" } }),
-    };
+      tipo: { $ne: "receta" },
+      cantidad: { $gt: 0 },
+      ...searchFiltro,
+    })
+      .select("nombre imagen precioVenta cantidad createdAt")
+      .lean();
 
-    const [productos, totalProducts] = await Promise.all([
-      Inventario.find(filter)
-        .select(
-          "nombre imagen imagenOptimizada imagenOriginal precioVenta cantidad"
-        )
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Inventario.countDocuments(filter),
-    ]);
+    // ── Recetas: stock calculado desde el stock de sus ingredientes ──
+    const recetasRaw = await Inventario.find({
+      seVende: true,
+      tipo: "receta",
+      ...searchFiltro,
+    })
+      .select("nombre imagen precioVenta receta createdAt")
+      .populate("receta.ingredienteId", "cantidad precioCompra")
+      .lean();
 
+    const recetasDisponibles = [];
+    for (const receta of recetasRaw) {
+      const calc = calcularStockReceta(receta);
+      if (!calc) continue; // sin stock suficiente → no aparece en el catálogo
+      recetasDisponibles.push({
+        _id: receta._id,
+        nombre: receta.nombre,
+        imagen: receta.imagen,
+        precioVenta: receta.precioVenta,
+        cantidad: calc.stock, // stock calculado a partir de los ingredientes
+        createdAt: receta.createdAt,
+      });
+    }
+
+    // ── Combinar, ordenar por más reciente y paginar en memoria ──
+    // El catálogo es pequeño; paginar acá (en vez de en Mongo) permite que el
+    // total y el número de páginas queden EXACTOS aun con el stock de recetas
+    // calculado en JS, y que las recetas agotadas no cuenten para la paginación.
+    const disponibles = [...productosSimples, ...recetasDisponibles].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+
+    const totalProducts = disponibles.length;
     const totalPages = Math.ceil(totalProducts / limit);
+    const skip = (page - 1) * limit;
+    // Se omite createdAt (solo se usó para ordenar) para mantener limpia la respuesta pública.
+    const productos = disponibles.slice(skip, skip + limit).map(({ createdAt, ...resto }) => resto);
 
     res.json({
       productos,
@@ -705,28 +768,14 @@ export const getProductosParaVenta = async (req, res) => {
     const recetasConStock = [];
 
     for (const receta of recetasRaw) {
-      if (!receta.receta || receta.receta.length === 0) continue;
-
-      let stockDisponible = Infinity;
-      let costoCalculado = 0;
-      let ingredienteFaltante = false;
-
-      for (const comp of receta.receta) {
-        const ing = comp.ingredienteId;
-        if (!ing) { ingredienteFaltante = true; break; }
-
-        const unidadesHacibles = Math.floor(ing.cantidad / comp.cantidad);
-        stockDisponible = Math.min(stockDisponible, unidadesHacibles);
-        costoCalculado += (ing.precioCompra || 0) * comp.cantidad;
-      }
-
-      if (ingredienteFaltante || stockDisponible <= 0 || stockDisponible === Infinity) continue;
+      const calc = calcularStockReceta(receta); // misma regla que el catálogo público
+      if (!calc) continue; // sin ingredientes / faltante / stock insuficiente
 
       recetasConStock.push({
         ...receta,
-        cantidad: stockDisponible,          // Stock calculado para el frontend
-        precioCompra: costoCalculado,        // Costo real calculado de ingredientes
-        totalVendido: 0,                     // Se calcula a continuación
+        cantidad: calc.stock,       // Stock calculado para el frontend
+        precioCompra: calc.costo,   // Costo real calculado de ingredientes
+        totalVendido: 0,            // Se calcula a continuación
       });
     }
 

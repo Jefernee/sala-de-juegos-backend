@@ -65,6 +65,7 @@ const authMiddleware = (req, res, next) => {
       id: decoded.id,
       email: decoded.email, // ✅
       nombre: decoded.nombre, // ✅
+      rol: decoded.rol, // rol del usuario (administrador | colaborador | vendedor)
     };
 
     console.log("🔐 ========== AUTH OK ==========\n");
