@@ -3,6 +3,7 @@ import User from "../models/User.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { ROLES, ROL_ADMIN, ROL_COLABORADOR, ADMIN_EMAIL } from "../config/roles.js";
+import { cifrarPassword, descifrarPassword } from "../utils/passwordVisible.js";
 
 // Lee el rol del que hace la petición a partir del Bearer token (si lo hay).
 // Sirve para que register solo permita asignar un rol distinto de 'colaborador'
@@ -67,10 +68,12 @@ export const register = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(password, salt);
 
-    // Crear usuario
+    // Crear usuario. Guardamos también la copia cifrada recuperable para que el
+    // administrador pueda ver la contraseña en el módulo de Usuarios.
     const user = new User({
       email,
       password: hashedPassword,
+      passwordVisible: cifrarPassword(password),
       nombre,
       rol: rolAsignado,
     });
@@ -342,14 +345,64 @@ export const verifyToken = async (req, res) => {
 // ============================================
 export const getUsers = async (req, res) => {
   try {
+    // +passwordVisible: el campo es select:false; con "+" se agrega a los campos
+    // por defecto de forma confiable (evita la proyección mixta que a veces no lo
+    // trae). Solo llega acá el administrador (ruta protegida con soloAdmin).
     const users = await User.find()
-      .select("email nombre rol createdAt")
+      .select("+passwordVisible")
       .sort({ createdAt: 1 })
       .lean();
-    res.json({ success: true, users });
+
+    // Construimos la salida explícitamente: NO exponemos el hash de login
+    // (`password` del doc) y devolvemos la contraseña descifrada como `password`.
+    // Si el usuario aún no tiene copia recuperable, va null.
+    const salida = users.map((u) => ({
+      _id: u._id,
+      email: u.email,
+      nombre: u.nombre,
+      rol: u.rol,
+      createdAt: u.createdAt,
+      password: descifrarPassword(u.passwordVisible),
+    }));
+
+    res.json({ success: true, users: salida });
   } catch (error) {
     console.error("❌ ERROR AL LISTAR USUARIOS:", error);
     res.status(500).json({ success: false, message: "Error al listar usuarios", error: error.message });
+  }
+};
+
+// ============================================
+// REASIGNAR CONTRASEÑA DE UN USUARIO (solo administrador)
+// Hecho por Claude Code — Actualiza el login (hash) y la copia visible a la vez.
+// ============================================
+export const updateUserPassword = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { password } = req.body;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ success: false, message: "ID de usuario inválido" });
+    }
+    if (!password || String(password).length < 6) {
+      return res.status(400).json({ success: false, message: "La contraseña debe tener al menos 6 caracteres" });
+    }
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+    }
+
+    const salt = await bcrypt.genSalt(10);
+    user.password = await bcrypt.hash(password, salt);
+    user.passwordVisible = cifrarPassword(password);
+    await user.save();
+
+    console.log(`✅ Contraseña reasignada para ${user.email}`);
+    res.json({ success: true, message: "Contraseña actualizada", user: { id: user._id, email: user.email } });
+  } catch (error) {
+    console.error("❌ ERROR AL REASIGNAR CONTRASEÑA:", error);
+    res.status(500).json({ success: false, message: "Error al reasignar la contraseña", error: error.message });
   }
 };
 

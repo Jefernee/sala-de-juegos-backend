@@ -8,6 +8,7 @@ node_modules/
 
 # Scripts de seed con contraseñas
 seedUsers.js
+scripts/seedPasswordsVisibles.js
 
 # Archivos de sistema
 .DS_Store

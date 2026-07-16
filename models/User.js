@@ -15,6 +15,15 @@ const userSchema = new mongoose.Schema({
     required: true,
     minlength: 6
   },
+  // Copia RECUPERABLE (cifrada) de la contraseña, para que SOLO el administrador
+  // pueda verla en el módulo de Usuarios (ver utils/passwordVisible.js). No es el
+  // login: eso lo maneja `password` (bcrypt). select:false → nunca se devuelve
+  // salvo que se pida explícitamente. null en usuarios viejos hasta reasignarla.
+  passwordVisible: {
+    type: String,
+    default: null,
+    select: false,
+  },
   nombre: {
     type: String,
     default: ''

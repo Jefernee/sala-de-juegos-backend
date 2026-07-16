@@ -21,6 +21,7 @@ import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import estadoResultadosRoutes from './routes/estadoResultados.js';
+import torneosRoutes from './routes/torneos.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
@@ -396,6 +397,7 @@ app.use('/api/pagos-servicios', pagosServiciosRoutes);
 app.use('/api/activos-sala', activosSalaRoutes);
 app.use('/api/activos-reports', activosReportRoutes);
 app.use('/api/estado-resultados', estadoResultadosRoutes);
+app.use('/api/torneos', torneosRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
