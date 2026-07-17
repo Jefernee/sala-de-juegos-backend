@@ -327,74 +327,90 @@ const construirRecomendaciones = (actual, previo) => {
     return recs;
   }
 
-  // 1) Salud del balance
-  if (balance < 0) {
+  // El AHORRO es dinero que apartás (algo bueno), NO un gasto de consumo. Lo
+  // separamos para no tratarlo como algo "a recortar": el gasto real es todo
+  // lo demás.
+  const ahorroRow = desglose.egreso.find((e) => e.categoria === 'Ahorro');
+  const montoAhorro = ahorroRow ? ahorroRow.total : 0;
+  const gastoSinAhorro = totalEgresos - montoAhorro;
+  const egresosSinAhorro = desglose.egreso.filter((e) => e.categoria !== 'Ahorro');
+
+  // 1) Salud del flujo (mirando el GASTO real, sin contar el ahorro)
+  if (gastoSinAhorro > totalIngresos) {
     recs.push({
       nivel: 'critico',
       icono: '⚠️',
-      mensaje: `Gastaste ${fmtCRC(-balance)} más de lo que ingresaste este mes. Tratá de recortar gastos o sumar ingresos.`,
+      mensaje: `Tus gastos (${fmtCRC(gastoSinAhorro)}) superaron tus ingresos (${fmtCRC(totalIngresos)}) este mes. Tratá de recortar gastos o sumar ingresos.`,
     });
-  } else if (totalIngresos > 0 && totalEgresos / totalIngresos >= 0.9) {
+  } else if (totalIngresos > 0 && gastoSinAhorro / totalIngresos >= 0.9) {
     recs.push({
       nivel: 'advertencia',
       icono: '😬',
-      mensaje: `Estás gastando casi todo lo que ingresás (${Math.round((totalEgresos / totalIngresos) * 100)}%). Queda poco margen; cuidá los gastos no esenciales.`,
+      mensaje: `Estás gastando casi todo lo que ingresás (${Math.round((gastoSinAhorro / totalIngresos) * 100)}%, sin contar ahorro). Queda poco margen.`,
     });
   } else if (balance > 0) {
+    const cola = montoAhorro > 0 ? ` (después de apartar ${fmtCRC(montoAhorro)} de ahorro)` : '';
     recs.push({
       nivel: 'bien',
       icono: '✅',
-      mensaje: `Vas bien: te quedaron ${fmtCRC(balance)} de saldo este mes.`,
+      mensaje: `Vas bien: te quedaron ${fmtCRC(balance)} de saldo este mes${cola}.`,
+    });
+  } else if (balance < 0 && montoAhorro > 0) {
+    // El flujo quedó negativo por el ahorro, no por gastar de más.
+    recs.push({
+      nivel: 'consejo',
+      icono: '🏦',
+      mensaje: `Apartaste ${fmtCRC(montoAhorro)} de ahorro y eso dejó tu flujo del mes en negativo (${fmtCRC(balance)}). Está bien si es a propósito; cuidá que sea sostenible.`,
     });
   }
 
-  // 2) Categoría donde más gastás
-  if (desglose.egreso.length > 0 && totalEgresos > 0) {
-    const top = desglose.egreso[0]; // ya viene ordenado de mayor a menor
-    const pct = Math.round((top.total / totalEgresos) * 100);
+  // 2) Categoría donde más gastás (excluyendo el ahorro)
+  if (egresosSinAhorro.length > 0 && gastoSinAhorro > 0) {
+    const top = egresosSinAhorro[0]; // ya vienen ordenadas de mayor a menor
+    const pct = Math.round((top.total / gastoSinAhorro) * 100);
     const extra = pct >= 40 ? ' Es una parte grande de tus gastos; revisá si podés bajarla.' : '';
     recs.push({
       nivel: 'info',
       icono: '📊',
-      mensaje: `Tu mayor gasto fue en ${top.categoria}: ${fmtCRC(top.total)} (${pct}% del total).${extra}`,
+      mensaje: `Tu mayor gasto fue en ${top.categoria}: ${fmtCRC(top.total)} (${pct}% de tus gastos).${extra}`,
     });
   }
 
-  // 3) Comparación de gastos contra el mes pasado (solo si el cambio es notorio)
-  if (previo.totalEgresos > 0) {
-    const diff = totalEgresos - previo.totalEgresos;
-    const pct = Math.round((Math.abs(diff) / previo.totalEgresos) * 100);
+  // 3) Comparación del gasto (sin ahorro) contra el mes pasado
+  const prevAhorro = previo.desglose?.egreso?.find((e) => e.categoria === 'Ahorro');
+  const prevGastoSinAhorro = previo.totalEgresos - (prevAhorro ? prevAhorro.total : 0);
+  if (prevGastoSinAhorro > 0) {
+    const diff = gastoSinAhorro - prevGastoSinAhorro;
+    const pct = Math.round((Math.abs(diff) / prevGastoSinAhorro) * 100);
     if (pct >= 5) {
       if (diff > 0) {
         recs.push({
           nivel: 'advertencia',
           icono: '📈',
-          mensaje: `Gastaste ${pct}% más que el mes pasado (${fmtCRC(totalEgresos)} vs ${fmtCRC(previo.totalEgresos)}).`,
+          mensaje: `Gastaste ${pct}% más que el mes pasado (${fmtCRC(gastoSinAhorro)} vs ${fmtCRC(prevGastoSinAhorro)}, sin contar ahorro).`,
         });
       } else {
         recs.push({
           nivel: 'bien',
           icono: '📉',
-          mensaje: `Gastaste ${pct}% menos que el mes pasado (${fmtCRC(totalEgresos)} vs ${fmtCRC(previo.totalEgresos)}). ¡Bien ahí!`,
+          mensaje: `Gastaste ${pct}% menos que el mes pasado (${fmtCRC(gastoSinAhorro)} vs ${fmtCRC(prevGastoSinAhorro)}). ¡Bien ahí!`,
         });
       }
     }
   }
 
-  // 4) Peso de las deudas
-  const deudas = desglose.egreso.find((e) => e.categoria === 'Deudas/Préstamos');
-  if (deudas && totalEgresos > 0 && deudas.total / totalEgresos >= 0.25) {
+  // 4) Peso de las deudas (sobre el gasto real, sin ahorro)
+  const deudas = egresosSinAhorro.find((e) => e.categoria === 'Deudas/Préstamos');
+  if (deudas && gastoSinAhorro > 0 && deudas.total / gastoSinAhorro >= 0.25) {
     recs.push({
       nivel: 'advertencia',
       icono: '💳',
-      mensaje: `Las deudas/préstamos se llevaron ${fmtCRC(deudas.total)} (${Math.round((deudas.total / totalEgresos) * 100)}% de tus gastos). Priorizá bajarlas para liberar tu presupuesto.`,
+      mensaje: `Las deudas/préstamos se llevaron ${fmtCRC(deudas.total)} (${Math.round((deudas.total / gastoSinAhorro) * 100)}% de tus gastos). Priorizá bajarlas para liberar tu presupuesto.`,
     });
   }
 
   // 5) Ahorro del mes vs meta del 10%
   if (totalIngresos > 0) {
-    const ahorro = desglose.egreso.find((e) => e.categoria === 'Ahorro');
-    const montoAhorro = ahorro ? ahorro.total : 0;
     const meta = Math.round(totalIngresos * 0.1);
     if (montoAhorro === 0) {
       recs.push({
