@@ -1,5 +1,5 @@
 // utils/migrarCategoriaActivos.js
-// Hecho por Claude Code — Migración idempotente de la categoría de activos.
+// Migración idempotente de la categoría de activos.
 //
 // Los activos creados antes del campo `categoria` no lo tienen. Les asignamos
 // una categoría deducida del nombre (case-insensitive). Lo que quede dudoso se

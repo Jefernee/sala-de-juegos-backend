@@ -1,5 +1,5 @@
 // models/Ganancia.js
-// Hecho por Claude Code — Módulo de Administración: Ganancias
+// Módulo de Administración: Ganancias
 import mongoose from 'mongoose';
 
 export const TIPOS_GANANCIA = ['Maquinas Chinos', 'Maquinas Zapata', 'Futbolin'];

@@ -1,5 +1,5 @@
 // routes/activosReportRoutes.js
-// Hecho por Claude Code — Módulo de Reportes: Reporte de Activos.
+// Módulo de Reportes: Reporte de Activos.
 // Requiere autenticación con Bearer token, igual que el resto de reportes.
 import express from 'express';
 import authMiddleware from '../middlewares/auth.js';

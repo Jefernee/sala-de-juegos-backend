@@ -1,5 +1,5 @@
 // utils/migrarReparacionesActivos.js
-// Hecho por Claude Code — Migración idempotente al modelo nuevo de Activos:
+// Migración idempotente al modelo nuevo de Activos:
 //   - Los campos sueltos de reparación pasan a un item dentro de `reparaciones[]`.
 //   - `fechaCompraReparacion` → `fechaCompra`.
 //   - Los estados manuales viejos ("Fuera de servicio"/"Almacenado") → `estadoOverride`.

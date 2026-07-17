@@ -1,5 +1,5 @@
 // utils/cloudinaryUtils.js
-// Hecho por Claude Code — Utilidades reutilizables para Cloudinary.
+// Utilidades reutilizables para Cloudinary.
 // Centraliza la extracción del public_id y la eliminación de imágenes,
 // misma lógica que ya se usa en inventarioController.
 import cloudinary from '../config/cloudinary.js';

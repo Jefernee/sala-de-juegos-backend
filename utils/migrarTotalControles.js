@@ -1,5 +1,5 @@
 // utils/migrarTotalControles.js
-// Hecho por Claude Code — Migración idempotente del campo totalControles en plays.
+// Migración idempotente del campo totalControles en plays.
 //
 // Los plays creados antes de este campo no lo tienen. Como totalControles ahora
 // es requerido, los backfilleamos derivándolo de controlAdicional:

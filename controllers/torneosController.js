@@ -1,5 +1,5 @@
 // controllers/torneosController.js
-// Hecho por Claude Code — Módulo de Administración: Torneos y competiciones.
+// Módulo de Administración: Torneos y competiciones.
 //
 // - El administrador/colaborador crea, edita y elimina torneos (nombre, fecha,
 //   descripción, afiche, cupo, costo, estado). Rutas protegidas.

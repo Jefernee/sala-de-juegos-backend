@@ -1,5 +1,5 @@
 // controllers/activosSalaController.js
-// Hecho por Claude Code — Módulo de Administración: Activos de la Sala
+// Módulo de Administración: Activos de la Sala
 // CRUD del activo (producto) + historial de reparaciones. Imágenes en
 // Cloudinary (foto del artículo + factura de compra a nivel activo; factura
 // por reparación dentro de cada item). El `estado` es CALCULADO por el backend

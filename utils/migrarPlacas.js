@@ -1,5 +1,5 @@
 // utils/migrarPlacas.js
-// Hecho por Claude Code — Migración idempotente de números de placa de activos.
+// Migración idempotente de números de placa de activos.
 //
 // Asigna número de placa a los activos que aún no lo tienen, ordenados del más
 // antiguo al más reciente (por createdAt). Se puede llamar de forma segura todas

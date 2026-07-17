@@ -128,7 +128,7 @@ const playSchema = new mongoose.Schema({
   },
   // ─────────────────────────────────────────────────────────────
   // Notificación automática de fin de sesión por WhatsApp
-  // Hecho por Claude Code. Ver utils/finSesionScheduler.js
+  // Ver utils/finSesionScheduler.js
   // ─────────────────────────────────────────────────────────────
   // Instante exacto en que se agota el tiempo pagado (hora de registro + tiempoPagado).
   // El scheduler dispara la notificación cuando este momento ya pasó.

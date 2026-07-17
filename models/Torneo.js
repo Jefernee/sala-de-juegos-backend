@@ -1,5 +1,5 @@
 // models/Torneo.js
-// Hecho por Claude Code — Módulo de Administración: Torneos y competiciones.
+// Módulo de Administración: Torneos y competiciones.
 //
 // El administrador/colaborador crea y edita torneos (nombre, fecha, etc.) que
 // se muestran en la página pública. La gente se inscribe desde el sitio público

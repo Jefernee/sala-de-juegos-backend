@@ -1,5 +1,5 @@
 // utils/backfillEstadoResultados.js
-// Hecho por Claude Code — Backfill idempotente del Estado de Resultados.
+// Backfill idempotente del Estado de Resultados.
 //
 // Al desplegar el reporte por primera vez, los meses que YA tienen datos no
 // tienen un estado de resultados guardado (solo se generarían al editar algo).

@@ -1,5 +1,5 @@
 // models/AhorroMovimiento.js
-// Hecho por Claude Code — Historial de movimientos del fondo de ahorro.
+// Historial de movimientos del fondo de ahorro.
 //
 // El modelo Ahorro guarda solo el total corrido (totalAcumulado). Para poder
 // saber cuánto se ahorró EN UN MES (ahorroDelMes del estado de resultados) se

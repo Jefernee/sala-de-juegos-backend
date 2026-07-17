@@ -1,5 +1,5 @@
 // utils/notificacionesWhatsApp.js
-// Hecho por Claude Code — Servicio de notificaciones por WhatsApp vía WAHA.
+// Servicio de notificaciones por WhatsApp vía WAHA.
 //
 // WAHA (WhatsApp HTTP API) corre en una VM propia (Oracle Always Free) con el
 // número de la sala conectado como un WhatsApp REAL. Eso permite mandar el aviso

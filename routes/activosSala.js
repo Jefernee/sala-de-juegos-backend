@@ -1,5 +1,5 @@
 // routes/activosSala.js
-// Hecho por Claude Code — Módulo de Administración: Activos de la Sala
+// Módulo de Administración: Activos de la Sala
 // Todas las rutas requieren autenticación con Bearer token.
 // - POST/PUT del activo procesan imágenes base64 (artículo + factura de compra).
 // - POST/PUT de reparaciones procesan la factura base64 de esa reparación.

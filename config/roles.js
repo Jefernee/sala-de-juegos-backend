@@ -1,5 +1,5 @@
 // config/roles.js
-// Hecho por Claude Code — Definición central de roles de usuario.
+// Definición central de roles de usuario.
 //
 // Tres roles:
 //   • administrador → el dueño. Acceso total. Es UNA sola cuenta (ADMIN_EMAIL).

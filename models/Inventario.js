@@ -10,7 +10,7 @@ const getFechaCostaRica = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Hecho por Claude Code — Sub-schema para cada ingrediente de una receta.
+// Sub-schema para cada ingrediente de una receta.
 // Almacena la referencia al producto del inventario y la cantidad
 // necesaria por unidad vendida de la receta (ej. 1 cono necesita 2
 // bolas de helado → cantidad: 2).
@@ -44,7 +44,7 @@ const inventarioSchema = new Schema({
   },
 
   // ─────────────────────────────────────────────────────────────────
-  // Hecho por Claude Code — tipo de ítem en inventario:
+  // tipo de ítem en inventario:
   //   'producto' → artículo simple con stock propio (comportamiento anterior)
   //   'receta'   → producto compuesto que descuenta sus ingredientes al venderse.
   //                No tiene stock propio; su disponibilidad se calcula
@@ -68,7 +68,7 @@ const inventarioSchema = new Schema({
   nombreEnvase: { type: String, default: null, trim: true },
 
   // ─────────────────────────────────────────────────────────────────
-  // Hecho por Claude Code — Lista de ingredientes que componen la receta.
+  // Lista de ingredientes que componen la receta.
   // Solo se usa cuando tipo === 'receta'.
   // Cada elemento referencia un ítem de Inventario (tipo: 'producto')
   // e indica cuántas unidades se consumen por cada unidad de receta vendida.
@@ -110,6 +110,6 @@ inventarioSchema.pre('save', async function() {
 inventarioSchema.index({ createdBy: 1, createdAt: -1 });
 inventarioSchema.index({ nombre: 1 });
 inventarioSchema.index({ seVende: 1 });
-inventarioSchema.index({ tipo: 1 }); // Hecho por Claude Code — índice para filtrar por tipo
+inventarioSchema.index({ tipo: 1 }); // índice para filtrar por tipo
 
 export default mongoose.model("Inventario", inventarioSchema);

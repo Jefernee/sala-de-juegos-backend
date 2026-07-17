@@ -1,5 +1,5 @@
 // utils/finSesionScheduler.js
-// Hecho por Claude Code — Chequeador de fin de sesión para notificaciones de WhatsApp.
+// Chequeador de fin de sesión para notificaciones de WhatsApp.
 //
 // CÓMO FUNCIONA:
 //   Cada INTERVALO_MS el servidor busca los plays cuyo `finProgramado` ya pasó

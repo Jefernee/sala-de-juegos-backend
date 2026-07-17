@@ -140,7 +140,7 @@ export const addSale = async (req, res) => {
     const productosConCosto = [];
 
     // ─────────────────────────────────────────────────────────────────
-    // Hecho por Claude Code — Mapa unificado de descuentos de inventario.
+    // Mapa unificado de descuentos de inventario.
     // Consolida los descuentos de productos simples Y de ingredientes de
     // recetas en un solo lugar, para aplicarlos atómicamente al final.
     // Esto evita problemas si el mismo ingrediente aparece en varias
@@ -157,7 +157,7 @@ export const addSale = async (req, res) => {
       const subtotalCalculado = item.cantidad * item.precioVenta;
       if (Math.abs(item.subtotal - subtotalCalculado) > 0.01) return res.status(400).json({ error: "Subtotal incorrecto", producto: item.nombre, subtotalRecibido: item.subtotal, subtotalEsperado: subtotalCalculado });
 
-      // Hecho por Claude Code — Para recetas necesitamos los ingredientes poblados
+      // Para recetas necesitamos los ingredientes poblados
       const productoDB = await Inventario.findById(item.productoId)
         .populate('receta.ingredienteId', 'nombre cantidad precioCompra tipo');
 
@@ -170,7 +170,7 @@ export const addSale = async (req, res) => {
 
       if (productoDB.tipo === 'receta') {
         // ─────────────────────────────────────────────────────────────
-        // Hecho por Claude Code — Lógica de venta para RECETAS.
+        // Lógica de venta para RECETAS.
         // En lugar de descontar el stock de la receta misma (que no existe),
         // se descuenta cada ingrediente individualmente.
         // El costo se calcula en tiempo real sumando precioCompra de ingredientes.
@@ -243,7 +243,7 @@ export const addSale = async (req, res) => {
     const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email });
     const ventaGuardada = await newSale.save();
 
-    // Hecho por Claude Code — Descontar inventario con $inc atómico para todos los ítems
+    // Descontar inventario con $inc atómico para todos los ítems
     // (tanto productos simples como ingredientes de recetas, ya consolidados en decrementMap).
     for (const [id, cantidad] of decrementMap) {
       await Inventario.findByIdAndUpdate(id, { $inc: { cantidad: -cantidad }, updatedAt: new Date() });

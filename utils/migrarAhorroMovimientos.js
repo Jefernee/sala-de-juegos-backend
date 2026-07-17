@@ -1,5 +1,5 @@
 // utils/migrarAhorroMovimientos.js
-// Hecho por Claude Code — Migración idempotente del historial de ahorro.
+// Migración idempotente del historial de ahorro.
 //
 // El fondo de ahorro existía como un único total corrido (Ahorro.totalAcumulado)
 // sin historial. Para que `ahorroDelMes` del estado de resultados tenga de dónde

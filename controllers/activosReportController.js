@@ -1,5 +1,5 @@
 // controllers/activosReportController.js
-// Hecho por Claude Code — Módulo de Reportes: Reporte de Activos de la Sala.
+// Módulo de Reportes: Reporte de Activos de la Sala.
 //
 // Patrón "genera y guarda" (como ventas/plays): el reporte es una foto del
 // estado ACTUAL del equipo. Se guarda UN snapshot (ActivosReport, clave 'actual')

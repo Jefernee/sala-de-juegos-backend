@@ -1,5 +1,5 @@
 // routes/torneos.js
-// Hecho por Claude Code — Módulo de Administración: Torneos y competiciones.
+// Módulo de Administración: Torneos y competiciones.
 //
 // Rutas PÚBLICAS (sin login): listar torneos y recibir inscripciones desde la
 // página pública. El resto requiere Bearer token; el guard global de roles ya

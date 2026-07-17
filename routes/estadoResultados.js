@@ -1,5 +1,5 @@
 // routes/estadoResultados.js
-// Hecho por Claude Code — Módulo de Reportes: Estado de Resultados mensual.
+// Módulo de Reportes: Estado de Resultados mensual.
 // Todas las rutas requieren autenticación con Bearer token.
 import express from 'express';
 import authMiddleware from '../middlewares/auth.js';

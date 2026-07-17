@@ -1,5 +1,5 @@
 // models/Counter.js
-// Hecho por Claude Code — Contador atómico genérico para secuencias.
+// Contador atómico genérico para secuencias.
 // Se usa para asignar números consecutivos (ej. número de placa de activos)
 // de forma segura ante concurrencia, usando $inc atómico de MongoDB.
 import mongoose from 'mongoose';

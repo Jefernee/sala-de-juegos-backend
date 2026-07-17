@@ -1,5 +1,5 @@
 // routes/pagosServicios.js
-// Hecho por Claude Code — Módulo de Administración: Pagos de Servicios
+// Módulo de Administración: Pagos de Servicios
 // Todas las rutas requieren autenticación con Bearer token.
 import express from 'express';
 import authMiddleware from '../middlewares/auth.js';

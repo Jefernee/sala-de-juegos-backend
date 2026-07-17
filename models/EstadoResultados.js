@@ -1,5 +1,5 @@
 // models/EstadoResultados.js
-// Hecho por Claude Code — Módulo de Reportes: Estado de Resultados mensual.
+// Módulo de Reportes: Estado de Resultados mensual.
 //
 // Income statement del mes: junta INGRESOS (ventas + plays + otras ganancias) y
 // EGRESOS (costo de ventas, servicios, reparaciones y compras de activos) y

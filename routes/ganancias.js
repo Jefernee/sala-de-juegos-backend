@@ -1,5 +1,5 @@
 // routes/ganancias.js
-// Hecho por Claude Code — Módulo de Administración: Ganancias
+// Módulo de Administración: Ganancias
 // Todas las rutas requieren autenticación con Bearer token.
 import express from 'express';
 import authMiddleware from '../middlewares/auth.js';

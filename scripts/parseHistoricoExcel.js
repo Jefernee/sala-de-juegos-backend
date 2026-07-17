@@ -1,5 +1,5 @@
 // scripts/parseHistoricoExcel.js
-// Hecho por Claude Code — Lector del Excel histórico "Sala de juegos Oficial.xlsx".
+// Lector del Excel histórico "Sala de juegos Oficial.xlsx".
 //
 // Lee las 24 hojas mensuales (mar 2024 – feb 2026), normaliza CADA sesión a la
 // forma que consume la migración, y RECONCILIA la suma de cada mes contra los

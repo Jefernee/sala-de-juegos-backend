@@ -1,5 +1,5 @@
 // scripts/testNotificacionWhatsApp.js
-// Hecho por Claude Code — Prueba manual de la integración de WhatsApp (WAHA).
+// Prueba manual de la integración de WhatsApp (WAHA).
 //
 // Manda UN mensaje de prueba al GRUPO configurado (WAHA_CHAT_ID) para verificar
 // que la conexión con WAHA funciona. Muestra el resultado en consola.

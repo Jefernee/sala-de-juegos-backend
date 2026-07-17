@@ -1,5 +1,5 @@
 // utils/migrarMontoPagado.js
-// Hecho por Claude Code — Migración idempotente del campo montoPagado en plays.
+// Migración idempotente del campo montoPagado en plays.
 //
 // Los plays creados antes de este campo no lo tienen. Como montoPagado es ahora
 // la fuente de verdad del ingreso, para los plays viejos lo derivamos del monto

@@ -1,5 +1,5 @@
 // atlas/finSesionTrigger.js
-// Hecho por Claude Code — Función para el SCHEDULED TRIGGER de MongoDB Atlas.
+// Función para el SCHEDULED TRIGGER de MongoDB Atlas.
 //
 // ⚠️ Este archivo NO corre en el backend de Node. Es para PEGARLO en el panel de
 // Atlas (App Services → Triggers → Function). Atlas está siempre encendido, así

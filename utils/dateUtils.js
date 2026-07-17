@@ -111,7 +111,7 @@ export const logDateRanges = (ranges) => {
 
 
 /**
- * Hecho por Claude Code — Crea un filtro de MongoDB para un mes completo
+ * Crea un filtro de MongoDB para un mes completo
  * en zona horaria de Costa Rica (UTC-6).
  * Medianoche CR del día 1 = 06:00 UTC. Rango [inicio, fin) exclusivo:
  * no hay huecos ni traslapes entre meses consecutivos.
@@ -126,7 +126,7 @@ export const crearFiltroMes = (mes, anio) => {
 };
 
 /**
- * Hecho por Claude Code — Genera la fecha que el backend guarda para un
+ * Genera la fecha que el backend guarda para un
  * registro del mes elegido en el frontend. El frontend NUNCA envía fechas:
  * solo elige mes y año, y el backend resuelve la fecha a guardar.
  *   - Mes actual → fecha/hora actual (timestamp real)

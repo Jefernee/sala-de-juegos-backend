@@ -1,5 +1,5 @@
 // utils/migrarRolesUsuarios.js
-// Hecho por Claude Code — Migración idempotente de roles de usuario.
+// Migración idempotente de roles de usuario.
 //
 // 1) A todos los usuarios que aún no tienen rol (creados antes de esta feature)
 //    se les asigna 'colaborador' (acceso total, sin ser el dueño).

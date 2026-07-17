@@ -10,7 +10,7 @@ const getFechaCostaRica = () => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Hecho por Claude Code — Calcula el stock disponible de una RECETA a partir
+// Calcula el stock disponible de una RECETA a partir
 // del stock actual de sus ingredientes (deben venir populados en
 // receta.ingredienteId con al menos `cantidad` y `precioCompra`):
 //   stock = floor(min(ingrediente.cantidad / cantidadRequerida))
@@ -83,7 +83,7 @@ export const addProducto = async (req, res) => {
     const tipo = body.tipo === 'receta' ? 'receta' : 'producto';
 
     // ─────────────────────────────────────────────────────────────────
-    // Hecho por Claude Code — Rama para crear una RECETA (producto compuesto).
+    // Rama para crear una RECETA (producto compuesto).
     // Las recetas no tienen stock propio ni requieren imagen obligatoria.
     // Su costo se calcula dinámicamente al momento de la venta.
     // ─────────────────────────────────────────────────────────────────
@@ -336,7 +336,7 @@ export const updateProducto = async (req, res) => {
     if (req.body.nombreEnvase !== undefined)      $set.nombreEnvase      = req.body.nombreEnvase?.trim() || null;
 
     // ─────────────────────────────────────────────────────────────────
-    // Hecho por Claude Code — Actualización de ingredientes de una receta.
+    // Actualización de ingredientes de una receta.
     // Si viene el campo 'receta' en el body, se validan y actualizan
     // los ingredientes. Solo aplica cuando el item es tipo 'receta'.
     // ─────────────────────────────────────────────────────────────────
@@ -616,7 +616,7 @@ export const getProductosPaginados = async (req, res) => {
 };
 
 // ✅ PRODUCTOS PÚBLICOS — Catálogo externo (sin auth), solo lo DISPONIBLE.
-// Hecho por Claude Code — Actualizado para reflejar la disponibilidad real:
+// Actualizado para reflejar la disponibilidad real:
 //   • Solo aparecen ítems con seVende: true.
 //   • Productos simples: solo si tienen stock (cantidad > 0) → los agotados
 //     ya no se muestran.
@@ -700,7 +700,7 @@ export const getProductosPublicos = async (req, res) => {
 };
 
 // ⭐ Obtener productos disponibles para venta ORDENADOS POR MÁS VENDIDOS
-// Hecho por Claude Code — Se extendió para incluir recetas con stock calculado
+// Se extendió para incluir recetas con stock calculado
 // a partir de sus ingredientes. Ambos tipos (producto y receta) se mezclan
 // y ordenan por totalVendido antes de enviarse al frontend.
 export const getProductosParaVenta = async (req, res) => {
@@ -753,7 +753,7 @@ export const getProductosParaVenta = async (req, res) => {
     ]);
 
     // ── 2. Recetas con stock calculado a partir de ingredientes ──────
-    // Hecho por Claude Code — Para cada receta activa, se verifica cuántas
+    // Para cada receta activa, se verifica cuántas
     // unidades pueden prepararse con el stock actual de sus ingredientes.
     // stockDisponible = floor(min(ingrediente.cantidad / cantidadRequerida))
     let matchRecetas = { tipo: 'receta', seVende: true };
@@ -819,7 +819,7 @@ export const getProductosParaVenta = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Hecho por Claude Code — GET /api/products/:id
+// GET /api/products/:id
 // Devuelve un producto o receta por su ID incluyendo los campos
 // tipo y receta (con ingredientes populados) para que el frontend
 // pueda cargar el formulario de edición correctamente.
@@ -847,7 +847,7 @@ export const getProductoById = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Hecho por Claude Code — GET /api/products/ingredientes
+// GET /api/products/ingredientes
 // Retorna todos los ítems de inventario que pueden usarse como
 // ingredientes al armar una receta (solo tipo: 'producto').
 // El frontend lo usa para el selector de ingredientes en el

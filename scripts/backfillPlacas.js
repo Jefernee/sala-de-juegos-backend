@@ -1,5 +1,5 @@
 // scripts/backfillPlacas.js
-// Hecho por Claude Code — Asignación manual de número de placa a activos existentes.
+// Asignación manual de número de placa a activos existentes.
 //
 // NOTA: esto también corre automáticamente al arrancar el servidor (ver server.js
 // y utils/migrarPlacas.js), así que normalmente NO necesitás correrlo a mano.

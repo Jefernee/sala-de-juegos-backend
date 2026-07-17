@@ -1,12 +1,12 @@
 // controllers/pagosServiciosController.js
-// Hecho por Claude Code — Módulo de Administración: Pagos de Servicios
+// Módulo de Administración: Pagos de Servicios
 // CRUD completo: crear, listar por mes (con totalMes), ver, editar, eliminar.
 import mongoose from 'mongoose';
 import PagoServicio, { TIPOS_SERVICIO } from '../models/PagoServicio.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
 import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 
-// Helper — Hecho por Claude Code:
+// Helper:
 // Resuelve la fecha a guardar según el mes/año elegido en el frontend.
 // El frontend NUNCA envía fechas, solo mes y anio (opcionales: si no
 // vienen, el registro queda en el mes actual con la fecha de ahora).

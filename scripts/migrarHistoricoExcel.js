@@ -1,5 +1,5 @@
 // scripts/migrarHistoricoExcel.js
-// Hecho por Claude Code — Migración del histórico del Excel (mar 2024 – feb 2026).
+// Migración del histórico del Excel (mar 2024 – feb 2026).
 //
 // QUÉ HACE
 //   Lee "Sala de juegos Oficial.xlsx" e inserta CADA sesión histórica como un

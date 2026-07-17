@@ -1,5 +1,5 @@
 // controllers/estadoResultadosController.js
-// Hecho por Claude Code — Módulo de Reportes: Estado de Resultados mensual.
+// Módulo de Reportes: Estado de Resultados mensual.
 //
 // Patrón "genera y guarda" (igual que Plays/Ventas):
 //   - POST generar / generar-anio: calcula desde las colecciones crudas y

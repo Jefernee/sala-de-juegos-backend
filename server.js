@@ -15,13 +15,15 @@ import saleReportRoutes from './routes/Salereportroutes.js';
 import monthlyReportRoutes from './routes/Monthlyreportplaysroutes.js';
 import { handleMulterError } from './middlewares/upload.js';
 import ahorroRoutes from './routes/ahorroRoutes.js';
-// Hecho por Claude Code — Módulo de Administración
+// Módulo de Administración
 import gananciasRoutes from './routes/ganancias.js';
 import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import estadoResultadosRoutes from './routes/estadoResultados.js';
 import torneosRoutes from './routes/torneos.js';
+// Finanzas Personales del administrador (módulo APARTE de la sala de juegos)
+import finanzasPersonalesRoutes from './routes/finanzasPersonales.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
@@ -33,7 +35,7 @@ import { migrarReparacionesActivos } from './utils/migrarReparacionesActivos.js'
 import { backfillEstadoResultados } from './utils/backfillEstadoResultados.js';
 import { regenerarReporteActivos } from './controllers/activosReportController.js';
 import { migrarAhorroMovimientos } from './utils/migrarAhorroMovimientos.js';
-// Hecho por Claude Code — Notificaciones de fin de sesión por WhatsApp (vía WAHA)
+// Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 import dns from 'dns';
 
@@ -169,183 +171,94 @@ const connectDB = async () => {
 await connectDB();
 
 // ============================================
-// 🔢 MIGRACIÓN: número de placa de activos
-// Idempotente. Asegura que todos los activos existentes tengan placa.
-// Si falla, NO se detiene el servidor (no es crítico para arrancar).
+// 🔧 TAREAS DE ARRANQUE (se ejecutan EN SEGUNDO PLANO tras el listen)
+// Migraciones idempotentes + backfills + scheduler. Antes se corrían ANTES
+// del listen y BLOQUEABAN el arranque: en local, con Atlas remoto, cada una
+// hace consultas de ida y vuelta y el server tardaba varios segundos en
+// responder. Ahora corren DESPUÉS de escuchar, así el arranque es inmediato.
+// Todas son no críticas: si una falla, el servidor sigue igual. Solo se
+// registra en consola cuando REALMENTE cambian algo (no en cada arranque).
 // ============================================
-try {
-  const { asignados, ultimaPlaca } = await migrarPlacasActivos();
-  if (asignados > 0) {
-    console.log(`🔢 Placas asignadas a ${asignados} activo(s) existentes (hasta #${ultimaPlaca}).`);
-  } else {
-    console.log('🔢 Activos: todos ya tienen número de placa.');
+const tareasDeArranque = async () => {
+  console.log('🔧 Tareas de arranque corriendo en segundo plano...');
+
+  try {
+    const { asignados, ultimaPlaca } = await migrarPlacasActivos();
+    if (asignados > 0) console.log(`🔢 Placas asignadas a ${asignados} activo(s) (hasta #${ultimaPlaca}).`);
+  } catch (e) {
+    console.error('⚠️ Migración placas (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar placas de activos (no crítico):', e.message);
-}
 
-// ============================================
-// 🎮 MIGRACIÓN: totalControles en plays
-// Idempotente. Backfillea los plays viejos que no tengan el campo.
-// Si falla, NO se detiene el servidor (no es crítico para arrancar).
-// ============================================
-try {
-  const { modificados } = await migrarTotalControles();
-  if (modificados > 0) {
-    console.log(`🎮 totalControles asignado a ${modificados} play(s) antiguos.`);
-  } else {
-    console.log('🎮 Plays: todos ya tienen totalControles.');
+  try {
+    const { modificados } = await migrarTotalControles();
+    if (modificados > 0) console.log(`🎮 totalControles asignado a ${modificados} play(s).`);
+  } catch (e) {
+    console.error('⚠️ Migración totalControles (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar totalControles (no crítico):', e.message);
-}
 
-// ============================================
-// 💰 MIGRACIÓN: montoPagado en plays
-// Idempotente. Backfillea montoPagado y re-desglosa los buckets en plays viejos.
-// Si falla, NO se detiene el servidor (no es crítico para arrancar).
-// ============================================
-try {
-  const { modificados } = await migrarMontoPagado();
-  if (modificados > 0) {
-    console.log(`💰 montoPagado asignado/redesglosado en ${modificados} play(s) antiguos.`);
-  } else {
-    console.log('💰 Plays: todos ya tienen montoPagado.');
+  try {
+    const { modificados } = await migrarMontoPagado();
+    if (modificados > 0) console.log(`💰 montoPagado asignado/redesglosado en ${modificados} play(s).`);
+  } catch (e) {
+    console.error('⚠️ Migración montoPagado (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar montoPagado (no crítico):', e.message);
-}
 
-// ============================================
-// 🏷️ MIGRACIÓN: categoría de activos de la sala
-// Idempotente. Clasifica por nombre los activos que aún no tienen categoría.
-// Si falla, NO se detiene el servidor (no es crítico para arrancar).
-// ============================================
-try {
-  const { asignados } = await migrarCategoriaActivos();
-  if (asignados > 0) {
-    console.log(`🏷️ Categoría asignada a ${asignados} activo(s) existentes.`);
-  } else {
-    console.log('🏷️ Activos: todos ya tienen categoría.');
+  try {
+    const { asignados } = await migrarCategoriaActivos();
+    if (asignados > 0) console.log(`🏷️ Categoría asignada a ${asignados} activo(s).`);
+  } catch (e) {
+    console.error('⚠️ Migración categoría activos (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar la categoría de activos (no crítico):', e.message);
-}
 
-// ============================================
-// 🎮 MIGRACIÓN: "Call of Duty 2" → categoría "Juegos digitales"
-// Idempotente. Reclasifica el activo existente (que la migración general no
-// toca por ya tener categoría). Si falla, NO se detiene el servidor.
-// ============================================
-try {
-  const { modificados } = await migrarCategoriaCallOfDuty2();
-  if (modificados > 0) {
-    console.log(`🎮 "Call of Duty 2" reclasificado a "Juegos digitales" (${modificados}).`);
-  } else {
-    console.log('🎮 "Call of Duty 2": ya está en "Juegos digitales" (o no existe).');
+  try {
+    const { modificados } = await migrarCategoriaCallOfDuty2();
+    if (modificados > 0) console.log(`🎮 "Call of Duty 2" reclasificado (${modificados}).`);
+  } catch (e) {
+    console.error('⚠️ Reclasificar Call of Duty 2 (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo reclasificar Call of Duty 2 (no crítico):', e.message);
-}
 
-// ============================================
-// 👤 MIGRACIÓN: roles de usuario
-// Idempotente. Pone 'colaborador' a los usuarios sin rol y fuerza la cuenta
-// del dueño (ADMIN_EMAIL) a 'administrador'. Si falla, NO se detiene el server.
-// ============================================
-try {
-  const { colaboradores, adminFijado } = await migrarRolesUsuarios();
-  if (colaboradores > 0 || adminFijado) {
-    console.log(`👤 Roles: ${colaboradores} usuario(s) → colaborador${adminFijado ? ', administrador fijado al dueño' : ''}.`);
-  } else {
-    console.log('👤 Roles: todos los usuarios ya tienen rol asignado.');
+  try {
+    const { colaboradores, adminFijado } = await migrarRolesUsuarios();
+    if (colaboradores > 0 || adminFijado) console.log(`👤 Roles: ${colaboradores} → colaborador${adminFijado ? ', admin fijado' : ''}.`);
+  } catch (e) {
+    console.error('⚠️ Migración roles (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar los roles de usuario (no crítico):', e.message);
-}
 
-// ============================================
-// 🔧 MIGRACIÓN: reparaciones[] + estado automático de activos
-// Idempotente. Pasa los campos sueltos de reparación al arreglo `reparaciones`,
-// mueve fechaCompraReparacion→fechaCompra, deriva estado/estadoOverride y
-// elimina los campos viejos. Si falla, NO se detiene el servidor (no es crítico).
-// ============================================
-try {
-  const { migrados } = await migrarReparacionesActivos();
-  if (migrados > 0) {
-    console.log(`🔧 ${migrados} activo(s) migrados al modelo de reparaciones[].`);
-  } else {
-    console.log('🔧 Activos: todos ya están en el modelo de reparaciones[].');
+  try {
+    const { migrados } = await migrarReparacionesActivos();
+    if (migrados > 0) console.log(`🔧 ${migrados} activo(s) migrados a reparaciones[].`);
+  } catch (e) {
+    console.error('⚠️ Migración reparaciones (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar reparaciones de activos (no crítico):', e.message);
-}
 
-// ============================================
-// 💵 MIGRACIÓN: historial de ahorro (saldo inicial)
-// Idempotente. Si el fondo tenía saldo pero sin movimientos, crea uno inicial
-// para que `ahorroDelMes` del estado de resultados tenga historial.
-// ============================================
-try {
-  const { creado, monto } = await migrarAhorroMovimientos();
-  if (creado) {
-    console.log(`💵 Ahorro: movimiento inicial creado con el saldo actual (₡${monto}).`);
-  } else {
-    console.log('💵 Ahorro: historial de movimientos ya presente (o sin saldo).');
+  try {
+    const { creado, monto } = await migrarAhorroMovimientos();
+    if (creado) console.log(`💵 Ahorro: movimiento inicial creado (₡${monto}).`);
+  } catch (e) {
+    console.error('⚠️ Migración ahorro (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo migrar el historial de ahorro (no crítico):', e.message);
-}
 
-// ============================================
-// 📊 BACKFILL: estado de resultados de meses con datos
-// Idempotente. Genera el estado de resultados guardado de los meses que ya
-// tienen datos (ventas/plays/ganancias/servicios/reparaciones/compras) y aún
-// no tienen reporte. Los meses nuevos se mantienen solos vía auto-regeneración.
-// Debe ir DESPUÉS de la migración de reparaciones.
-// ============================================
-try {
-  const { generados, meses } = await backfillEstadoResultados();
-  if (generados > 0) {
-    console.log(`📊 Estado de resultados: ${generados} mes(es) generados (de ${meses} con datos).`);
-  } else {
-    console.log(`📊 Estado de resultados: todos los meses con datos ya estaban generados (${meses}).`);
+  try {
+    const { generados, meses } = await backfillEstadoResultados();
+    if (generados > 0) console.log(`📊 Estado de resultados: ${generados}/${meses} mes(es) generados.`);
+  } catch (e) {
+    console.error('⚠️ Backfill estado de resultados (no crítico):', e.message);
   }
-} catch (e) {
-  console.error('⚠️ No se pudo backfillear el estado de resultados (no crítico):', e.message);
-}
 
-// ============================================
-// 🧰 BACKFILL: snapshot del reporte de activos
-// Idempotente (upsert de un único snapshot). Deja el reporte de activos listo
-// para leerse sin recalcular; luego se mantiene vía auto-regeneración.
-// ============================================
-try {
-  await regenerarReporteActivos();
-  console.log('🧰 Reporte de activos: snapshot inicial listo.');
-} catch (e) {
-  console.error('⚠️ No se pudo generar el snapshot de activos (no crítico):', e.message);
-}
+  try {
+    await regenerarReporteActivos();
+  } catch (e) {
+    console.error('⚠️ Snapshot de activos (no crítico):', e.message);
+  }
 
-// ============================================
-// 🔔 NOTIFICACIONES DE FIN DE SESIÓN POR WHATSAPP
-// Chequeador de respaldo (el motor principal es el Scheduled Trigger de Atlas).
-// Solo arranca si NOTIFICACIONES_WHATSAPP_ENABLED === 'true'.
-// No es crítico: si algo falla acá, el servidor sigue arrancando.
-// ============================================
-try {
-  iniciarSchedulerFinSesion();
-} catch (e) {
-  console.error('⚠️ No se pudo iniciar el scheduler de WhatsApp (no crítico):', e.message);
-}
+  try {
+    iniciarSchedulerFinSesion();
+  } catch (e) {
+    console.error('⚠️ Scheduler de WhatsApp (no crítico):', e.message);
+  }
 
-// ============================================
-// 📊 MONITOREO DE MEMORIA
-// ============================================
-const mem = process.memoryUsage();
-if (mem.heapUsed > 100 * 1024 * 1024) {
-  console.warn('⚠️ Alto uso de memoria:', mem);
-}
+  console.log('✅ Tareas de arranque completadas.');
+};
 
 // ============================================
 // HEALTH CHECK (debe ir ANTES de las otras rutas)
@@ -391,13 +304,17 @@ app.use('/api/ahorro', ahorroRoutes);
 app.use('/api/monthly-reports', monthlyReportRoutes);
 app.use('/api/ventas-reports', saleReportRoutes);
 
-// Hecho por Claude Code — Módulo de Administración (todas con Bearer token)
+// Módulo de Administración (todas con Bearer token)
 app.use('/api/ganancias', gananciasRoutes);
 app.use('/api/pagos-servicios', pagosServiciosRoutes);
 app.use('/api/activos-sala', activosSalaRoutes);
 app.use('/api/activos-reports', activosReportRoutes);
 app.use('/api/estado-resultados', estadoResultadosRoutes);
 app.use('/api/torneos', torneosRoutes);
+
+// Finanzas Personales del administrador — APARTE de la sala de juegos.
+// El propio router exige authMiddleware + soloAdmin en todas sus rutas.
+app.use('/api/finanzas-personales', finanzasPersonalesRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)
@@ -477,6 +394,17 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`⏱️ Tiempo de inicio: ${startupTime}ms`);
   console.log("🌍 Entorno:", process.env.NODE_ENV);
   console.log("🚀 ========================================\n");
+
+  // Las migraciones/backfills ya se hicieron hace tiempo; solo son una red de
+  // seguridad para un entorno nuevo. Corren en SEGUNDO PLANO (no bloquean) y
+  // se pueden APAGAR poniendo EJECUTAR_MIGRACIONES=false en el .env (útil en
+  // local, donde te conectás al Atlas de producción y no querés tocarlo ni
+  // esperar). Por defecto (sin la variable) SÍ corren, para no cambiar prod.
+  if (process.env.EJECUTAR_MIGRACIONES === 'false') {
+    console.log('⏭️  Tareas de arranque OMITIDAS (EJECUTAR_MIGRACIONES=false).');
+  } else {
+    tareasDeArranque();
+  }
 });
 
 export { mongoose };

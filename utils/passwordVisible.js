@@ -1,5 +1,5 @@
 // utils/passwordVisible.js
-// Hecho por Claude Code — Cifrado RECUPERABLE de contraseñas para que SOLO el
+// Cifrado RECUPERABLE de contraseñas para que SOLO el
 // administrador pueda verlas en el módulo de Usuarios.
 //
 // OJO: esto es distinto del hash bcrypt del login (que es de un solo sentido y

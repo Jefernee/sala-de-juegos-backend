@@ -128,7 +128,7 @@ export const uploadBase64ToCloudinary = async (req, res, next) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// Hecho por Claude Code — Subida de imágenes base64 para ACTIVOS DE LA SALA
+// Subida de imágenes base64 para ACTIVOS DE LA SALA
 // procesarImagenesBase64(campos) es una fábrica de middlewares que sube uno o
 // más campos de imagen base64 con las mismas validaciones que uploadBase64ToCloudinary.
 // Abajo se arman dos middlewares concretos:

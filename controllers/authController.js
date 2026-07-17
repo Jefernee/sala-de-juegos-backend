@@ -341,7 +341,7 @@ export const verifyToken = async (req, res) => {
 
 // ============================================
 // LISTAR USUARIOS (solo administrador)
-// Hecho por Claude Code — Para el panel de gestión de roles del frontend.
+// Para el panel de gestión de roles del frontend.
 // ============================================
 export const getUsers = async (req, res) => {
   try {
@@ -374,7 +374,7 @@ export const getUsers = async (req, res) => {
 
 // ============================================
 // REASIGNAR CONTRASEÑA DE UN USUARIO (solo administrador)
-// Hecho por Claude Code — Actualiza el login (hash) y la copia visible a la vez.
+// Actualiza el login (hash) y la copia visible a la vez.
 // ============================================
 export const updateUserPassword = async (req, res) => {
   try {
@@ -408,7 +408,7 @@ export const updateUserPassword = async (req, res) => {
 
 // ============================================
 // CAMBIAR EL ROL DE UN USUARIO (solo administrador)
-// Hecho por Claude Code — Recibe { rol } en el body. No se puede asignar el rol
+// Recibe { rol } en el body. No se puede asignar el rol
 // 'administrador' desde acá (el admin lo define el email del dueño) ni cambiarle
 // el rol a la cuenta del dueño (para no dejar el sistema sin administrador).
 // ============================================

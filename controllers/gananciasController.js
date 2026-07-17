@@ -1,12 +1,12 @@
 // controllers/gananciasController.js
-// Hecho por Claude Code — Módulo de Administración: Ganancias
+// Módulo de Administración: Ganancias
 // CRUD completo: crear, listar por mes (con totales), ver, editar, eliminar.
 import mongoose from 'mongoose';
 import Ganancia, { TIPOS_GANANCIA } from '../models/Ganancia.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
 import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 
-// Helper — Hecho por Claude Code:
+// Helper:
 // Resuelve la fecha a guardar según el mes/año elegido en el frontend.
 // El frontend NUNCA envía fechas, solo mes y anio (opcionales: si no
 // vienen, el registro queda en el mes actual con la fecha de ahora).

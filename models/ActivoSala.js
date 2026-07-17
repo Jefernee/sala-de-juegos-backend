@@ -1,5 +1,5 @@
 // models/ActivoSala.js
-// Hecho por Claude Code — Módulo de Administración: Activos de la Sala
+// Módulo de Administración: Activos de la Sala
 // Equipo físico de la sala (controles, consolas, pantallas, otros).
 //
 // Cada activo guarda un HISTORIAL de reparaciones (arreglo `reparaciones`) en

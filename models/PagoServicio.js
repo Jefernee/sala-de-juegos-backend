@@ -1,5 +1,5 @@
 // models/PagoServicio.js
-// Hecho por Claude Code — Módulo de Administración: Pagos de Servicios
+// Módulo de Administración: Pagos de Servicios
 import mongoose from 'mongoose';
 
 export const TIPOS_SERVICIO = [

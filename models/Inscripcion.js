@@ -1,5 +1,5 @@
 // models/Inscripcion.js
-// Hecho por Claude Code — Inscripción de una persona a un torneo/competición.
+// Inscripción de una persona a un torneo/competición.
 //
 // Se crea desde el formulario público (sin login) y queda guardada para que el
 // administrador/colaborador la vea en el módulo de Torneos (reemplaza el correo).

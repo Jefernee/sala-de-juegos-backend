@@ -1,5 +1,5 @@
 // middlewares/roles.js
-// Hecho por Claude Code — Autorización por rol (defensa real en el backend).
+// Autorización por rol (defensa real en el backend).
 //
 // Dos piezas:
 //   • restringirVendedor: guard GLOBAL. Un vendedor solo puede tocar los

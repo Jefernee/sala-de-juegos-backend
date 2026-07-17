@@ -1,5 +1,5 @@
 // utils/migrarCategoriaCallOfDuty2.js
-// Hecho por Claude Code — Migración idempotente puntual.
+// Migración idempotente puntual.
 //
 // El activo "Call of Duty 2" ya existía con otra categoría (probablemente
 // "Otros"), así que la migración general por nombre (migrarCategoriaActivos)

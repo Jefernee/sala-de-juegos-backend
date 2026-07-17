@@ -1,5 +1,5 @@
 // models/ActivosReport.js
-// Hecho por Claude Code — Snapshot guardado del Reporte de Activos.
+// Snapshot guardado del Reporte de Activos.
 //
 // A diferencia de ventas/plays (mensuales), el reporte de activos es una
 // "foto" del estado ACTUAL de todo el equipo, así que se guarda UN solo
