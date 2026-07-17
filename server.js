@@ -149,26 +149,39 @@ mongoose.connection.on('error', (err) => {
   console.error('❌ Error de conexión MongoDB:', err.message);
 });
 
+// Conexión a MongoDB. NO bloquea el arranque: se llama DESPUÉS de empezar a
+// escuchar, así /api/health responde al instante en un cold start de Koyeb y
+// la plataforma deja de quedarse "cargando". Mientras conecta, mongoose
+// bufferea las queries hasta 8s. Si la conexión falla, REINTENTA solo (no mata
+// el proceso) para no entrar en un loop de reinicios. Al conectar por primera
+// vez dispara las tareas de arranque (que necesitan la base lista).
+let arranqueDisparado = false;
 const connectDB = async () => {
   try {
     // Si la conexión está caída, una query espera como máximo 8s y falla con un
     // error claro, en vez de quedarse "buffereada" colgada indefinidamente.
-    // En Mongoose es una opción global (no de connect()).
     mongoose.set('bufferTimeoutMS', 8000);
 
     await mongoose.connect(process.env.MONGO_URI, {
-      // Timeouts configurados para mejor manejo
-      serverSelectionTimeoutMS: 5000,
+      serverSelectionTimeoutMS: 8000,
       socketTimeoutMS: 45000,
+      maxPoolSize: 10, // instancia chica: pool acotado y reutilizable
     });
     console.log("✅ Conectado a MongoDB Atlas correctamente");
+
+    if (!arranqueDisparado) {
+      arranqueDisparado = true;
+      if (process.env.EJECUTAR_MIGRACIONES === 'false') {
+        console.log('⏭️  Tareas de arranque OMITIDAS (EJECUTAR_MIGRACIONES=false).');
+      } else {
+        tareasDeArranque();
+      }
+    }
   } catch (err) {
-    console.error("❌ Error al conectar a MongoDB:", err);
-    process.exit(1);
+    console.error("❌ No se pudo conectar a MongoDB, reintento en 5s:", err.message);
+    setTimeout(connectDB, 5000);
   }
 };
-
-await connectDB();
 
 // ============================================
 // 🔧 TAREAS DE ARRANQUE (se ejecutan EN SEGUNDO PLANO tras el listen)
@@ -390,21 +403,13 @@ app.use((err, req, res, next) => {
 // ============================================
 app.listen(PORT, "0.0.0.0", () => {
   const startupTime = Date.now() - SERVER_START_TIME;
-  console.log(`\n✅ Servidor corriendo en puerto ${PORT}`);
-  console.log(`⏱️ Tiempo de inicio: ${startupTime}ms`);
+  console.log(`\n✅ Servidor escuchando en puerto ${PORT} (arranque: ${startupTime}ms)`);
   console.log("🌍 Entorno:", process.env.NODE_ENV);
   console.log("🚀 ========================================\n");
 
-  // Las migraciones/backfills ya se hicieron hace tiempo; solo son una red de
-  // seguridad para un entorno nuevo. Corren en SEGUNDO PLANO (no bloquean) y
-  // se pueden APAGAR poniendo EJECUTAR_MIGRACIONES=false en el .env (útil en
-  // local, donde te conectás al Atlas de producción y no querés tocarlo ni
-  // esperar). Por defecto (sin la variable) SÍ corren, para no cambiar prod.
-  if (process.env.EJECUTAR_MIGRACIONES === 'false') {
-    console.log('⏭️  Tareas de arranque OMITIDAS (EJECUTAR_MIGRACIONES=false).');
-  } else {
-    tareasDeArranque();
-  }
+  // La conexión a Mongo arranca AHORA, en paralelo (no bloquea el listen). Al
+  // conectar dispara —una sola vez— las tareas de arranque. Ver connectDB().
+  connectDB();
 });
 
 export { mongoose };
