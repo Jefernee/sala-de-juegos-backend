@@ -408,9 +408,10 @@ export const updateUserPassword = async (req, res) => {
 
 // ============================================
 // CAMBIAR EL ROL DE UN USUARIO (solo administrador)
-// Recibe { rol } en el body. No se puede asignar el rol
-// 'administrador' desde acá (el admin lo define el email del dueño) ni cambiarle
-// el rol a la cuenta del dueño (para no dejar el sistema sin administrador).
+// Recibe { rol } en el body. El administrador puede asignar cualquiera de los
+// roles, incluido 'administrador' (así puede tener varios administradores). Lo
+// único que NO se puede es cambiarle el rol a la cuenta del dueño (ADMIN_EMAIL),
+// que siempre queda como administrador para no dejar el sistema sin admin.
 // ============================================
 export const updateUserRol = async (req, res) => {
   try {
@@ -421,11 +422,11 @@ export const updateUserRol = async (req, res) => {
       return res.status(400).json({ success: false, message: "ID de usuario inválido" });
     }
 
-    // Solo se pueden asignar colaborador o vendedor (no administrador).
-    if (!ROLES.includes(rol) || rol === ROL_ADMIN) {
+    // Se puede asignar cualquiera de los roles válidos (incluido administrador).
+    if (!ROLES.includes(rol)) {
       return res.status(400).json({
         success: false,
-        message: `Rol inválido. Valores permitidos: ${ROLES.filter((r) => r !== ROL_ADMIN).join(", ")}`,
+        message: `Rol inválido. Valores permitidos: ${ROLES.join(", ")}`,
       });
     }
 
