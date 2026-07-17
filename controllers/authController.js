@@ -345,24 +345,27 @@ export const verifyToken = async (req, res) => {
 // ============================================
 export const getUsers = async (req, res) => {
   try {
-    // +passwordVisible: el campo es select:false; con "+" se agrega a los campos
-    // por defecto de forma confiable (evita la proyección mixta que a veces no lo
-    // trae). Solo llega acá el administrador (ruta protegida con soloAdmin).
-    const users = await User.find()
-      .select("+passwordVisible")
-      .sort({ createdAt: 1 })
-      .lean();
+    // Las contraseñas visibles SOLO las puede ver el dueño (ADMIN_EMAIL). Otros
+    // administradores gestionan usuarios/roles pero NUNCA ven contraseñas: ni
+    // siquiera se cargan de la base para ellos.
+    const esDueno = String(req.user?.email || "").toLowerCase() === ADMIN_EMAIL;
+
+    // +passwordVisible: el campo es select:false; con "+" se agrega de forma
+    // confiable. Solo se pide cuando quien consulta es el dueño.
+    let consulta = User.find().sort({ createdAt: 1 });
+    if (esDueno) consulta = consulta.select("+passwordVisible");
+    const users = await consulta.lean();
 
     // Construimos la salida explícitamente: NO exponemos el hash de login
-    // (`password` del doc) y devolvemos la contraseña descifrada como `password`.
-    // Si el usuario aún no tiene copia recuperable, va null.
+    // (`password` del doc). La contraseña descifrada se devuelve SOLO al dueño;
+    // para cualquier otro admin va null.
     const salida = users.map((u) => ({
       _id: u._id,
       email: u.email,
       nombre: u.nombre,
       rol: u.rol,
       createdAt: u.createdAt,
-      password: descifrarPassword(u.passwordVisible),
+      password: esDueno ? descifrarPassword(u.passwordVisible) : null,
     }));
 
     res.json({ success: true, users: salida });
@@ -391,6 +394,16 @@ export const updateUserPassword = async (req, res) => {
     const user = await User.findById(id);
     if (!user) {
       return res.status(404).json({ success: false, message: "Usuario no encontrado" });
+    }
+
+    // Blindaje de la cuenta del dueño: solo el propio dueño puede cambiar su
+    // contraseña. Así ningún otro admin puede resetearla para entrar como él.
+    const esDueno = String(req.user?.email || "").toLowerCase() === ADMIN_EMAIL;
+    if (user.email === ADMIN_EMAIL && !esDueno) {
+      return res.status(403).json({
+        success: false,
+        message: "Solo el dueño puede cambiar la contraseña de esta cuenta.",
+      });
     }
 
     const salt = await bcrypt.genSalt(10);
