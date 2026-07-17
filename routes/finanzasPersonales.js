@@ -9,6 +9,7 @@ import {
   addMovimiento,
   getMovimientos,
   getResumenMensual,
+  getRecomendaciones,
   getAniosDisponibles,
   getTipoCambio,
   getMovimientoById,
@@ -24,6 +25,7 @@ router.use(authMiddleware, soloAdmin);
 // Rutas estáticas ANTES de /:id (si no, Express las trataría como un id).
 router.get('/categorias', getCategorias);
 router.get('/resumen', getResumenMensual);          // ?mes=&anio=
+router.get('/recomendaciones', getRecomendaciones); // ?mes=&anio=
 router.get('/anios-disponibles', getAniosDisponibles);
 router.get('/tipo-cambio', getTipoCambio);          // TC del dólar (Hacienda, cacheado por día)
 

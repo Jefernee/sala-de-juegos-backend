@@ -238,6 +238,50 @@ export const getMovimientos = async (req, res) => {
 // esos movimientos son la única fuente, así que no hay nada que sobreviva a
 // su borrado. Agregación en Mongo (no carga toda la colección a memoria).
 // ============================================
+// Calcula los totales del mes de un usuario: total ingresos, total egresos,
+// balance y desglose por categoría (ordenado de mayor a menor). Se usa tanto
+// para el resumen como para las recomendaciones (mes actual y mes anterior).
+const calcularResumenMes = async (usuarioId, mes, anio) => {
+  const match = {
+    usuario: new mongoose.Types.ObjectId(usuarioId),
+    fecha: crearFiltroMes(mes, anio),
+  };
+
+  const grupos = await MovimientoPersonal.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: { tipo: '$tipo', categoria: '$categoria' },
+        total: { $sum: '$monto' },
+        cantidad: { $sum: 1 },
+      },
+    },
+    { $sort: { total: -1 } },
+  ]);
+
+  const desglose = { ingreso: [], egreso: [] };
+  let totalIngresos = 0;
+  let totalEgresos = 0;
+
+  for (const g of grupos) {
+    const fila = { categoria: g._id.categoria, total: g.total, cantidad: g.cantidad };
+    if (g._id.tipo === 'ingreso') {
+      desglose.ingreso.push(fila);
+      totalIngresos += g.total;
+    } else {
+      desglose.egreso.push(fila);
+      totalEgresos += g.total;
+    }
+  }
+
+  return {
+    totalIngresos,
+    totalEgresos,
+    balance: totalIngresos - totalEgresos,
+    desglose, // { ingreso: [{categoria,total,cantidad}], egreso: [...] }
+  };
+};
+
 export const getResumenMensual = async (req, res) => {
   try {
     const mes = parseInt(req.query.mes);
@@ -249,50 +293,164 @@ export const getResumenMensual = async (req, res) => {
       });
     }
 
-    const match = {
-      usuario: new mongoose.Types.ObjectId(req.user.id),
-      fecha: crearFiltroMes(mes, anio),
-    };
+    const resumen = await calcularResumenMes(req.user.id, mes, anio);
+    res.status(200).json({ mes, anio, ...resumen });
+  } catch (error) {
+    console.error('❌ Error al generar el resumen personal:', error);
+    res.status(500).json({ message: 'Error al generar el resumen', error: error.message });
+  }
+};
 
-    // Agrupa por tipo + categoría: total y cantidad de movimientos por grupo.
-    const grupos = await MovimientoPersonal.aggregate([
-      { $match: match },
-      {
-        $group: {
-          _id: { tipo: '$tipo', categoria: '$categoria' },
-          total: { $sum: '$monto' },
-          cantidad: { $sum: 1 },
-        },
-      },
-      { $sort: { total: -1 } },
-    ]);
+// Formatea un monto como colones para los mensajes (ej. "₡50.000"), con punto
+// de miles. Manual para no depender del locale/ICU del entorno.
+const fmtCRC = (n) => {
+  const r = Math.round(n);
+  const s = Math.abs(r).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  return (r < 0 ? '-₡' : '₡') + s;
+};
 
-    const desglose = { ingreso: [], egreso: [] };
-    let totalIngresos = 0;
-    let totalEgresos = 0;
+// Construye la lista de recomendaciones a partir del resumen del mes actual y
+// el del mes anterior. Cada recomendación trae `nivel` (para que el frontend
+// la pinte), un `icono` y el `mensaje`. Reglas pensadas para tomar decisiones.
+//   niveles: 'critico' | 'advertencia' | 'bien' | 'consejo' | 'info'
+const construirRecomendaciones = (actual, previo) => {
+  const recs = [];
+  const { totalIngresos, totalEgresos, balance, desglose } = actual;
 
-    for (const g of grupos) {
-      const fila = { categoria: g._id.categoria, total: g.total, cantidad: g.cantidad };
-      if (g._id.tipo === 'ingreso') {
-        desglose.ingreso.push(fila);
-        totalIngresos += g.total;
+  // Sin movimientos en el mes: nada que analizar todavía.
+  if (totalIngresos === 0 && totalEgresos === 0) {
+    recs.push({
+      nivel: 'info',
+      icono: '📝',
+      mensaje: 'Todavía no registraste movimientos este mes. Anotá tus ingresos y gastos para ver recomendaciones.',
+    });
+    return recs;
+  }
+
+  // 1) Salud del balance
+  if (balance < 0) {
+    recs.push({
+      nivel: 'critico',
+      icono: '⚠️',
+      mensaje: `Gastaste ${fmtCRC(-balance)} más de lo que ingresaste este mes. Tratá de recortar gastos o sumar ingresos.`,
+    });
+  } else if (totalIngresos > 0 && totalEgresos / totalIngresos >= 0.9) {
+    recs.push({
+      nivel: 'advertencia',
+      icono: '😬',
+      mensaje: `Estás gastando casi todo lo que ingresás (${Math.round((totalEgresos / totalIngresos) * 100)}%). Queda poco margen; cuidá los gastos no esenciales.`,
+    });
+  } else if (balance > 0) {
+    recs.push({
+      nivel: 'bien',
+      icono: '✅',
+      mensaje: `Vas bien: te quedaron ${fmtCRC(balance)} de saldo este mes.`,
+    });
+  }
+
+  // 2) Categoría donde más gastás
+  if (desglose.egreso.length > 0 && totalEgresos > 0) {
+    const top = desglose.egreso[0]; // ya viene ordenado de mayor a menor
+    const pct = Math.round((top.total / totalEgresos) * 100);
+    const extra = pct >= 40 ? ' Es una parte grande de tus gastos; revisá si podés bajarla.' : '';
+    recs.push({
+      nivel: 'info',
+      icono: '📊',
+      mensaje: `Tu mayor gasto fue en ${top.categoria}: ${fmtCRC(top.total)} (${pct}% del total).${extra}`,
+    });
+  }
+
+  // 3) Comparación de gastos contra el mes pasado (solo si el cambio es notorio)
+  if (previo.totalEgresos > 0) {
+    const diff = totalEgresos - previo.totalEgresos;
+    const pct = Math.round((Math.abs(diff) / previo.totalEgresos) * 100);
+    if (pct >= 5) {
+      if (diff > 0) {
+        recs.push({
+          nivel: 'advertencia',
+          icono: '📈',
+          mensaje: `Gastaste ${pct}% más que el mes pasado (${fmtCRC(totalEgresos)} vs ${fmtCRC(previo.totalEgresos)}).`,
+        });
       } else {
-        desglose.egreso.push(fila);
-        totalEgresos += g.total;
+        recs.push({
+          nivel: 'bien',
+          icono: '📉',
+          mensaje: `Gastaste ${pct}% menos que el mes pasado (${fmtCRC(totalEgresos)} vs ${fmtCRC(previo.totalEgresos)}). ¡Bien ahí!`,
+        });
       }
     }
+  }
+
+  // 4) Peso de las deudas
+  const deudas = desglose.egreso.find((e) => e.categoria === 'Deudas/Préstamos');
+  if (deudas && totalEgresos > 0 && deudas.total / totalEgresos >= 0.25) {
+    recs.push({
+      nivel: 'advertencia',
+      icono: '💳',
+      mensaje: `Las deudas/préstamos se llevaron ${fmtCRC(deudas.total)} (${Math.round((deudas.total / totalEgresos) * 100)}% de tus gastos). Priorizá bajarlas para liberar tu presupuesto.`,
+    });
+  }
+
+  // 5) Ahorro del mes vs meta del 10%
+  if (totalIngresos > 0) {
+    const ahorro = desglose.egreso.find((e) => e.categoria === 'Ahorro');
+    const montoAhorro = ahorro ? ahorro.total : 0;
+    const meta = Math.round(totalIngresos * 0.1);
+    if (montoAhorro === 0) {
+      recs.push({
+        nivel: 'consejo',
+        icono: '💰',
+        mensaje: `No registraste ahorro este mes. Una meta sencilla es guardar el 10% de tus ingresos (${fmtCRC(meta)}).`,
+      });
+    } else {
+      const pctAhorro = Math.round((montoAhorro / totalIngresos) * 100);
+      const cierre = pctAhorro < 10 ? ` Si podés, apuntá al 10% (${fmtCRC(meta)}).` : ' ¡Excelente hábito!';
+      recs.push({
+        nivel: 'bien',
+        icono: '💰',
+        mensaje: `Ahorraste ${fmtCRC(montoAhorro)} este mes (${pctAhorro}% de tus ingresos).${cierre}`,
+      });
+    }
+  }
+
+  return recs;
+};
+
+// ============================================
+// GET /api/finanzas-personales/recomendaciones?mes=&anio=
+// Analiza el mes (y lo compara con el anterior) y devuelve mensajes para
+// tomar decisiones. Todo se calcula con reglas en el backend (sin IA).
+// Respuesta: { mes, anio, resumen, recomendaciones: [{ nivel, icono, mensaje }] }
+// ============================================
+export const getRecomendaciones = async (req, res) => {
+  try {
+    const mes = parseInt(req.query.mes);
+    const anio = parseInt(req.query.anio);
+
+    if (!mes || !anio || mes < 1 || mes > 12 || anio < 2000 || anio > 2100) {
+      return res.status(400).json({
+        message: 'Los parámetros mes (1-12) y anio son obligatorios. Ej: ?mes=7&anio=2026',
+      });
+    }
+
+    // Mes anterior (para comparar). Si es enero, retrocede a diciembre del año previo.
+    const mesPrevio = mes === 1 ? 12 : mes - 1;
+    const anioPrevio = mes === 1 ? anio - 1 : anio;
+
+    const [actual, previo] = await Promise.all([
+      calcularResumenMes(req.user.id, mes, anio),
+      calcularResumenMes(req.user.id, mesPrevio, anioPrevio),
+    ]);
 
     res.status(200).json({
       mes,
       anio,
-      totalIngresos,
-      totalEgresos,
-      balance: totalIngresos - totalEgresos,
-      desglose, // { ingreso: [{categoria,total,cantidad}], egreso: [...] }
+      resumen: actual,
+      recomendaciones: construirRecomendaciones(actual, previo),
     });
   } catch (error) {
-    console.error('❌ Error al generar el resumen personal:', error);
-    res.status(500).json({ message: 'Error al generar el resumen', error: error.message });
+    console.error('❌ Error al generar recomendaciones:', error);
+    res.status(500).json({ message: 'Error al generar las recomendaciones', error: error.message });
   }
 };
 
