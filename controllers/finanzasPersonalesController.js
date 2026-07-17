@@ -7,8 +7,10 @@ import MovimientoPersonal, {
   TIPOS_MOVIMIENTO,
   CATEGORIAS_INGRESO,
   CATEGORIAS_EGRESO,
+  CATEGORIAS_DEUDA,
   MONEDAS,
   categoriasPorTipo,
+  esAhorro,
 } from '../models/MovimientoPersonal.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
 
@@ -329,11 +331,12 @@ const construirRecomendaciones = (actual, previo) => {
 
   // El AHORRO es dinero que apartás (algo bueno), NO un gasto de consumo. Lo
   // separamos para no tratarlo como algo "a recortar": el gasto real es todo
-  // lo demás.
-  const ahorroRow = desglose.egreso.find((e) => e.categoria === 'Ahorro');
-  const montoAhorro = ahorroRow ? ahorroRow.total : 0;
+  // lo demás. Hay varios tipos de ahorro (Ahorro, Ahorro CreAI, Ahorro MEP) y
+  // TODOS se suman como el ahorro total del mes.
+  const filasAhorro = desglose.egreso.filter((e) => esAhorro(e.categoria));
+  const montoAhorro = filasAhorro.reduce((s, e) => s + e.total, 0);
   const gastoSinAhorro = totalEgresos - montoAhorro;
-  const egresosSinAhorro = desglose.egreso.filter((e) => e.categoria !== 'Ahorro');
+  const egresosSinAhorro = desglose.egreso.filter((e) => !esAhorro(e.categoria));
 
   // 1) Salud del flujo (mirando el GASTO real, sin contar el ahorro)
   if (gastoSinAhorro > totalIngresos) {
@@ -377,8 +380,10 @@ const construirRecomendaciones = (actual, previo) => {
   }
 
   // 3) Comparación del gasto (sin ahorro) contra el mes pasado
-  const prevAhorro = previo.desglose?.egreso?.find((e) => e.categoria === 'Ahorro');
-  const prevGastoSinAhorro = previo.totalEgresos - (prevAhorro ? prevAhorro.total : 0);
+  const prevMontoAhorro = (previo.desglose?.egreso || [])
+    .filter((e) => esAhorro(e.categoria))
+    .reduce((s, e) => s + e.total, 0);
+  const prevGastoSinAhorro = previo.totalEgresos - prevMontoAhorro;
   if (prevGastoSinAhorro > 0) {
     const diff = gastoSinAhorro - prevGastoSinAhorro;
     const pct = Math.round((Math.abs(diff) / prevGastoSinAhorro) * 100);
@@ -399,13 +404,23 @@ const construirRecomendaciones = (actual, previo) => {
     }
   }
 
-  // 4) Peso de las deudas (sobre el gasto real, sin ahorro)
-  const deudas = egresosSinAhorro.find((e) => e.categoria === 'Deudas/Préstamos');
-  if (deudas && gastoSinAhorro > 0 && deudas.total / gastoSinAhorro >= 0.25) {
+  // 4) Peso de las deudas (sobre el gasto real, sin ahorro). Suma todas las
+  // categorías de deuda: préstamos y la cuota mensual del banco (BCR).
+  const filasDeuda = egresosSinAhorro.filter((e) => CATEGORIAS_DEUDA.includes(e.categoria));
+  const totalDeuda = filasDeuda.reduce((s, e) => s + e.total, 0);
+  if (totalDeuda > 0 && gastoSinAhorro > 0 && totalDeuda / gastoSinAhorro >= 0.25) {
+    const detalleDeuda =
+      filasDeuda.length > 1
+        ? ` (${filasDeuda
+            .slice()
+            .sort((a, b) => b.total - a.total)
+            .map((f) => `${f.categoria} ${fmtCRC(f.total)}`)
+            .join(', ')})`
+        : '';
     recs.push({
       nivel: 'advertencia',
       icono: '💳',
-      mensaje: `Las deudas/préstamos se llevaron ${fmtCRC(deudas.total)} (${Math.round((deudas.total / gastoSinAhorro) * 100)}% de tus gastos). Priorizá bajarlas para liberar tu presupuesto.`,
+      mensaje: `Las deudas se llevaron ${fmtCRC(totalDeuda)} (${Math.round((totalDeuda / gastoSinAhorro) * 100)}% de tus gastos)${detalleDeuda}. Priorizá bajarlas para liberar tu presupuesto.`,
     });
   }
 
@@ -421,10 +436,19 @@ const construirRecomendaciones = (actual, previo) => {
     } else {
       const pctAhorro = Math.round((montoAhorro / totalIngresos) * 100);
       const cierre = pctAhorro < 10 ? ` Si podés, apuntá al 10% (${fmtCRC(meta)}).` : ' ¡Excelente hábito!';
+      // Mini desglose cuando hay más de un tipo de ahorro (Ahorro, CreAI, MEP).
+      const detalleAhorro =
+        filasAhorro.length > 1
+          ? ` Desglose: ${filasAhorro
+              .slice()
+              .sort((a, b) => b.total - a.total)
+              .map((f) => `${f.categoria} ${fmtCRC(f.total)}`)
+              .join(', ')}.`
+          : '';
       recs.push({
         nivel: 'bien',
         icono: '💰',
-        mensaje: `Ahorraste ${fmtCRC(montoAhorro)} este mes (${pctAhorro}% de tus ingresos).${cierre}`,
+        mensaje: `Ahorraste ${fmtCRC(montoAhorro)} este mes (${pctAhorro}% de tus ingresos).${cierre}${detalleAhorro}`,
       });
     }
   }

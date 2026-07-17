@@ -18,6 +18,7 @@ export const TIPOS_MOVIMIENTO = ['ingreso', 'egreso'];
 // Categorías predefinidas (decisión del usuario: lista fija, no texto libre).
 // Se pueden ampliar/cambiar cuando el usuario lo pida.
 export const CATEGORIAS_INGRESO = [
+  'Salario',
   'Salario MEP',
   'Salario CreAI',
   'Negocio',
@@ -28,6 +29,7 @@ export const CATEGORIAS_INGRESO = [
 
 export const CATEGORIAS_EGRESO = [
   'Comida',
+  'Comida de colegio',
   'Transporte',
   'Vivienda/Alquiler',
   'Servicios',
@@ -35,10 +37,26 @@ export const CATEGORIAS_EGRESO = [
   'Entretenimiento',
   'Compras personales',
   'Educación',
+  'Regalos',
+  'Rifas',
   'Deudas/Préstamos',
+  'Cuota banco (BCR)',
   'Ahorro',
+  'Ahorro CreAI',
+  'Ahorro MEP',
   'Otros',
 ];
+
+// Categorías que son AHORRO (dinero que se aparta, algo bueno). Los mensajes
+// inteligentes las tratan aparte del gasto de consumo para no sugerir
+// "recortarlas". Se suman todas como el ahorro total del mes.
+export const CATEGORIAS_AHORRO = ['Ahorro', 'Ahorro CreAI', 'Ahorro MEP'];
+
+// Categorías que cuentan como DEUDA para el aviso de "peso de las deudas".
+export const CATEGORIAS_DEUDA = ['Deudas/Préstamos', 'Cuota banco (BCR)'];
+
+// Helper: ¿esta categoría de egreso es ahorro?
+export const esAhorro = (categoria) => CATEGORIAS_AHORRO.includes(categoria);
 
 // Monedas soportadas. El valor canónico SIEMPRE es `monto` en colones (CRC);
 // USD solo guarda el origen del pago para referencia.
