@@ -284,6 +284,75 @@ const calcularResumenMes = async (usuarioId, mes, anio) => {
   };
 };
 
+// Suma el ahorro del mes a partir del desglose (todas las categorías de ahorro:
+// Ahorro, Ahorro CreAI, Ahorro MEP). El ahorro vive dentro de `totalEgresos`,
+// pero lo separamos para mostrarlo aparte y no tratarlo como gasto de consumo.
+const calcularAhorro = (desglose) =>
+  desglose.egreso.filter((e) => esAhorro(e.categoria)).reduce((s, e) => s + e.total, 0);
+
+// ============================================
+// Saldo Inicial del Mes (NO se almacena en la base de datos).
+//
+// Se deriva EN VIVO como el "saldo final" acumulado de TODOS los meses
+// anteriores. Matemáticamente, si SaldoFinal[m] = SaldoInicial[m] + Ingresos[m]
+// - Egresos[m] y SaldoInicial[m] = SaldoFinal[m-1], al desplegar la recursión
+// queda que el saldo inicial de un mes es simplemente el neto (ingresos -
+// egresos) de todos los movimientos con fecha ANTERIOR al día 1 de ese mes.
+//
+// Ventajas de calcularlo así (una sola agregación, sin guardar nada):
+//   • Si se edita/borra/agrega cualquier movimiento de un mes previo, el saldo
+//     inicial del mes siguiente se recalcula solo en la próxima consulta.
+//   • Si no hay ningún movimiento anterior, la suma es 0 (primer mes → ₡0).
+// El ahorro está incluido en los egresos, así que resta del saldo acumulado
+// (es dinero apartado que ya no está disponible), acorde con la fórmula pedida.
+// ============================================
+const calcularSaldoInicial = async (usuarioId, mes, anio) => {
+  // Día 1 del mes a medianoche de Costa Rica (06:00 UTC): mismo borde que usa
+  // crearFiltroMes como inicio, para que "antes de este mes" no deje huecos.
+  const inicioMes = new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0));
+
+  const grupos = await MovimientoPersonal.aggregate([
+    { $match: { usuario: new mongoose.Types.ObjectId(usuarioId), fecha: { $lt: inicioMes } } },
+    { $group: { _id: '$tipo', total: { $sum: '$monto' } } },
+  ]);
+
+  let ingresos = 0;
+  let egresos = 0;
+  for (const g of grupos) {
+    if (g._id === 'ingreso') ingresos = g.total;
+    else egresos = g.total;
+  }
+
+  return ingresos - egresos; // puede ser negativo si se arrastra un déficit
+};
+
+// A partir del resumen crudo del mes (calcularResumenMes) y su saldo inicial,
+// arma el bloque financiero que consume el frontend. El saldo inicial se suma a
+// TODOS los cálculos del mes (es dinero disponible del mes anterior), pero NO
+// se cuenta como ingreso: `totalIngresos` y `desglose.ingreso` quedan intactos.
+//   Disponible  = SaldoInicial + Ingresos
+//   SaldoFinal  = SaldoInicial + Ingresos - Gastos - Ahorro (= Disponible - Egresos)
+//   Balance     = SaldoFinal (dinero restante al cerrar el mes, ya con el saldo inicial)
+const componerFinanzasMes = (resumen, saldoInicial) => {
+  const { totalIngresos, totalEgresos, desglose } = resumen;
+  const totalAhorro = calcularAhorro(desglose);
+  const totalGastos = totalEgresos - totalAhorro; // egresos SIN ahorro (gasto de consumo)
+  const disponible = saldoInicial + totalIngresos;
+  const saldoFinal = disponible - totalGastos - totalAhorro; // = saldoInicial + ingresos - egresos
+
+  return {
+    saldoInicial,   // dinero traído del mes anterior (NO es ingreso)
+    totalIngresos,  // ingresos propios del mes (sin saldo inicial)
+    disponible,     // saldoInicial + ingresos
+    totalGastos,    // egresos sin ahorro
+    totalAhorro,    // suma de categorías de ahorro
+    totalEgresos,   // gastos + ahorro (compat con lo anterior)
+    saldoFinal,     // saldo con el que se cierra el mes
+    balance: saldoFinal, // el "Balance del mes" ahora usa el saldo inicial
+    desglose,
+  };
+};
+
 export const getResumenMensual = async (req, res) => {
   try {
     const mes = parseInt(req.query.mes);
@@ -295,8 +364,11 @@ export const getResumenMensual = async (req, res) => {
       });
     }
 
-    const resumen = await calcularResumenMes(req.user.id, mes, anio);
-    res.status(200).json({ mes, anio, ...resumen });
+    const [resumen, saldoInicial] = await Promise.all([
+      calcularResumenMes(req.user.id, mes, anio),
+      calcularSaldoInicial(req.user.id, mes, anio),
+    ]);
+    res.status(200).json({ mes, anio, ...componerFinanzasMes(resumen, saldoInicial) });
   } catch (error) {
     console.error('❌ Error al generar el resumen personal:', error);
     res.status(500).json({ message: 'Error al generar el resumen', error: error.message });
@@ -315,11 +387,34 @@ const fmtCRC = (n) => {
 // el del mes anterior. Cada recomendación trae `nivel` (para que el frontend
 // la pinte), un `icono` y el `mensaje`. Reglas pensadas para tomar decisiones.
 //   niveles: 'critico' | 'advertencia' | 'bien' | 'consejo' | 'info'
-const construirRecomendaciones = (actual, previo) => {
+const construirRecomendaciones = (actual, previo, saldoInicial = 0) => {
   const recs = [];
   const { totalIngresos, totalEgresos, balance, desglose } = actual;
 
-  // Sin movimientos en el mes: nada que analizar todavía.
+  // Resumen inteligente del SALDO INICIAL (dinero traído del mes anterior).
+  // Va de primero para dar el contexto de con cuánto se arrancó el mes.
+  if (saldoInicial > 0) {
+    recs.push({
+      nivel: 'info',
+      icono: '🔄',
+      mensaje: `Iniciaste el mes con ${fmtCRC(saldoInicial)} provenientes del saldo acumulado del mes anterior.`,
+    });
+  } else if (saldoInicial < 0) {
+    // Extensión al pedido original: si arrastrás un déficit de meses previos.
+    recs.push({
+      nivel: 'advertencia',
+      icono: '📉',
+      mensaje: `Arrastrás un saldo negativo de ${fmtCRC(saldoInicial)} de meses anteriores. Ojo con seguir gastando de más.`,
+    });
+  } else {
+    recs.push({
+      nivel: 'info',
+      icono: '🆕',
+      mensaje: 'Este mes inició sin saldo acumulado del mes anterior.',
+    });
+  }
+
+  // Sin movimientos en el mes: nada más que analizar todavía.
   if (totalIngresos === 0 && totalEgresos === 0) {
     recs.push({
       nivel: 'info',
@@ -327,6 +422,17 @@ const construirRecomendaciones = (actual, previo) => {
       mensaje: 'Todavía no registraste movimientos este mes. Anotá tus ingresos y gastos para ver recomendaciones.',
     });
     return recs;
+  }
+
+  // Si durante el mes se echó mano del saldo acumulado: los egresos totales
+  // (gastos + ahorro) superaron los ingresos propios del mes, así que la
+  // diferencia salió del dinero traído de meses anteriores.
+  if (saldoInicial > 0 && totalEgresos > totalIngresos) {
+    recs.push({
+      nivel: 'consejo',
+      icono: '📦',
+      mensaje: 'Parte de los gastos de este mes fueron cubiertos con dinero acumulado de meses anteriores.',
+    });
   }
 
   // El AHORRO es dinero que apartás (algo bueno), NO un gasto de consumo. Lo
@@ -477,16 +583,17 @@ export const getRecomendaciones = async (req, res) => {
     const mesPrevio = mes === 1 ? 12 : mes - 1;
     const anioPrevio = mes === 1 ? anio - 1 : anio;
 
-    const [actual, previo] = await Promise.all([
+    const [actual, previo, saldoInicial] = await Promise.all([
       calcularResumenMes(req.user.id, mes, anio),
       calcularResumenMes(req.user.id, mesPrevio, anioPrevio),
+      calcularSaldoInicial(req.user.id, mes, anio),
     ]);
 
     res.status(200).json({
       mes,
       anio,
-      resumen: actual,
-      recomendaciones: construirRecomendaciones(actual, previo),
+      resumen: componerFinanzasMes(actual, saldoInicial),
+      recomendaciones: construirRecomendaciones(actual, previo, saldoInicial),
     });
   } catch (error) {
     console.error('❌ Error al generar recomendaciones:', error);
