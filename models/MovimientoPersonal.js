@@ -27,20 +27,39 @@ export const CATEGORIAS_INGRESO = [
   'Otros',
 ];
 
+// Van agrupadas por tema (comida/hogar, transporte, personales, ocasiones,
+// compromisos, ahorro) para que el select del frontend se lea ordenado.
 export const CATEGORIAS_EGRESO = [
+  // Comida y hogar
   'Comida',
   'Comida de colegio',
-  'Transporte',
+  'Comida en Batán',
+  'Compras para el hogar',
   'Vivienda/Alquiler',
   'Servicios',
+  'Internet/Celular',
+  // Transporte
+  'Transporte',
+  'Combustible',
+  'Viajes a Batán',
+  // Personales / día a día
   'Salud',
-  'Entretenimiento',
+  'Peluqueada',
+  'Ropa y calzado',
   'Compras personales',
   'Educación',
+  'Entretenimiento',
+  'Suscripciones',
+  'Mascotas',
+  // Ocasiones
   'Regalos',
+  'Cumpleaños',
   'Rifas',
+  // Compromisos financieros
   'Deudas/Préstamos',
   'Cuota banco (BCR)',
+  'Seguros',
+  // Ahorro (dinero apartado, NO gasto de consumo)
   'Ahorro',
   'Ahorro CreAI',
   'Ahorro MEP',
@@ -55,8 +74,28 @@ export const CATEGORIAS_AHORRO = ['Ahorro', 'Ahorro CreAI', 'Ahorro MEP'];
 // Categorías que cuentan como DEUDA para el aviso de "peso de las deudas".
 export const CATEGORIAS_DEUDA = ['Deudas/Préstamos', 'Cuota banco (BCR)'];
 
+// Gastos FIJOS: los que llegan todos los meses casi igual y no se pueden
+// recortar de un día para otro. Los mensajes inteligentes avisan cuando se
+// llevan una parte muy grande del ingreso (poco margen ante un imprevisto).
+export const CATEGORIAS_FIJAS = [
+  'Vivienda/Alquiler',
+  'Servicios',
+  'Internet/Celular',
+  'Suscripciones',
+  'Seguros',
+  'Cuota banco (BCR)',
+];
+
+// Gastos asociados a los viajes a Batán (comida allá + los viajes en sí).
+// Se agrupan para poder decir cuánto cuesta Batán en total cada mes.
+export const CATEGORIAS_BATAN = ['Comida en Batán', 'Viajes a Batán'];
+
 // Helper: ¿esta categoría de egreso es ahorro?
 export const esAhorro = (categoria) => CATEGORIAS_AHORRO.includes(categoria);
+
+// Helpers de grupo para los mensajes inteligentes.
+export const esGastoFijo = (categoria) => CATEGORIAS_FIJAS.includes(categoria);
+export const esDeBatan = (categoria) => CATEGORIAS_BATAN.includes(categoria);
 
 // Monedas soportadas. El valor canónico SIEMPRE es `monto` en colones (CRC);
 // USD solo guarda el origen del pago para referencia.

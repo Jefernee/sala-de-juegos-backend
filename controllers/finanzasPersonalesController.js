@@ -8,9 +8,12 @@ import MovimientoPersonal, {
   CATEGORIAS_INGRESO,
   CATEGORIAS_EGRESO,
   CATEGORIAS_DEUDA,
+  CATEGORIAS_AHORRO,
   MONEDAS,
   categoriasPorTipo,
   esAhorro,
+  esGastoFijo,
+  esDeBatan,
 } from '../models/MovimientoPersonal.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
 
@@ -326,6 +329,41 @@ const calcularSaldoInicial = async (usuarioId, mes, anio) => {
   return ingresos - egresos; // puede ser negativo si se arrastra un déficit
 };
 
+// ============================================
+// Gasto de consumo PROMEDIO por mes (sin ahorro) de los meses ANTERIORES al
+// consultado. Con esto los mensajes pueden decir algo que no está en pantalla:
+// cuántos meses aguantaría el saldo disponible si se cayeran los ingresos.
+// Se promedia solo entre los meses que SÍ tuvieron gastos (si hay un mes vacío
+// no diluye el promedio). Devuelve null si no hay historial previo.
+// ============================================
+const calcularGastoPromedioMensual = async (usuarioId, mes, anio, meses = 3) => {
+  const fin = new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0));        // día 1 del mes consultado
+  const inicio = new Date(Date.UTC(anio, mes - 1 - meses, 1, 6, 0, 0, 0)); // N meses atrás
+
+  const grupos = await MovimientoPersonal.aggregate([
+    {
+      $match: {
+        usuario: new mongoose.Types.ObjectId(usuarioId),
+        tipo: 'egreso',
+        categoria: { $nin: CATEGORIAS_AHORRO },
+        fecha: { $gte: inicio, $lt: fin },
+      },
+    },
+    {
+      // Agrupamos por mes en hora de Costa Rica (no UTC) para que un gasto de
+      // la noche del último día no se cuente en el mes siguiente.
+      $group: {
+        _id: { $dateToString: { date: '$fecha', format: '%Y-%m', timezone: 'America/Costa_Rica' } },
+        total: { $sum: '$monto' },
+      },
+    },
+  ]);
+
+  if (grupos.length === 0) return null;
+  const total = grupos.reduce((s, g) => s + g.total, 0);
+  return Math.round(total / grupos.length);
+};
+
 // A partir del resumen crudo del mes (calcularResumenMes) y su saldo inicial,
 // arma el bloque financiero que consume el frontend. El saldo inicial se suma a
 // TODOS los cálculos del mes (es dinero disponible del mes anterior), pero NO
@@ -383,183 +421,283 @@ const fmtCRC = (n) => {
   return (r < 0 ? '-₡' : '₡') + s;
 };
 
-// Construye la lista de recomendaciones a partir del resumen del mes actual y
-// el del mes anterior. Cada recomendación trae `nivel` (para que el frontend
-// la pinte), un `icono` y el `mensaje`. Reglas pensadas para tomar decisiones.
+const NOMBRES_MES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'setiembre', 'octubre', 'noviembre', 'diciembre',
+];
+
+// Días del mes consultado y, si es el mes EN CURSO en Costa Rica, cuántos días
+// van corridos. Sirve para proyectar el cierre de un mes que todavía no acaba
+// (comparar un mes a medias contra uno completo daría avisos falsos).
+const infoDelMes = (mes, anio) => {
+  const [anioHoy, mesHoy, diaHoy] = hoyCostaRica().split('-').map(Number);
+  const diasDelMes = new Date(Date.UTC(anio, mes, 0)).getUTCDate(); // día 0 del mes siguiente
+  const esMesEnCurso = anioHoy === anio && mesHoy === mes;
+  return {
+    diasDelMes,
+    esMesEnCurso,
+    diasTranscurridos: esMesEnCurso ? diaHoy : diasDelMes,
+  };
+};
+
+// Suma los totales de las filas cuya categoría cumple el predicado.
+const sumarSi = (filas, predicado) =>
+  filas.filter((f) => predicado(f.categoria)).reduce((s, f) => s + f.total, 0);
+
+// "Comida ₡41.775, Transporte ₡12.000" (de mayor a menor)
+const listarFilas = (filas) =>
+  filas
+    .slice()
+    .sort((a, b) => b.total - a.total)
+    .map((f) => `${f.categoria} ${fmtCRC(f.total)}`)
+    .join(', ');
+
+// Orden en que se muestran los mensajes: primero lo que hay que atender.
+const PRIORIDAD_NIVEL = { critico: 0, advertencia: 1, consejo: 2, bien: 3, info: 4 };
+
+// Pocos mensajes y que valgan: solo los 4 más importantes del mes. Se generan
+// todos los avisos posibles, se ordenan por urgencia y se muestran los primeros.
+const MAX_RECOMENDACIONES = 4;
+
+// Cambios de al menos ₡5.000 en una categoría: menos que eso es ruido.
+const UMBRAL_CAMBIO = 5000;
+
+// ============================================
+// Construye los mensajes inteligentes del mes. La idea NO es repetir los
+// números que ya se ven en las tarjetas (ingresos, egresos, ahorro, saldo),
+// sino decir lo que esos números NO muestran:
+//   • alertas de flujo (¿el mes se pagó solo o se financió con el colchón?)
+//   • proyección de cierre si el mes va a medias
+//   • comparación contra el mes anterior, incluyendo QUÉ categoría cambió
+//   • gastos nuevos que no existían el mes pasado
+//   • estructura del gasto: fijos, deudas, concentración, Batán
+//   • cuánto aguanta el saldo disponible si se caen los ingresos
+// Cada mensaje trae `nivel` (para que el frontend lo pinte), `icono` y `mensaje`.
 //   niveles: 'critico' | 'advertencia' | 'bien' | 'consejo' | 'info'
-const construirRecomendaciones = (actual, previo, saldoInicial = 0) => {
+// ============================================
+const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoPromedio = null, mes, anio }) => {
   const recs = [];
-  const { totalIngresos, totalEgresos, balance, desglose } = actual;
+  const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
 
-  // Resumen inteligente del SALDO INICIAL (dinero traído del mes anterior).
-  // Va de primero para dar el contexto de con cuánto se arrancó el mes.
-  if (saldoInicial > 0) {
-    recs.push({
-      nivel: 'info',
-      icono: '🔄',
-      mensaje: `Iniciaste el mes con ${fmtCRC(saldoInicial)} provenientes del saldo acumulado del mes anterior.`,
-    });
-  } else if (saldoInicial < 0) {
-    // Extensión al pedido original: si arrastrás un déficit de meses previos.
-    recs.push({
-      nivel: 'advertencia',
-      icono: '📉',
-      mensaje: `Arrastrás un saldo negativo de ${fmtCRC(saldoInicial)} de meses anteriores. Ojo con seguir gastando de más.`,
-    });
-  } else {
-    recs.push({
-      nivel: 'info',
-      icono: '🆕',
-      mensaje: 'Este mes inició sin saldo acumulado del mes anterior.',
-    });
-  }
+  // --- Números del mes actual (el ahorro se separa: es dinero apartado, no gasto)
+  const fin = componerFinanzasMes(actual, saldoInicial);
+  const { totalIngresos, totalGastos, totalAhorro, totalEgresos, saldoFinal } = fin;
+  const filasAhorro = actual.desglose.egreso.filter((e) => esAhorro(e.categoria));
+  const filasGasto = actual.desglose.egreso.filter((e) => !esAhorro(e.categoria));
 
-  // Sin movimientos en el mes: nada más que analizar todavía.
+  // --- Números del mes anterior (para comparar)
+  const filasGastoPrevio = (previo.desglose?.egreso || []).filter((e) => !esAhorro(e.categoria));
+  const ahorroPrevio = calcularAhorro(previo.desglose || { egreso: [] });
+  const gastoPrevio = previo.totalEgresos - ahorroPrevio;
+  const ingresoPrevio = previo.totalIngresos;
+  const hayMesPrevio = ingresoPrevio > 0 || previo.totalEgresos > 0;
+  const nombrePrevio = NOMBRES_MES[(mes === 1 ? 12 : mes - 1) - 1];
+
+  // Sin movimientos: no hay nada que analizar todavía.
   if (totalIngresos === 0 && totalEgresos === 0) {
-    recs.push({
-      nivel: 'info',
-      icono: '📝',
-      mensaje: 'Todavía no registraste movimientos este mes. Anotá tus ingresos y gastos para ver recomendaciones.',
-    });
+    add('info', '📝', 'Todavía no registraste movimientos este mes. Anotá tus ingresos y gastos para ver los avisos.');
     return recs;
   }
 
-  // Si durante el mes se echó mano del saldo acumulado: los egresos totales
-  // (gastos + ahorro) superaron los ingresos propios del mes, así que la
-  // diferencia salió del dinero traído de meses anteriores.
-  if (saldoInicial > 0 && totalEgresos > totalIngresos) {
-    recs.push({
-      nivel: 'consejo',
-      icono: '📦',
-      mensaje: 'Parte de los gastos de este mes fueron cubiertos con dinero acumulado de meses anteriores.',
-    });
+  // ¿El mes consultado todavía va corriendo? Cambia cómo se redactan los
+  // avisos (no se puede decir "cerraste" a mitad de mes) y habilita la proyección.
+  const { diasDelMes, esMesEnCurso, diasTranscurridos } = infoDelMes(mes, anio);
+  const mesAMedias = esMesEnCurso && diasTranscurridos < diasDelMes;
+
+  // --- 0) Hueco arrastrado de meses anteriores
+  if (saldoInicial < 0) {
+    add('critico', '🕳️', `Arrancaste el mes debiendo ${fmtCRC(Math.abs(saldoInicial))}: venís arrastrando un hueco de meses anteriores. Mientras el saldo final no quede positivo, cada mes nuevo empieza en contra.`);
   }
 
-  // El AHORRO es dinero que apartás (algo bueno), NO un gasto de consumo. Lo
-  // separamos para no tratarlo como algo "a recortar": el gasto real es todo
-  // lo demás. Hay varios tipos de ahorro (Ahorro, Ahorro CreAI, Ahorro MEP) y
-  // TODOS se suman como el ahorro total del mes.
-  const filasAhorro = desglose.egreso.filter((e) => esAhorro(e.categoria));
-  const montoAhorro = filasAhorro.reduce((s, e) => s + e.total, 0);
-  const gastoSinAhorro = totalEgresos - montoAhorro;
-  const egresosSinAhorro = desglose.egreso.filter((e) => !esAhorro(e.categoria));
-
-  // 1) Salud del flujo (mirando el GASTO real, sin contar el ahorro)
-  if (gastoSinAhorro > totalIngresos) {
-    recs.push({
-      nivel: 'critico',
-      icono: '⚠️',
-      mensaje: `Tus gastos (${fmtCRC(gastoSinAhorro)}) superaron tus ingresos (${fmtCRC(totalIngresos)}) este mes. Tratá de recortar gastos o sumar ingresos.`,
-    });
-  } else if (totalIngresos > 0 && gastoSinAhorro / totalIngresos >= 0.9) {
-    recs.push({
-      nivel: 'advertencia',
-      icono: '😬',
-      mensaje: `Estás gastando casi todo lo que ingresás (${Math.round((gastoSinAhorro / totalIngresos) * 100)}%, sin contar ahorro). Queda poco margen.`,
-    });
-  } else if (balance > 0) {
-    const cola = montoAhorro > 0 ? ` (después de apartar ${fmtCRC(montoAhorro)} de ahorro)` : '';
-    recs.push({
-      nivel: 'bien',
-      icono: '✅',
-      mensaje: `Vas bien: te quedaron ${fmtCRC(balance)} de saldo este mes${cola}.`,
-    });
-  } else if (balance < 0 && montoAhorro > 0) {
-    // El flujo quedó negativo por el ahorro, no por gastar de más.
-    recs.push({
-      nivel: 'consejo',
-      icono: '🏦',
-      mensaje: `Apartaste ${fmtCRC(montoAhorro)} de ahorro y eso dejó tu flujo del mes en negativo (${fmtCRC(balance)}). Está bien si es a propósito; cuidá que sea sostenible.`,
-    });
+  // --- 1) ¿El mes se pagó solo o se financió con el saldo acumulado?
+  // `flujo` es lo que entró menos TODO lo que salió (gastos + ahorro), sin
+  // contar el saldo inicial: mide si el mes se sostuvo por sí mismo.
+  const flujo = totalIngresos - totalEgresos;
+  if (totalIngresos === 0 && totalGastos > 0) {
+    add('advertencia', '❓', `Registraste ${fmtCRC(totalGastos)} en gastos y ningún ingreso este mes. Si te falta anotar el salario, todos los porcentajes de abajo van a salir mal.`);
+  } else if (totalGastos > totalIngresos) {
+    add('critico', '🚨', `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(totalGastos - totalIngresos)}. Ese hueco lo estás tapando con el saldo de meses anteriores, no con dinero nuevo.`);
+  } else if (flujo < 0) {
+    add('advertencia', '🏦', `Para apartar ${fmtCRC(totalAhorro)} de ahorro tuviste que sacar ${fmtCRC(Math.abs(flujo))} del saldo acumulado. Así el ahorro solo cambia de bolsillo: lo sano es que salga de lo que entra en el mes.`);
+  } else if (totalIngresos > 0 && flujo < totalIngresos * 0.05) {
+    add('advertencia', '😬', `${mesAMedias ? 'Vas al filo' : 'Cerraste al filo'}: de los ${fmtCRC(totalIngresos)} que entraron ${mesAMedias ? 'solo quedan' : 'solo sobraron'} ${fmtCRC(flujo)} libres después de gastos y ahorro. Un imprevisto te deja en rojo.`);
+  } else if (flujo > 0) {
+    add('bien', '✅', `${mesAMedias ? 'Por ahora el mes va sano' : 'Mes sano'}: lo que entró alcanzó para los gastos y el ahorro, y ${mesAMedias ? 'quedan' : 'todavía sobraron'} ${fmtCRC(flujo)} libres. Tu saldo pasó de ${fmtCRC(saldoInicial)} a ${fmtCRC(saldoFinal)}.`);
   }
 
-  // 2) Categoría donde más gastás (excluyendo el ahorro)
-  if (egresosSinAhorro.length > 0 && gastoSinAhorro > 0) {
-    const top = egresosSinAhorro[0]; // ya vienen ordenadas de mayor a menor
-    const pct = Math.round((top.total / gastoSinAhorro) * 100);
-    const extra = pct >= 40 ? ' Es una parte grande de tus gastos; revisá si podés bajarla.' : '';
-    recs.push({
-      nivel: 'info',
-      icono: '📊',
-      mensaje: `Tu mayor gasto fue en ${top.categoria}: ${fmtCRC(top.total)} (${pct}% de tus gastos).${extra}`,
-    });
+  // --- 2) Proyección de cierre (solo si el mes va a medias y ya hay días suficientes)
+  let proyeccionGastos = null;
+  if (mesAMedias && diasTranscurridos >= 5 && totalGastos > 0) {
+    const porDia = totalGastos / diasTranscurridos;
+    proyeccionGastos = Math.round(porDia * diasDelMes);
+    const faltan = diasDelMes - diasTranscurridos;
+    if (totalIngresos > 0 && proyeccionGastos + totalAhorro > totalIngresos) {
+      add('advertencia', '⏳', `Vas gastando ${fmtCRC(porDia)} por día: a ese ritmo el mes cierra en ${fmtCRC(proyeccionGastos)} de gastos y no alcanzaría con lo que entró. Te quedan ${faltan} días y ${fmtCRC(saldoFinal)} de saldo.`);
+    } else {
+      add('info', '⏳', `Vas gastando ${fmtCRC(porDia)} por día: a ese ritmo el mes cerraría cerca de ${fmtCRC(proyeccionGastos)} en gastos (faltan ${faltan} días).`);
+    }
   }
 
-  // 3) Comparación del gasto (sin ahorro) contra el mes pasado
-  const prevMontoAhorro = (previo.desglose?.egreso || [])
-    .filter((e) => esAhorro(e.categoria))
-    .reduce((s, e) => s + e.total, 0);
-  const prevGastoSinAhorro = previo.totalEgresos - prevMontoAhorro;
-  if (prevGastoSinAhorro > 0) {
-    const diff = gastoSinAhorro - prevGastoSinAhorro;
-    const pct = Math.round((Math.abs(diff) / prevGastoSinAhorro) * 100);
-    if (pct >= 5) {
-      if (diff > 0) {
-        recs.push({
-          nivel: 'advertencia',
-          icono: '📈',
-          mensaje: `Gastaste ${pct}% más que el mes pasado (${fmtCRC(gastoSinAhorro)} vs ${fmtCRC(prevGastoSinAhorro)}, sin contar ahorro).`,
-        });
+  // --- 3) Ingresos vs mes anterior
+  if (ingresoPrevio > 0 && totalIngresos > 0) {
+    const dif = totalIngresos - ingresoPrevio;
+    const pct = Math.round((Math.abs(dif) / ingresoPrevio) * 100);
+    if (dif < 0 && pct >= 10) {
+      add('advertencia', '📉', `Tus ingresos bajaron ${pct}% contra ${nombrePrevio} (${fmtCRC(totalIngresos)} vs ${fmtCRC(ingresoPrevio)}). Si no fue algo puntual, hay que bajar los gastos a este nuevo nivel.`);
+    } else if (dif > 0 && pct >= 10) {
+      add('consejo', '📈', `Tus ingresos subieron ${pct}% contra ${nombrePrevio} (${fmtCRC(dif)} más). El momento de subir el ahorro es ahora, antes de acostumbrarte al extra.`);
+    }
+  }
+
+  // --- 4) Gasto total vs mes anterior (si el mes va a medias, compara la proyección)
+  if (gastoPrevio > 0) {
+    const base = proyeccionGastos ?? totalGastos;
+    const dif = base - gastoPrevio;
+    const pct = Math.round((Math.abs(dif) / gastoPrevio) * 100);
+    if (pct >= 10) {
+      const comoVa = proyeccionGastos ? 'Vas a cerrar gastando' : 'Gastaste';
+      if (dif > 0) {
+        add('advertencia', '⬆️', `${comoVa} ${pct}% más que en ${nombrePrevio}: ${fmtCRC(base)} vs ${fmtCRC(gastoPrevio)} (${fmtCRC(dif)} de más, sin contar ahorro).`);
       } else {
-        recs.push({
-          nivel: 'bien',
-          icono: '📉',
-          mensaje: `Gastaste ${pct}% menos que el mes pasado (${fmtCRC(gastoSinAhorro)} vs ${fmtCRC(prevGastoSinAhorro)}). ¡Bien ahí!`,
-        });
+        add('bien', '⬇️', `${comoVa} ${pct}% menos que en ${nombrePrevio}: ${fmtCRC(base)} vs ${fmtCRC(gastoPrevio)}. Son ${fmtCRC(Math.abs(dif))} que no se fueron.`);
       }
     }
   }
 
-  // 4) Peso de las deudas (sobre el gasto real, sin ahorro). Suma todas las
-  // categorías de deuda: préstamos y la cuota mensual del banco (BCR).
-  const filasDeuda = egresosSinAhorro.filter((e) => CATEGORIAS_DEUDA.includes(e.categoria));
-  const totalDeuda = filasDeuda.reduce((s, e) => s + e.total, 0);
-  if (totalDeuda > 0 && gastoSinAhorro > 0 && totalDeuda / gastoSinAhorro >= 0.25) {
-    const detalleDeuda =
-      filasDeuda.length > 1
-        ? ` (${filasDeuda
-            .slice()
-            .sort((a, b) => b.total - a.total)
-            .map((f) => `${f.categoria} ${fmtCRC(f.total)}`)
-            .join(', ')})`
-        : '';
-    recs.push({
-      nivel: 'advertencia',
-      icono: '💳',
-      mensaje: `Las deudas se llevaron ${fmtCRC(totalDeuda)} (${Math.round((totalDeuda / gastoSinAhorro) * 100)}% de tus gastos)${detalleDeuda}. Priorizá bajarlas para liberar tu presupuesto.`,
-    });
+  // --- 5) ¿QUÉ categoría cambió? (lo más útil de la comparación)
+  const mapaPrevio = new Map(filasGastoPrevio.map((f) => [f.categoria, f.total]));
+  const cambios = filasGasto.map((f) => ({
+    categoria: f.categoria,
+    antes: mapaPrevio.get(f.categoria) || 0,
+    ahora: f.total,
+  }));
+  for (const [categoria, antes] of mapaPrevio) {
+    if (!cambios.some((c) => c.categoria === categoria)) cambios.push({ categoria, antes, ahora: 0 });
   }
+  for (const c of cambios) c.dif = c.ahora - c.antes;
 
-  // 5) Ahorro del mes vs meta del 10%
-  if (totalIngresos > 0) {
-    const meta = Math.round(totalIngresos * 0.1);
-    if (montoAhorro === 0) {
-      recs.push({
-        nivel: 'consejo',
-        icono: '💰',
-        mensaje: `No registraste ahorro este mes. Una meta sencilla es guardar el 10% de tus ingresos (${fmtCRC(meta)}).`,
-      });
-    } else {
-      const pctAhorro = Math.round((montoAhorro / totalIngresos) * 100);
-      const cierre = pctAhorro < 10 ? ` Si podés, apuntá al 10% (${fmtCRC(meta)}).` : ' ¡Excelente hábito!';
-      // Mini desglose cuando hay más de un tipo de ahorro (Ahorro, CreAI, MEP).
-      const detalleAhorro =
-        filasAhorro.length > 1
-          ? ` Desglose: ${filasAhorro
-              .slice()
-              .sort((a, b) => b.total - a.total)
-              .map((f) => `${f.categoria} ${fmtCRC(f.total)}`)
-              .join(', ')}.`
-          : '';
-      recs.push({
-        nivel: 'bien',
-        icono: '💰',
-        mensaje: `Ahorraste ${fmtCRC(montoAhorro)} este mes (${pctAhorro}% de tus ingresos).${cierre}${detalleAhorro}`,
-      });
+  if (hayMesPrevio) {
+    const subidas = cambios
+      .filter((c) => c.antes > 0 && c.dif >= UMBRAL_CAMBIO)
+      .sort((a, b) => b.dif - a.dif)
+      .slice(0, 3);
+    if (subidas.length > 0) {
+      const detalle = subidas
+        .map((c) => `${c.categoria} ${fmtCRC(c.dif)} más (${fmtCRC(c.antes)} → ${fmtCRC(c.ahora)})`)
+        .join('; ');
+      add('advertencia', '🔍', `Lo que más subió contra ${nombrePrevio}: ${detalle}. Ahí está el dinero que se fue de más.`);
+    }
+
+    const nuevas = cambios
+      .filter((c) => c.antes === 0 && c.ahora >= UMBRAL_CAMBIO)
+      .sort((a, b) => b.ahora - a.ahora)
+      .slice(0, 3);
+    if (nuevas.length > 0) {
+      const detalle = nuevas.map((c) => `${c.categoria} ${fmtCRC(c.ahora)}`).join(', ');
+      add('info', '🆕', `Gastos que no tenías en ${nombrePrevio}: ${detalle}. Revisá si son de una sola vez o si se van a repetir todos los meses.`);
+    }
+
+    const bajadas = cambios
+      .filter((c) => c.dif <= -UMBRAL_CAMBIO)
+      .sort((a, b) => a.dif - b.dif)
+      .slice(0, 2);
+    if (bajadas.length > 0 && subidas.length === 0) {
+      const detalle = bajadas
+        .map((c) => `${c.categoria} ${fmtCRC(Math.abs(c.dif))} menos`)
+        .join(', ');
+      add('bien', '👏', `Bajaste contra ${nombrePrevio} en: ${detalle}. Si lo mantenés, eso es ahorro fijo cada mes.`);
     }
   }
 
-  return recs;
+  // --- 6) Gastos fijos: la parte del ingreso que no podés mover
+  const totalFijos = sumarSi(filasGasto, esGastoFijo);
+  if (totalFijos > 0 && totalIngresos > 0) {
+    const pct = Math.round((totalFijos / totalIngresos) * 100);
+    if (pct >= 50) {
+      add('advertencia', '🧱', `Tus gastos fijos (alquiler, servicios, internet, seguros, cuota del banco, suscripciones) se llevan el ${pct}% de lo que entra: ${fmtCRC(totalFijos)}. Arriba del 50% cualquier bajón de ingresos pega fuerte, porque esa plata no se puede recortar de un día para otro.`);
+    } else if (pct >= 35) {
+      add('info', '🧱', `Tenés ${fmtCRC(totalFijos)} comprometidos en gastos fijos, el ${pct}% de tus ingresos. Es manejable, pero es la parte que no baja rápido si algo se complica.`);
+    }
+  }
+
+  // --- 7) Peso de las deudas SOBRE LOS INGRESOS (regla clásica: máx. 30%)
+  const filasDeuda = filasGasto.filter((e) => CATEGORIAS_DEUDA.includes(e.categoria));
+  const totalDeuda = filasDeuda.reduce((s, e) => s + e.total, 0);
+  if (totalDeuda > 0 && totalIngresos > 0) {
+    const pct = Math.round((totalDeuda / totalIngresos) * 100);
+    const detalle = filasDeuda.length > 1 ? ` (${listarFilas(filasDeuda)})` : '';
+    if (pct >= 30) {
+      add('critico', '💳', `Las deudas se llevan el ${pct}% de tus ingresos: ${fmtCRC(totalDeuda)}${detalle}. Pasar del 30% es zona de riesgo: cualquier gasto extra vuelve a entrar como deuda. Priorizá abonar a la de interés más alto.`);
+    } else if (pct >= 15) {
+      add('advertencia', '💳', `Pagaste ${fmtCRC(totalDeuda)} en deudas, el ${pct}% de tus ingresos${detalle}. Un abono extra a la más cara te libera cuota para todos los meses siguientes.`);
+    }
+  }
+
+  // --- 8) Concentración: una sola categoría que se come el gasto
+  if (filasGasto.length > 1 && totalGastos > 0) {
+    const top = filasGasto[0]; // ya vienen de mayor a menor
+    const pct = Math.round((top.total / totalGastos) * 100);
+    if (pct >= 35) {
+      const antes = mapaPrevio.get(top.categoria) || 0;
+      const comparacion = antes > 0 ? ` En ${nombrePrevio} fueron ${fmtCRC(antes)}.` : '';
+      add('advertencia', '🎯', `${top.categoria} concentra el ${pct}% de todos tus gastos (${fmtCRC(top.total)}). Es el único lugar donde recortar mueve la aguja de verdad.${comparacion}`);
+    }
+  }
+
+  // --- 9) Cuánto cuesta Batán (comida allá + viajes), para tenerlo controlado
+  const filasBatan = filasGasto.filter((e) => esDeBatan(e.categoria));
+  const totalBatan = filasBatan.reduce((s, e) => s + e.total, 0);
+  if (totalBatan > 0) {
+    const pct = totalGastos > 0 ? Math.round((totalBatan / totalGastos) * 100) : 0;
+    const batanPrevio = sumarSi(filasGastoPrevio, esDeBatan);
+    const comparacion = batanPrevio > 0
+      ? ` En ${nombrePrevio} fue ${fmtCRC(batanPrevio)} (${totalBatan >= batanPrevio ? 'subió' : 'bajó'} ${fmtCRC(Math.abs(totalBatan - batanPrevio))}).`
+      : '';
+    add(pct >= 20 ? 'advertencia' : 'info', '🚗', `Batán te costó ${fmtCRC(totalBatan)} este mes (${listarFilas(filasBatan)}), el ${pct}% de tus gastos.${comparacion}`);
+  }
+
+  // --- 10) Ahorro: lo que interesa es la TASA y cómo se mueve, no el monto
+  if (totalIngresos > 0) {
+    const tasa = Math.round((totalAhorro / totalIngresos) * 100);
+    const tasaPrevia = ingresoPrevio > 0 ? Math.round((ahorroPrevio / ingresoPrevio) * 100) : null;
+    const meta = Math.round(totalIngresos * 0.1);
+
+    if (totalAhorro === 0) {
+      add('consejo', '💰', ahorroPrevio > 0
+        ? `Este mes no apartaste nada y en ${nombrePrevio} habías guardado ${fmtCRC(ahorroPrevio)}. Aunque sea ${fmtCRC(meta)} (el 10%), no rompás la racha.`
+        : `No registraste ahorro. Lo que funciona es apartar ${fmtCRC(meta)} (10% de lo que entró) el mismo día del pago, no lo que sobre al final del mes.`);
+    } else if (tasa < 10) {
+      add('consejo', '💰', `Apartaste el ${tasa}% de tus ingresos; la meta sana arranca en 10% (${fmtCRC(meta)}, te faltaron ${fmtCRC(meta - totalAhorro)}).`);
+    } else if (tasaPrevia !== null && tasa <= tasaPrevia - 5) {
+      add('advertencia', '💰', `Tu tasa de ahorro bajó del ${tasaPrevia}% al ${tasa}% de tus ingresos. Sigue siendo buena, pero venías mejor.`);
+    } else if (tasaPrevia !== null && tasa >= tasaPrevia + 5) {
+      add('bien', '💰', `Subiste tu tasa de ahorro del ${tasaPrevia}% al ${tasa}% de tus ingresos${filasAhorro.length > 1 ? ` (${listarFilas(filasAhorro)})` : ''}. Ese es el hábito que mueve todo.`);
+    }
+  }
+
+  // --- 11) ¿Cuánto aguanta el saldo disponible sin ingresos? (fondo de emergencia)
+  // Usa el gasto promedio de los meses anteriores; si no hay historial, el de
+  // este mes. El ahorro apartado NO cuenta acá: esto es el dinero a mano.
+  const gastoReferencia = gastoPromedio || totalGastos;
+  if (gastoReferencia > 0) {
+    const mesesCubiertos = saldoFinal / gastoReferencia;
+    const metaColchon = gastoReferencia * 3;
+    if (saldoFinal <= 0) {
+      add('critico', '🛟', `Te quedás sin saldo disponible (${fmtCRC(saldoFinal)}). Cualquier imprevisto entra directo como deuda; lo primero es reconstruir un colchón, aunque sea de un mes de gastos (${fmtCRC(gastoReferencia)}).`);
+    } else if (mesesCubiertos < 1) {
+      add('advertencia', '🛟', `Tu saldo disponible (${fmtCRC(saldoFinal)}, sin contar el ahorro apartado) cubre ${Math.round(mesesCubiertos * 30)} días de gastos. La meta es 3 meses: ${fmtCRC(metaColchon)}.`);
+    } else if (mesesCubiertos < 3) {
+      add('consejo', '🛟', `Con ${fmtCRC(saldoFinal)} disponibles aguantarías ${mesesCubiertos.toFixed(1).replace('.', ',')} meses sin ingresos (gastás ~${fmtCRC(gastoReferencia)} al mes). Te faltan ${fmtCRC(metaColchon - saldoFinal)} para el colchón de 3 meses.`);
+    } else {
+      add('bien', '🛟', `Tu saldo disponible (${fmtCRC(saldoFinal)}) cubre ${Math.floor(mesesCubiertos)} meses de gastos. Eso ya es un fondo de emergencia de verdad.`);
+    }
+  }
+
+  // Primero lo urgente, y sin abrumar: solo los mensajes que más importan. El
+  // orden dentro de cada nivel se conserva (sort estable) y se lee natural.
+  return recs
+    .sort((a, b) => PRIORIDAD_NIVEL[a.nivel] - PRIORIDAD_NIVEL[b.nivel])
+    .slice(0, MAX_RECOMENDACIONES);
 };
 
 // ============================================
@@ -583,17 +721,18 @@ export const getRecomendaciones = async (req, res) => {
     const mesPrevio = mes === 1 ? 12 : mes - 1;
     const anioPrevio = mes === 1 ? anio - 1 : anio;
 
-    const [actual, previo, saldoInicial] = await Promise.all([
+    const [actual, previo, saldoInicial, gastoPromedio] = await Promise.all([
       calcularResumenMes(req.user.id, mes, anio),
       calcularResumenMes(req.user.id, mesPrevio, anioPrevio),
       calcularSaldoInicial(req.user.id, mes, anio),
+      calcularGastoPromedioMensual(req.user.id, mes, anio),
     ]);
 
     res.status(200).json({
       mes,
       anio,
       resumen: componerFinanzasMes(actual, saldoInicial),
-      recomendaciones: construirRecomendaciones(actual, previo, saldoInicial),
+      recomendaciones: construirRecomendaciones({ actual, previo, saldoInicial, gastoPromedio, mes, anio }),
     });
   } catch (error) {
     console.error('❌ Error al generar recomendaciones:', error);
