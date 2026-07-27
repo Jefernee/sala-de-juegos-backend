@@ -444,7 +444,7 @@ const infoDelMes = (mes, anio) => {
 const sumarSi = (filas, predicado) =>
   filas.filter((f) => predicado(f.categoria)).reduce((s, f) => s + f.total, 0);
 
-// "Comida ₡41.775, Transporte ₡12.000" (de mayor a menor)
+// "Supermercado ₡41.775, Transporte ₡12.000" (de mayor a menor)
 const listarFilas = (filas) =>
   filas
     .slice()

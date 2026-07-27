@@ -31,10 +31,11 @@ export const CATEGORIAS_INGRESO = [
 // compromisos, ahorro) para que el select del frontend se lea ordenado.
 export const CATEGORIAS_EGRESO = [
   // Comida y hogar
-  'Comida',
+  'Supermercado',
+  'Comida preparada',
+  'Snacks y antojos',
   'Comida de colegio',
   'Comida en Batán',
-  'Compras para el hogar',
   'Vivienda/Alquiler',
   'Servicios',
   'Internet/Celular',
