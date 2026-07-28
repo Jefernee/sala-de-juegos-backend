@@ -371,6 +371,11 @@ const calcularGastoPromedioMensual = async (usuarioId, mes, anio, meses = 3) => 
 //   Disponible  = SaldoInicial + Ingresos
 //   SaldoFinal  = SaldoInicial + Ingresos - Gastos - Ahorro (= Disponible - Egresos)
 //   Balance     = SaldoFinal (dinero restante al cerrar el mes, ya con el saldo inicial)
+//   LibreParaGastar = SaldoFinal - SaldoInicial: cuánto se puede gastar todavía
+//     sin meterle mano al dinero que se traía. Como el saldo inicial se cancela,
+//     equivale a Ingresos - Egresos: lo que el mes generó por sí solo. El ahorro
+//     ya viene restado, así que es plata realmente libre. Negativo = ya se tocó
+//     el saldo inicial (y el monto es cuánto se le sacó).
 const componerFinanzasMes = (resumen, saldoInicial) => {
   const { totalIngresos, totalEgresos, desglose } = resumen;
   const totalAhorro = calcularAhorro(desglose);
@@ -387,6 +392,7 @@ const componerFinanzasMes = (resumen, saldoInicial) => {
     totalEgresos,   // gastos + ahorro (compat con lo anterior)
     saldoFinal,     // saldo con el que se cierra el mes
     balance: saldoFinal, // el "Balance del mes" ahora usa el saldo inicial
+    libreParaGastar: saldoFinal - saldoInicial, // "Puedo gastar hasta": techo sin tocar el saldo inicial
     desglose,
   };
 };
@@ -511,12 +517,20 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoProme
 
   // --- 1) ¿El mes se pagó solo o se financió con el saldo acumulado?
   // `flujo` es lo que entró menos TODO lo que salió (gastos + ahorro), sin
-  // contar el saldo inicial: mide si el mes se sostuvo por sí mismo.
-  const flujo = totalIngresos - totalEgresos;
+  // contar el saldo inicial: mide si el mes se sostuvo por sí mismo. Es el
+  // mismo número que la tarjeta "Puedo gastar hasta" (fin.libreParaGastar),
+  // así que se toma de ahí para que el aviso y la tarjeta nunca se contradigan.
+  const flujo = fin.libreParaGastar;
   if (totalIngresos === 0 && totalGastos > 0) {
     add('advertencia', '❓', `Registraste ${fmtCRC(totalGastos)} en gastos y ningún ingreso este mes. Si te falta anotar el salario, todos los porcentajes de abajo van a salir mal.`);
   } else if (totalGastos > totalIngresos) {
-    add('critico', '🚨', `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(totalGastos - totalIngresos)}. Ese hueco lo estás tapando con el saldo de meses anteriores, no con dinero nuevo.`);
+    // Lo que sale del saldo viejo es |flujo| (gastos Y ahorro), no solo el
+    // sobregiro de gasto: si se apartó ahorro hay que sumarlo o el monto no
+    // cuadra con la tarjeta "Puedo gastar hasta".
+    const sobregiro = totalGastos - totalIngresos;
+    add('critico', '🚨', totalAhorro > 0
+      ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y encima apartaste ${fmtCRC(totalAhorro)} de ahorro. En total le sacaste ${fmtCRC(Math.abs(flujo))} al saldo de meses anteriores, no lo tapaste con dinero nuevo.`
+      : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Ese hueco lo estás tapando con el saldo de meses anteriores, no con dinero nuevo.`);
   } else if (flujo < 0) {
     add('advertencia', '🏦', `Para apartar ${fmtCRC(totalAhorro)} de ahorro tuviste que sacar ${fmtCRC(Math.abs(flujo))} del saldo acumulado. Así el ahorro solo cambia de bolsillo: lo sano es que salga de lo que entra en el mes.`);
   } else if (totalIngresos > 0 && flujo < totalIngresos * 0.05) {
