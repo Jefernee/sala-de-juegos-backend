@@ -21,11 +21,16 @@
 //   cuenta no se desfasa nunca. Atlas interpreta el cron SIEMPRE en UTC.
 //
 // CONFIG que asume:
-//   - Data source (cluster linkeado):  "Cluster0"
+//   - Data source (cluster linkeado):  ver NOMBRES_DATA_SOURCE abajo
 //   - Base de datos:                   "salaDeJuegos"
 //   - Colección:                       "tipo_cambio_historial" (la crea sola)
 //
 // La función debe correr como "System" para poder escribir en la colección.
+//
+// SOBRE LA BASE DE DATOS: solo se usa para el "subió/bajó desde ayer", que es un
+// extra. Si el data source no aparece con ninguno de los nombres conocidos, el
+// mensaje se manda IGUAL, sin esa línea. Nunca dejamos de avisar el tipo de
+// cambio por un problema de configuración de la base.
 
 // ── Configuración ──────────────────────────────────────────────────────────
 // ⚠️ La API KEY es un SECRETO: NO se sube al repo. Antes de guardar esta función
@@ -46,11 +51,41 @@ const DESTINO = "50686825481@c.us"; // +506 8682 5481
 //   2. tipodecambio.paginasweb.cr (espejo de los datos del BCCR).
 const FUENTE_HACIENDA = "https://api.hacienda.go.cr/indicadores/tc/dolar";
 const FUENTE_RESPALDO = "https://tipodecambio.paginasweb.cr/api";
+
+// Nombres posibles del cluster enlazado, en orden. El nombre depende de cómo se
+// creó la app de App Services: "Cluster0" si se enlazó a mano, "mongodb-atlas"
+// si lo creó Atlas solo. Si tu app usa otro, agregalo acá adelante.
+// El nombre real se ve en App Services → Linked Data Sources.
+const NOMBRES_DATA_SOURCE = ["Cluster0", "mongodb-atlas"];
+const NOMBRE_DB = "salaDeJuegos";
 // ───────────────────────────────────────────────────────────────────────────
 
 exports = async function () {
-  const db = context.services.get("Cluster0").db("salaDeJuegos");
-  const historial = db.collection("tipo_cambio_historial");
+  // Buscar el cluster probando los nombres conocidos. Devuelve null si ninguno
+  // existe: en ese caso seguimos sin historial en vez de reventar.
+  const buscarHistorial = () => {
+    for (let i = 0; i < NOMBRES_DATA_SOURCE.length; i++) {
+      const nombre = NOMBRES_DATA_SOURCE[i];
+      try {
+        const servicio = context.services.get(nombre);
+        if (servicio) {
+          const col = servicio.db(NOMBRE_DB).collection("tipo_cambio_historial");
+          console.log("Data source encontrado: " + nombre);
+          return col;
+        }
+      } catch (e) {
+        // Nombre equivocado: probamos el siguiente.
+      }
+    }
+    console.error(
+      "⚠️ No se encontró el data source (probé: " + NOMBRES_DATA_SOURCE.join(", ") +
+      "). El mensaje se manda igual, pero SIN la comparación con el día anterior. " +
+      "Mirá el nombre real en App Services → Linked Data Sources y agregalo a NOMBRES_DATA_SOURCE."
+    );
+    return null;
+  };
+
+  const historial = buscarHistorial();
 
   const AHORA = new Date();
 
@@ -151,7 +186,7 @@ exports = async function () {
   // Solo para poder decir "subió ₡1.50 desde ayer". Si no hay historial (primer
   // día) o falla la consulta, el mensaje sale igual, sin la comparación.
   let comparacion = "";
-  if (tc) {
+  if (tc && historial) {
     try {
       const previos = await historial.find({ dia: { $ne: diaCR } })
         .sort({ dia: -1 })
@@ -236,7 +271,7 @@ exports = async function () {
   // ── Guardar el dato del día ──────────────────────────────────────────────
   // Se guarda aunque el WhatsApp haya fallado: el valor sirve igual para la
   // comparación de mañana. upsert por día → correrlo dos veces no duplica.
-  if (tc) {
+  if (tc && historial) {
     try {
       await historial.updateOne(
         { dia: diaCR },

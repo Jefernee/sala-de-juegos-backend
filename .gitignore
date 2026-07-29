@@ -30,6 +30,10 @@ scripts/data/
 # Respaldos generados por los scripts de migración
 scripts/backup-historico-*.json
 
+# Copias de los triggers de Atlas con las API keys REALES ya puestas, para
+# pegarlas en el panel. Se generan a mano y NUNCA se suben (llevan secretos).
+atlas/*LISTO-NO-SUBIR*
+
 # Build
 dist/
 build/
