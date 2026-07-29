@@ -17,11 +17,16 @@
 //      Si el fallo es AMBIGUO (timeout: el mensaje pudo haber salido) NO se
 //      devuelve la bandera, para no arriesgar un duplicado.
 //      Tope de MAX_INTENTOS por play para no reintentar eternamente.
+//   5. Cuando un aviso se RINDE, manda una ALERTA POR CORREO (vía Resend). Es el
+//      único momento en que sabemos que un aviso se perdió, y hay que enterarse
+//      sin depender de que alguien mire los logs. El enfriamiento se comparte con
+//      el backend por la colección "alertas_email" (ver models/AlertaEmail.js):
+//      así Atlas y Koyeb no mandan los dos el mismo correo.
 //
 // CONFIG que asume (ajustá si tu nombre difiere):
 //   - Data source (cluster linkeado):  "Cluster0"
 //   - Base de datos:                   "salaDeJuegos"
-//   - Colección:                       "plays"
+//   - Colección:                       "plays" (+ "alertas_email" para el correo)
 //   - Ventana de catch-up:             2 horas
 //
 // NOTA: el runtime de Atlas lanza "no documents in result" en findOneAndUpdate
@@ -39,11 +44,20 @@ const WAHA_API_KEY = "PEGA-AQUI-LA-API-KEY-DE-WAHA"; // ← reemplazar en el pan
 const WAHA_SESSION = "default";
 const WAHA_CHAT_ID = "120363403807399844@g.us"; // grupo "Hogar 2"
 const MAX_INTENTOS = 5; // reintentos por play antes de rendirse
+
+// ── Alertas por correo (Resend) ────────────────────────────────────────────
+// ⚠️ También es un SECRETO: reemplazar el placeholder en el panel de Atlas.
+//    Poné RESEND_API_KEY en "" para desactivar el correo desde este trigger.
+const RESEND_API_KEY = "PEGA-AQUI-LA-API-KEY-DE-RESEND"; // ← reemplazar en el panel
+const ALERTA_EMAIL_TO = "jefernee50@gmail.com";
+const ALERTA_EMAIL_FROM = "Sala de Juegos <onboarding@resend.dev>";
+const ALERTA_COOLDOWN_MIN = 120; // no repetir el mismo correo antes de 2 h
 // ───────────────────────────────────────────────────────────────────────────
 
 exports = async function () {
   const db = context.services.get("Cluster0").db("salaDeJuegos");
   const plays = db.collection("plays");
+  const alertas = db.collection("alertas_email");
 
   const AHORA = new Date();
   const DESDE = new Date(AHORA.getTime() - 2 * 60 * 60 * 1000); // catch-up 2h
@@ -176,6 +190,98 @@ exports = async function () {
     return { ok: false, entregaDescartada: !algunoAmbiguo, motivo: motivo };
   };
 
+  // ── Alerta por correo cuando un aviso se pierde ──────────────────────────
+  // Reclama el turno de forma ATÓMICA contra "alertas_email": solo manda el
+  // correo si el último de esa clave salió hace más de ALERTA_COOLDOWN_MIN.
+  // Como el backend de Koyeb usa la MISMA colección y la misma clave, entre los
+  // dos motores sale UN solo correo aunque los dos estén fallando a la vez.
+  // Devuelve true si le toca mandar.
+  const reclamarTurnoAlerta = async (clave, detalle) => {
+    const limite = new Date(AHORA.getTime() - ALERTA_COOLDOWN_MIN * 60 * 1000);
+    try {
+      const r = await alertas.updateOne(
+        { clave: clave, ultimoEnvio: { $lte: limite } },
+        {
+          $set: { ultimoEnvio: AHORA, ultimoDetalle: String(detalle || "").slice(0, 500), suprimidas: 0 },
+          $inc: { veces: 1 },
+        },
+        { upsert: true }
+      );
+      // matchedCount > 0 → ya pasó el enfriamiento. upsertedId → primera vez.
+      return r.matchedCount > 0 || !!r.upsertedId;
+    } catch (e) {
+      // Choque con el índice único de `clave` = el documento existe pero está en
+      // enfriamiento (el filtro no coincidió y por eso intentó insertar).
+      if (/E11000|duplicate key/i.test(e.message || "")) {
+        await alertas
+          .updateOne({ clave: clave }, { $inc: { suprimidas: 1 } })
+          .catch(function () {});
+        return false;
+      }
+      console.error("No se pudo consultar el enfriamiento de alertas: " + e.message);
+      return true; // ante la duda, avisar
+    }
+  };
+
+  // Manda el correo por la API de Resend. Nunca lanza.
+  const enviarCorreoAlerta = async (asunto, cuerpo) => {
+    if (!RESEND_API_KEY || RESEND_API_KEY.indexOf("PEGA-AQUI") === 0) {
+      console.error("Alerta por correo NO enviada: falta la API key de Resend en el trigger.");
+      return;
+    }
+    try {
+      const resp = await context.http.post({
+        url: "https://api.resend.com/emails",
+        headers: {
+          "Content-Type": ["application/json"],
+          Authorization: ["Bearer " + RESEND_API_KEY],
+        },
+        body: JSON.stringify({
+          from: ALERTA_EMAIL_FROM,
+          to: [ALERTA_EMAIL_TO],
+          subject: asunto,
+          text: cuerpo,
+        }),
+      });
+      if (resp.statusCode >= 200 && resp.statusCode < 300) {
+        console.log("📧 Alerta por correo enviada a " + ALERTA_EMAIL_TO);
+      } else {
+        console.error("Resend respondió " + resp.statusCode + " al mandar la alerta.");
+      }
+    } catch (e) {
+      console.error("No se pudo mandar la alerta por correo: " + e.message);
+    }
+  };
+
+  // Avisa que un aviso de fin de sesión se perdió del todo.
+  const alertarAvisoPerdido = async (play, motivo, intentos) => {
+    const clave = "whatsapp-aviso-fallido"; // MISMA clave que usa el backend
+    const permitido = await reclamarTurnoAlerta(clave, motivo);
+    if (!permitido) return; // en enfriamiento: ya se avisó hace poco
+
+    const cuerpo = [
+      "No se pudo avisar por WhatsApp que terminó una partida.",
+      "",
+      "🎮 Consola: " + (play.lugarDeJuego || "estación desconocida"),
+      play.cliente ? "👤 Cliente: " + play.cliente : "",
+      "🏁 Fin programado: " + (play.finProgramado ? horaCR(play.finProgramado) : "sin dato"),
+      "🔁 Intentos: " + intentos,
+      "⚙️ Motor: Atlas (trigger principal)",
+      "❌ Motivo: " + (motivo || "sin detalle"),
+      "",
+      "QUÉ HACER:",
+      "1. Revisá el estado de la sesión de WhatsApp en el dashboard de WAHA.",
+      "   Si dice SCAN_QR_CODE, hay que escanear el QR con el teléfono.",
+      "2. Mirá el log del watchdog en la VM: sudo tail -50 /var/log/waha-watchdog.log",
+      "3. Guía completa: NOTIFICACIONES_WHATSAPP.md en el repo del backend.",
+      "",
+      "───────────────",
+      "No se repite este aviso por " + ALERTA_COOLDOWN_MIN + " minutos.",
+    ].filter(Boolean).join("\n");
+
+    await enviarCorreoAlerta("🔴 No salió el aviso de WhatsApp de fin de sesión", cuerpo);
+  };
+
   let enviados = 0;
   let fallidos = 0;
 
@@ -228,6 +334,8 @@ exports = async function () {
         "❌ RENDIDO play " + play._id + " tras " + intentosHechos + " intentos (" +
         res.motivo + "). Revisá la sesión de WhatsApp en WAHA."
       );
+      // Este aviso se perdió: hay que enterarse por otro canal que no sea WhatsApp.
+      await alertarAvisoPerdido(play, res.motivo, intentosHechos);
       continue;
     }
 

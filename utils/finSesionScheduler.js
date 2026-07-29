@@ -22,9 +22,13 @@
 //     Si el fallo es AMBIGUO (timeout: el mensaje pudo haber salido) NO se
 //     devuelve la bandera, para no arriesgar un aviso duplicado.
 //     Tope de MAX_INTENTOS por play para no reintentar eternamente.
+//   - Cuando un aviso se RINDE, sale una alerta por CORREO. Es el único momento
+//     en que sabemos con certeza que un aviso se perdió, y hay que enterarse sin
+//     tener que mirar los logs (ver utils/alertasEmail.js).
 
 import Play from '../models/plays.js';
 import { notificarFinSesion, notificacionesActivas } from './notificacionesWhatsApp.js';
+import { alertarAvisoWhatsAppFallido } from './alertasEmail.js';
 
 const INTERVALO_MS = 30 * 1000;        // revisar cada 30 segundos
 const VENTANA_MS = 2 * 60 * 60 * 1000; // catch-up: máximo 2 horas hacia atrás
@@ -85,6 +89,14 @@ const procesarFinSesiones = async () => {
           `❌ Scheduler: el aviso del play ${play._id} falló ${intentosHechos} veces. ` +
           'Se deja de reintentar (revisá la sesión de WhatsApp en WAHA).'
         );
+        // Este aviso se perdió para siempre → hay que enterarse por otro canal.
+        // Sin await: el correo no puede frenar el ciclo.
+        alertarAvisoWhatsAppFallido({
+          play,
+          motivo: res?.motivo,
+          intentos: intentosHechos,
+          motor: 'Koyeb (scheduler de respaldo)',
+        });
         continue;
       }
 

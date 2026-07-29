@@ -4,6 +4,7 @@ import MonthlyReport from '../models/Monthlyplaysreport.js';
 import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 import { getUTCDateRanges } from '../utils/dateUtils.js';
 import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
+import { alertarAvisoWhatsAppFallido } from '../utils/alertasEmail.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers de costo y tipo
@@ -559,6 +560,14 @@ export const notificarFinSesionManual = async (req, res) => {
         if (!resultado?.entregaDescartada) return;
         if (intentosHechos >= MAX_INTENTOS_NOTIFICACION) {
           console.error(`❌ Aviso del play ${play._id} falló ${intentosHechos} veces. Se deja de reintentar.`);
+          // El aviso se perdió: avisamos por correo, que es el canal que sigue
+          // funcionando justamente cuando WhatsApp no.
+          alertarAvisoWhatsAppFallido({
+            play,
+            motivo: resultado?.motivo,
+            intentos: intentosHechos,
+            motor: 'aviso manual desde la app',
+          });
           return;
         }
         await Play.updateOne({ _id: play._id }, { $set: { notificacionFinEnviada: false } });

@@ -37,6 +37,8 @@ import { regenerarReporteActivos } from './controllers/activosReportController.j
 import { migrarAhorroMovimientos } from './utils/migrarAhorroMovimientos.js';
 // Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
+// Alertas por correo cuando algo se rompe (ver utils/alertasEmail.js)
+import { alertarErrorBackend } from './utils/alertasEmail.js';
 import dns from 'dns';
 
 // ============================================
@@ -55,6 +57,31 @@ process.on('SIGTERM', () => {
 process.on('SIGINT', () => {
     console.error('⚠️ SIGINT recibido. Cerrando servidor...');
     process.exit(0);
+});
+
+// ============================================
+// 💥 ERRORES QUE NO PASAN POR NINGUNA RUTA
+// ============================================
+// El middleware global de errores solo ve lo que revienta DENTRO de una
+// petición. Un fallo en el scheduler, en una tarea de arranque o en cualquier
+// promesa suelta no llega ahí y antes se perdía en los logs. Estos dos
+// vigilantes mandan la alerta por correo.
+process.on('unhandledRejection', (motivo) => {
+    const err = motivo instanceof Error ? motivo : new Error(String(motivo));
+    console.error('⚠️ Promesa rechazada sin manejar:', err.message);
+    alertarErrorBackend(err, { origen: 'promesa sin manejar' });
+});
+
+process.on('uncaughtException', async (err) => {
+    console.error('💥 Excepción no controlada:', err);
+    // El proceso va a morir igual (es el comportamiento normal de node). Le
+    // damos hasta 5s al correo para que salga antes, y ni un segundo más:
+    // Koyeb tiene que poder reiniciar rápido.
+    await Promise.race([
+        alertarErrorBackend(err, { origen: 'excepción no controlada' }),
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+    ]).catch(() => {});
+    process.exit(1);
 });
 
 // ⏱️ Marca de inicio real del proceso (cold start)
@@ -345,6 +372,18 @@ app.use((err, req, res, next) => {
     code: err.code,
     stack: err.stack
   });
+
+  // Alerta por correo SOLO si la culpa es del servidor. Los errores de cliente
+  // (payload muy grande, validación, CORS) son normales y llenarían el correo
+  // de ruido: los manda el navegador, no son una falla del sistema.
+  const esErrorDeCliente =
+    err.type === 'entity.too.large' ||
+    err.name === 'ValidationError' ||
+    err.message === 'Not allowed by CORS';
+  if (!esErrorDeCliente) {
+    // Sin await: la respuesta al usuario no espera al correo.
+    alertarErrorBackend(err, { ruta: `${req.method} ${req.originalUrl}`, origen: 'petición' });
+  }
 
   // Error de tamaño de payload (cuando se supera el límite de Express)
   if (err.type === 'entity.too.large') {

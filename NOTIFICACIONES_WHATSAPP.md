@@ -178,6 +178,20 @@ Con la sesión sana el log queda casi vacío (solo escribe cuando pasa algo). Si
 
 ---
 
+## 📧 Y si igual algo falla, te llega un correo
+
+Los reintentos y el watchdog cubren los problemas que se arreglan solos. Para los
+que **no**, hay un tercer sistema: alertas por correo. Te escribe cuando un aviso se
+pierde definitivamente, cuando la sesión de WhatsApp se cae o cuando hace falta
+escanear el QR. Va por correo justamente porque WhatsApp es el canal que falla.
+
+Se configura con `ALERTAS_EMAIL_ENABLED`, `RESEND_API_KEY` y `ALERTAS_EMAIL_TO`.
+**Guía completa: [`ALERTAS_EMAIL.md`](ALERTAS_EMAIL.md)**.
+
+Probalo con `node scripts/testAlertaEmail.js`.
+
+---
+
 ## 🐛 Si dejan de llegar los avisos — qué revisar
 
 1. **¿La sesión de WhatsApp está viva?** (es la causa nº 1)
@@ -227,3 +241,4 @@ Con la sesión sana el log queda casi vacío (solo escribe cuando pasa algo). Si
 - `atlas/finSesionTrigger.js` — código del motor principal, para pegar en el panel de Atlas.
 - `scripts/testNotificacionWhatsApp.js` — prueba manual.
 - `scripts/waha-watchdog.sh` — watchdog de la sesión de WhatsApp; va instalado en la VM de Oracle (cron cada 5 min), no en Koyeb.
+- `utils/alertasEmail.js` + [`ALERTAS_EMAIL.md`](ALERTAS_EMAIL.md) — las alertas por correo cuando todo lo anterior no alcanza.
