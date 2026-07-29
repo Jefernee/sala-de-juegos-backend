@@ -457,6 +457,8 @@ export const updatePlay = async (req, res) => {
       const nuevoFinEnFuturo = nuevoFin instanceof Date && nuevoFin.getTime() > Date.now();
       if (nuevoFinEnFuturo) {
         play.notificacionFinEnviada = false;
+        // Aviso nuevo → contador de intentos fallidos desde cero.
+        play.intentosNotificacion = 0;
       }
     }
 
@@ -518,14 +520,21 @@ export const deletePlay = async (req, res) => {
 // atómica (marca notificacionFinEnviada = true al leer). Así, aunque el
 // scheduler de respaldo o una segunda llamada intenten lo mismo, el mensaje
 // sale UNA sola vez. Nunca rompe el flujo del frontend.
+//
+// Si el envío falla de forma COMPROBADA (WhatsApp desconectado, WAHA caído), se
+// DEVUELVE la bandera a false para que el scheduler lo reintente en vez de
+// perder el aviso en silencio. Misma lógica que utils/finSesionScheduler.js.
 // ─────────────────────────────────────────────────────────────────
+
+// Tope de intentos por play, igual que en utils/finSesionScheduler.js.
+const MAX_INTENTOS_NOTIFICACION = 5;
 
 export const notificarFinSesionManual = async (req, res) => {
   try {
     // Reclamo atómico: solo pasa si todavía NO se había notificado.
     const play = await Play.findOneAndUpdate(
       { _id: req.params.id, notificacionFinEnviada: { $ne: true } },
-      { $set: { notificacionFinEnviada: true } },
+      { $set: { notificacionFinEnviada: true }, $inc: { intentosNotificacion: 1 } },
       { new: false }
     );
 
@@ -540,9 +549,24 @@ export const notificarFinSesionManual = async (req, res) => {
 
     // Envío en background: respondemos YA, no bloqueamos al frontend.
     // Usamos finProgramado como hora de fin (o ahora si no estuviera).
-    notificarFinSesion(play, play.finProgramado || new Date()).catch((err) =>
-      console.error('❌ Error al notificar fin de sesión (manual):', err?.message)
-    );
+    // `play` es el documento ANTERIOR al $inc, de ahí el +1.
+    const intentosHechos = Number(play.intentosNotificacion || 0) + 1;
+    notificarFinSesion(play, play.finProgramado || new Date())
+      .then(async (resultado) => {
+        if (resultado?.ok || resultado?.skipped) return;
+        // Solo devolvemos la bandera si sabemos que el mensaje NO salió (un
+        // timeout es ambiguo: mejor perder un aviso que mandarlo dos veces).
+        if (!resultado?.entregaDescartada) return;
+        if (intentosHechos >= MAX_INTENTOS_NOTIFICACION) {
+          console.error(`❌ Aviso del play ${play._id} falló ${intentosHechos} veces. Se deja de reintentar.`);
+          return;
+        }
+        await Play.updateOne({ _id: play._id }, { $set: { notificacionFinEnviada: false } });
+        console.warn(`🔁 Aviso del play ${play._id} falló (${resultado?.motivo || 'sin detalle'}). Lo reintentará el scheduler.`);
+      })
+      .catch((err) =>
+        console.error('❌ Error al notificar fin de sesión (manual):', err?.message)
+      );
 
     res.status(200).json({ success: true, message: 'Notificación de fin de sesión disparada' });
   } catch (error) {

@@ -27,6 +27,9 @@ uploads/
 *.csv
 scripts/data/
 
+# Respaldos generados por los scripts de migración
+scripts/backup-historico-*.json
+
 # Build
 dist/
 build/

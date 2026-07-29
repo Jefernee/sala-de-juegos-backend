@@ -162,6 +162,14 @@ export const construirMensajeFinSesion = (play, horaFin) => {
 
 /**
  * Un intento único de envío a WAHA con timeout. Lanza si falla (lo maneja enviarNotificacion).
+ *
+ * El error que lanza lleva la propiedad `entregaDescartada`:
+ *   true  → sabemos con certeza que el mensaje NO salió (WAHA respondió un error,
+ *           o no se pudo ni conectar) → es seguro reintentar sin riesgo de duplicar.
+ *   false → resultado AMBIGUO (timeout): WAHA pudo haber entregado el mensaje y
+ *           tardado en contestar → NO se debe reintentar (mejor perder un aviso
+ *           que mandarlo dos veces).
+ *
  * @param {{url: string, apiKey: string, session: string, chatId: string}} cfg
  * @param {string} texto
  */
@@ -169,22 +177,32 @@ const intentarEnvio = async (cfg, texto) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
-    const res = await fetch(`${cfg.url}/api/sendText`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Api-Key': cfg.apiKey,
-      },
-      body: JSON.stringify({
-        session: cfg.session,
-        chatId: cfg.chatId,
-        text: texto,
-      }),
-      signal: controller.signal,
-    });
+    let res;
+    try {
+      res = await fetch(`${cfg.url}/api/sendText`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Api-Key': cfg.apiKey,
+        },
+        body: JSON.stringify({
+          session: cfg.session,
+          chatId: cfg.chatId,
+          text: texto,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      // AbortError = se agotó el timeout → ambiguo. Cualquier otro fallo de red
+      // (DNS, conexión rechazada, socket cortado) = el POST no llegó → descartada.
+      err.entregaDescartada = err.name !== 'AbortError';
+      throw err;
+    }
     if (!res.ok) {
       const cuerpo = await res.text().catch(() => '');
-      throw new Error(`WAHA respondió ${res.status}: ${cuerpo.slice(0, 200)}`);
+      const err = new Error(`WAHA respondió ${res.status}: ${cuerpo.slice(0, 200)}`);
+      err.entregaDescartada = true; // WAHA contestó y rechazó → no se entregó
+      throw err;
     }
     return res;
   } finally {
@@ -195,8 +213,13 @@ const intentarEnvio = async (cfg, texto) => {
 /**
  * Envía el mensaje al grupo de WhatsApp configurado (WAHA_CHAT_ID), con timeout y
  * 1 reintento. Fire-and-forget: NUNCA lanza.
+ *
+ * `entregaDescartada` en la respuesta le dice a quien llama si puede reintentar
+ * más tarde sin riesgo de duplicar: solo es true cuando TODOS los intentos
+ * fallaron de forma comprobada (ver intentarEnvio).
+ *
  * @param {string} texto - Mensaje en texto plano.
- * @returns {Promise<{ok: boolean, skipped?: boolean}>}
+ * @returns {Promise<{ok: boolean, skipped?: boolean, entregaDescartada?: boolean, motivo?: string}>}
  */
 export const enviarNotificacion = async (texto) => {
   if (!notificacionesActivas()) {
@@ -205,9 +228,14 @@ export const enviarNotificacion = async (texto) => {
 
   const cfg = configWaha();
   if (!cfg.url || !cfg.apiKey || !cfg.chatId) {
-    console.error('⚠️ WhatsApp: falta configuración de WAHA (WAHA_URL / WAHA_API_KEY / WAHA_CHAT_ID). No se envía.');
-    return { ok: false };
+    const motivo = 'falta configuración de WAHA (WAHA_URL / WAHA_API_KEY / WAHA_CHAT_ID)';
+    console.error(`⚠️ WhatsApp: ${motivo}. No se envía.`);
+    // Nunca se tocó la red → no se entregó nada, se puede reintentar.
+    return { ok: false, entregaDescartada: true, motivo };
   }
+
+  let algunoAmbiguo = false;
+  let ultimoMotivo = '';
 
   for (let intento = 1; intento <= MAX_INTENTOS; intento++) {
     try {
@@ -215,8 +243,10 @@ export const enviarNotificacion = async (texto) => {
       console.log(`✅ WhatsApp enviado al grupo ${cfg.chatId} (intento ${intento}).`);
       return { ok: true };
     } catch (err) {
+      if (!err.entregaDescartada) algunoAmbiguo = true;
       const esUltimo = intento === MAX_INTENTOS;
       const motivo = err.name === 'AbortError' ? `timeout de ${TIMEOUT_MS}ms` : err.message;
+      ultimoMotivo = motivo;
       if (esUltimo) {
         console.error(`❌ WhatsApp al grupo ${cfg.chatId} falló tras ${MAX_INTENTOS} intento(s): ${motivo}`);
       } else {
@@ -224,7 +254,7 @@ export const enviarNotificacion = async (texto) => {
       }
     }
   }
-  return { ok: false };
+  return { ok: false, entregaDescartada: !algunoAmbiguo, motivo: ultimoMotivo };
 };
 
 /**
@@ -232,7 +262,7 @@ export const enviarNotificacion = async (texto) => {
  * Fire-and-forget: nunca lanza.
  * @param {Object} play - Documento de Play (o lean object) con lugarDeJuego, tiempoPagado, finProgramado.
  * @param {Date}   [horaFin] - Instante real de fin (default: finProgramado o ahora).
- * @returns {Promise<{ok: boolean, skipped?: boolean}>}
+ * @returns {Promise<{ok: boolean, skipped?: boolean, entregaDescartada?: boolean, motivo?: string}>}
  */
 export const notificarFinSesion = async (play, horaFin) => {
   try {
@@ -240,7 +270,9 @@ export const notificarFinSesion = async (play, horaFin) => {
     return await enviarNotificacion(mensaje);
   } catch (err) {
     // Blindaje extra: ni siquiera un error al armar el mensaje debe propagarse.
+    // No marcamos entregaDescartada: un mensaje que no se pudo ni armar volvería
+    // a fallar igual en cada reintento, así que no vale la pena reintentarlo.
     console.error('❌ WhatsApp: error inesperado al notificar fin de sesión:', err.message);
-    return { ok: false };
+    return { ok: false, motivo: err.message };
   }
 };

@@ -141,6 +141,14 @@ const playSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
+  // Cuántas veces se intentó mandar el aviso y el envío falló de forma
+  // comprobada (WhatsApp caído, WAHA sin sesión, etc.). El scheduler devuelve la
+  // bandera a false para reintentar en el ciclo siguiente, pero se rinde a los
+  // MAX_INTENTOS_NOTIFICACION para no reintentar para siempre.
+  intentosNotificacion: {
+    type: Number,
+    default: 0
+  },
   // ─────────────────────────────────────────────────────────────
   // Origen del registro. Los plays normales quedan en null (creados por el
   // sistema). Los cierres mensuales importados del Excel histórico llevan

@@ -10,6 +10,13 @@
 //   2. Marca cada una como notificada de forma ATÓMICA (evita duplicados con el
 //      scheduler de respaldo de Koyeb).
 //   3. Manda UN WhatsApp al GRUPO vía WAHA (WhatsApp HTTP API en la VM propia).
+//   4. Si el envío falla de forma COMPROBADA (WAHA contestó error, o no se pudo
+//      conectar), DEVUELVE la bandera a false para reintentar en el ciclo
+//      siguiente. Sin esto, un rato de WhatsApp desconectado perdía los avisos en
+//      silencio: quedaban marcados como enviados sin haber salido nunca.
+//      Si el fallo es AMBIGUO (timeout: el mensaje pudo haber salido) NO se
+//      devuelve la bandera, para no arriesgar un duplicado.
+//      Tope de MAX_INTENTOS por play para no reintentar eternamente.
 //
 // CONFIG que asume (ajustá si tu nombre difiere):
 //   - Data source (cluster linkeado):  "Cluster0"
@@ -31,6 +38,7 @@ const WAHA_URL = "http://157.151.183.29:3000";
 const WAHA_API_KEY = "PEGA-AQUI-LA-API-KEY-DE-WAHA"; // ← reemplazar en el panel de Atlas
 const WAHA_SESSION = "default";
 const WAHA_CHAT_ID = "120363403807399844@g.us"; // grupo "Hogar 2"
+const MAX_INTENTOS = 5; // reintentos por play antes de rendirse
 // ───────────────────────────────────────────────────────────────────────────
 
 exports = async function () {
@@ -130,8 +138,14 @@ exports = async function () {
     return lineas.join("\n");
   };
 
-  // Manda UN mensaje al grupo vía WAHA, con 1 reintento. Devuelve true/false.
+  // Manda UN mensaje al grupo vía WAHA, con 1 reintento.
+  // Devuelve { ok, entregaDescartada, motivo }:
+  //   entregaDescartada = true  → seguro que NO salió (WAHA rechazó o no hubo
+  //                               conexión) → se puede reintentar sin duplicar.
+  //   entregaDescartada = false → ambiguo (timeout) → NO reintentar.
   const enviarWaha = async (texto) => {
+    let algunoAmbiguo = false;
+    let motivo = "";
     for (let intento = 1; intento <= 2; intento++) {
       try {
         const resp = await context.http.post({
@@ -146,16 +160,24 @@ exports = async function () {
             text: texto,
           }),
         });
-        if (resp.statusCode >= 200 && resp.statusCode < 300) return true;
-        console.error("WAHA respondió " + resp.statusCode + " (intento " + intento + ")");
+        if (resp.statusCode >= 200 && resp.statusCode < 300) {
+          return { ok: true };
+        }
+        // WAHA contestó y rechazó → el mensaje no salió.
+        motivo = "WAHA respondió " + resp.statusCode;
+        console.error(motivo + " (intento " + intento + ")");
       } catch (e) {
-        console.error("Error enviando a WAHA (intento " + intento + "): " + e.message);
+        motivo = e.message || "error de conexión";
+        // Un timeout es ambiguo: el mensaje pudo haberse entregado igual.
+        if (/timeout|timed out|deadline/i.test(motivo)) algunoAmbiguo = true;
+        console.error("Error enviando a WAHA (intento " + intento + "): " + motivo);
       }
     }
-    return false;
+    return { ok: false, entregaDescartada: !algunoAmbiguo, motivo: motivo };
   };
 
-  let procesados = 0;
+  let enviados = 0;
+  let fallidos = 0;
 
   // Reclamo atómico uno por uno: marco la bandera al leer.
   while (true) {
@@ -166,7 +188,10 @@ exports = async function () {
           notificacionFinEnviada: { $ne: true },
           finProgramado: { $ne: null, $lte: AHORA, $gte: DESDE },
         },
-        { $set: { notificacionFinEnviada: true } },
+        {
+          $set: { notificacionFinEnviada: true },
+          $inc: { intentosNotificacion: 1 },
+        },
         { sort: { finProgramado: 1 } } // returnNewDocument false → devuelve el doc previo
       );
     } catch (e) {
@@ -176,12 +201,51 @@ exports = async function () {
       throw e; // cualquier otro error sí es real
     }
     if (!play) break;
-    procesados++;
 
     const mensaje = construirMensaje(play);
-    const ok = await enviarWaha(mensaje);
-    console.log((ok ? "✅ OK grupo" : "❌ FALLO grupo") + " :: " + mensaje);
+    const res = await enviarWaha(mensaje);
+
+    if (res.ok) {
+      enviados++;
+      console.log("✅ OK grupo :: " + mensaje);
+      continue;
+    }
+
+    fallidos++;
+    // +1 porque `play` es el documento ANTERIOR al $inc.
+    const intentosHechos = Number(play.intentosNotificacion || 0) + 1;
+
+    if (!res.entregaDescartada) {
+      console.error(
+        "⚠️ AMBIGUO play " + play._id + " (" + res.motivo + "). " +
+        "Queda marcado como enviado para no arriesgar un duplicado."
+      );
+      continue;
+    }
+
+    if (intentosHechos >= MAX_INTENTOS) {
+      console.error(
+        "❌ RENDIDO play " + play._id + " tras " + intentosHechos + " intentos (" +
+        res.motivo + "). Revisá la sesión de WhatsApp en WAHA."
+      );
+      continue;
+    }
+
+    // Devolvemos la bandera para reintentar en el ciclo siguiente.
+    await plays.updateOne(
+      { _id: play._id },
+      { $set: { notificacionFinEnviada: false } }
+    );
+    console.warn(
+      "🔁 REINTENTO play " + play._id + " (" + res.motivo + ") — intento " +
+      intentosHechos + "/" + MAX_INTENTOS + ". Se reintenta en el próximo ciclo."
+    );
+    // WAHA/WhatsApp está caído: cortamos el ciclo para no golpearlo con el resto
+    // de los pendientes. El próximo minuto vuelve a intentar.
+    break;
   }
 
-  console.log("Trigger listo. Sesiones notificadas en este ciclo: " + procesados);
+  console.log(
+    "Trigger listo. Avisos enviados: " + enviados + " | fallidos: " + fallidos
+  );
 };
