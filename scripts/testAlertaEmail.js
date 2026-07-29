@@ -39,8 +39,10 @@ const res = await enviarEmail(asunto, cuerpo);
 
 if (res.ok) {
   console.log('✅ Enviado. Revisá la bandeja (y la carpeta de spam la primera vez).');
-  process.exit(0);
+} else {
+  console.error(`❌ No se pudo enviar: ${res.motivo || 'motivo desconocido'}`);
+  // exitCode en vez de process.exit(): cortar el proceso de golpe con una
+  // petición HTTP recién cerrada hace que node tire un "Assertion failed" en
+  // Windows. Así el proceso termina solo, limpio, con el mismo código de salida.
+  process.exitCode = 1;
 }
-
-console.error(`❌ No se pudo enviar: ${res.motivo || 'motivo desconocido'}`);
-process.exit(1);
