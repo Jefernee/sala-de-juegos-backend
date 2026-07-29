@@ -266,6 +266,57 @@ export const alertarAvisoWhatsAppFallido = async ({ play, motivo, intentos, moto
 };
 
 /**
+ * Alerta: una petición terminó en 5xx.
+ *
+ * POR QUÉ EXISTE APARTE de alertarErrorBackend: el middleware global de errores
+ * solo ve lo que se propaga con `next(err)` o lo que revienta sin try/catch. En
+ * este proyecto los controladores atrapan sus errores y responden
+ * `res.status(500).json(...)` ellos mismos (92 lugares), así que la mayoría de
+ * los 500 NUNCA llegan al middleware. Vigilando la RESPUESTA los agarramos
+ * todos, sin tener que tocar los 92 controladores.
+ *
+ * @param {Object} opciones
+ * @param {string} opciones.ruta   - Método y ruta de la petición.
+ * @param {number} opciones.status - Código de estado devuelto.
+ * @param {*}      opciones.cuerpo - Lo que respondió el backend.
+ */
+export const alertarRespuesta5xx = async ({ ruta, status, cuerpo }) => {
+  // La clave agrupa por RUTA, no por petición: los ids se reemplazan para que
+  // /api/plays/68f2... y /api/plays/71a9... cuenten como el mismo problema y no
+  // manden un correo por cada uno.
+  const rutaGenerica = String(ruta || '')
+    .split('?')[0]
+    .replace(/\/[0-9a-f]{24}(?=\/|$)/gi, '/:id')
+    .replace(/\/\d+(?=\/|$)/g, '/:n');
+
+  let detalle;
+  try {
+    detalle = typeof cuerpo === 'string' ? cuerpo : JSON.stringify(cuerpo, null, 2);
+  } catch {
+    detalle = '(no se pudo leer la respuesta)';
+  }
+
+  const texto = [
+    'Una petición al backend terminó en error.',
+    '',
+    `🔗 Ruta: ${ruta}`,
+    `🏷️ Código: ${status}`,
+    '',
+    'Respuesta que recibió el frontend:',
+    String(detalle || '').slice(0, 1500),
+    '',
+    'Los logs completos están en el panel de Koyeb.',
+  ].join('\n');
+
+  return enviarAlerta({
+    clave: `backend-500:${rutaGenerica}`,
+    asunto: `🔴 Error ${status} en el backend (${rutaGenerica})`,
+    cuerpo: texto,
+    cooldownMin: 30,
+  });
+};
+
+/**
  * Alerta: error grave del backend (500 o excepción no controlada).
  * Enfriamiento por tipo de error, para que un error repetido no inunde el correo
  * pero uno nuevo sí llegue.

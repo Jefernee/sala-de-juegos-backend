@@ -20,7 +20,15 @@ depender de que alguien mire los logs.
 | **WhatsApp se cayó y lo estoy reiniciando** | Watchdog en la VM | A partir del **2º** reinicio seguido (el primero no avisa: una reconexión suelta se arregla sola) |
 | **WAHA no responde ni para reiniciar** | Watchdog en la VM | El contenedor de WAHA o la VM están caídos |
 | **✅ Volvió a funcionar** | Watchdog en la VM | La sesión llegó a `WORKING` después de haber fallado |
-| **Error grave del backend** | Backend (Koyeb) | Cualquier error 500, promesa rechazada sin manejar o excepción no controlada |
+| **Error grave del backend** | Backend (Koyeb) | Cualquier respuesta 5xx, promesa rechazada sin manejar o excepción no controlada |
+
+> **Cómo se detectan los 500:** vigilando la **respuesta**, no el error. El middleware
+> global de errores solo ve lo que se propaga con `next(err)`, pero los controladores de
+> este proyecto atrapan sus errores y responden `res.status(500).json(...)` ellos mismos
+> (92 lugares). Si solo miráramos el middleware, la mayoría de los 500 pasarían sin avisar.
+> Por eso `server.js` envuelve `res.json` y alerta cuando el código es ≥ 500. Cuando el
+> error **sí** llega al middleware, éste marca `res.locals.yaAlertado` para que no salgan
+> dos correos por el mismo fallo (gana la alerta del middleware, que incluye el stack).
 
 Los errores de **cliente** (payload muy grande, validación, CORS) **no** mandan
 correo: son normales, los provoca el navegador y solo harían ruido.
@@ -134,6 +142,7 @@ Por eso cada tipo de alerta tiene una **clave** y un tiempo mínimo entre correo
 |---|---|---|
 | `whatsapp-aviso-fallido` | 2 horas | Colección `alertas_email` en Mongo |
 | `backend-error:<TipoDeError>` | 30 minutos | Colección `alertas_email` en Mongo |
+| `backend-500:<MÉTODO /ruta>` | 30 minutos | Colección `alertas_email` en Mongo |
 | Avisos del watchdog | 1 hora **por tipo** | `/var/tmp/waha-watchdog.correo` en la VM |
 
 Detalles que importan:
@@ -143,6 +152,9 @@ Detalles que importan:
   `notificacionFinEnviada`: quien llega primero reclama, el otro se calla.
 - Los errores del backend usan **una clave por tipo de error**. Así, si un error
   nuevo aparece mientras otro está en enfriamiento, el nuevo **sí** te llega.
+- En los 5xx la clave es la **ruta con los ids reemplazados**: `/api/plays/68f2…` y
+  `/api/plays/71a9…` cuentan como el mismo problema (`GET /api/plays/:id`). Si no,
+  un endpoint roto mandaría un correo por cada cliente que lo tocara.
 - Las alertas que se callan se cuentan. El siguiente correo te dice
   *"además hubo N alertas iguales que no se enviaron"*: es la diferencia entre
   "falló una vez" y "está fallando todo".

@@ -38,7 +38,7 @@ import { migrarAhorroMovimientos } from './utils/migrarAhorroMovimientos.js';
 // Notificaciones de fin de sesión por WhatsApp (vía WAHA)
 import { iniciarSchedulerFinSesion } from './utils/finSesionScheduler.js';
 // Alertas por correo cuando algo se rompe (ver utils/alertasEmail.js)
-import { alertarErrorBackend } from './utils/alertasEmail.js';
+import { alertarErrorBackend, alertarRespuesta5xx } from './utils/alertasEmail.js';
 import dns from 'dns';
 
 // ============================================
@@ -324,6 +324,35 @@ app.get("/api/health", (req, res) => {
 });
 
 // ============================================
+// 🔔 VIGILANTE DE RESPUESTAS 5xx (alerta por correo)
+// ============================================
+// Va ANTES de las rutas para poder envolver res.json de cada petición.
+//
+// POR QUÉ ACÁ Y NO SOLO EN EL MIDDLEWARE DE ERRORES: el middleware global de
+// abajo solo ve los errores que se propagan. Los controladores de este proyecto
+// atrapan los suyos y responden res.status(500).json(...) directamente, así que
+// la mayoría de los 500 nunca pasan por ahí. Mirando la RESPUESTA los agarramos
+// todos sin tocar los 92 lugares donde eso ocurre.
+app.use((req, res, next) => {
+  const jsonOriginal = res.json;
+  res.json = function (cuerpo) {
+    // res.locals.yaAlertado lo pone el middleware de errores, que manda una
+    // alerta más completa (con stack). Así el mismo fallo no avisa dos veces.
+    if (res.statusCode >= 500 && !res.locals.yaAlertado) {
+      res.locals.yaAlertado = true;
+      // Sin await: el usuario no espera al correo.
+      alertarRespuesta5xx({
+        ruta: `${req.method} ${req.originalUrl}`,
+        status: res.statusCode,
+        cuerpo,
+      });
+    }
+    return jsonOriginal.call(this, cuerpo);
+  };
+  next();
+});
+
+// ============================================
 // RUTAS
 // ============================================
 // Rutas públicas
@@ -381,6 +410,9 @@ app.use((err, req, res, next) => {
     err.name === 'ValidationError' ||
     err.message === 'Not allowed by CORS';
   if (!esErrorDeCliente) {
+    // Marcamos para que el vigilante de respuestas 5xx no mande un segundo
+    // correo por el mismo fallo. Esta alerta es mejor: trae el stack.
+    res.locals.yaAlertado = true;
     // Sin await: la respuesta al usuario no espera al correo.
     alertarErrorBackend(err, { ruta: `${req.method} ${req.originalUrl}`, origen: 'petición' });
   }
