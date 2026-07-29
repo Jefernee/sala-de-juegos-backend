@@ -108,6 +108,31 @@ exports = async function () {
     dosDigitos(fechaCR.getUTCMonth() + 1) + "-" +
     dosDigitos(fechaCR.getUTCDate());
 
+  // ── FRENO: un solo mensaje por día ───────────────────────────────────────
+  // El aviso es DIARIO, así que correr esta función de más NO debe mandar otro
+  // mensaje. Sin este freno, un cron mal escrito (por ejemplo "* * * * *" en vez
+  // de "0 13 * * *") manda un WhatsApp por minuto, y cada clic en "Run" del panel
+  // manda otro. Pasó el 29-jul-2026 probando el trigger.
+  //
+  // Para reenviar el de hoy a propósito: borrar el registro del día con
+  //   db.tipo_cambio_historial.deleteOne({ dia: "AAAA-MM-DD" })
+  // o ponerle avisado: false.
+  if (historial) {
+    try {
+      const yaAvisadoHoy = await historial.findOne({ dia: diaCR, avisado: true });
+      if (yaAvisadoHoy) {
+        console.log(
+          "Ya se mandó el tipo de cambio de hoy (" + diaCR + "). No se manda de nuevo. " +
+          "Si querés reenviarlo, borrá ese día de tipo_cambio_historial."
+        );
+        return;
+      }
+    } catch (e) {
+      // Si no se puede consultar, seguimos: preferimos avisar de más que no avisar.
+      console.error("No se pudo verificar si ya se avisó hoy: " + e.message);
+    }
+  }
+
   // El día de ayer en CR, para poder decir "desde ayer" en vez de una fecha.
   const ayerCRDate = new Date(fechaCR.getTime() - 24 * 60 * 60 * 1000);
   const diaAyerCR =
@@ -271,21 +296,23 @@ exports = async function () {
   // ── Guardar el dato del día ──────────────────────────────────────────────
   // Se guarda aunque el WhatsApp haya fallado: el valor sirve igual para la
   // comparación de mañana. upsert por día → correrlo dos veces no duplica.
-  if (tc && historial) {
+  //
+  // `avisado` es lo que activa el freno de arriba, y solo se marca si el mensaje
+  // SALIÓ. Si el envío falló, el día queda sin marcar y la próxima corrida vuelve
+  // a intentarlo: así un fallo de WhatsApp no nos deja sin aviso del día.
+  if (historial && (tc || enviado)) {
     try {
-      await historial.updateOne(
-        { dia: diaCR },
-        {
-          $set: {
-            dia: diaCR,
-            compra: tc.compra,
-            venta: tc.venta,
-            fuente: tc.fuente,
-            actualizado: AHORA,
-          },
-        },
-        { upsert: true }
-      );
+      const datos = { dia: diaCR, actualizado: AHORA };
+      if (tc) {
+        datos.compra = tc.compra;
+        datos.venta = tc.venta;
+        datos.fuente = tc.fuente;
+      }
+      if (enviado) {
+        datos.avisado = true;
+        datos.avisadoEn = AHORA;
+      }
+      await historial.updateOne({ dia: diaCR }, { $set: datos }, { upsert: true });
     } catch (e) {
       console.error("No se pudo guardar el tipo de cambio del día: " + e.message);
     }
