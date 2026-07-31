@@ -33,6 +33,7 @@ import { migrarRolesUsuarios } from './utils/migrarRolesUsuarios.js';
 import { restringirVendedor } from './middlewares/roles.js';
 import { migrarReparacionesActivos } from './utils/migrarReparacionesActivos.js';
 import { backfillEstadoResultados } from './utils/backfillEstadoResultados.js';
+import { backfillResumenPersonal } from './utils/backfillResumenPersonal.js';
 import { regenerarReporteActivos } from './controllers/activosReportController.js';
 import { migrarAhorroMovimientos } from './utils/migrarAhorroMovimientos.js';
 // Notificaciones de fin de sesión por WhatsApp (vía WAHA)
@@ -289,6 +290,13 @@ const tareasDeArranque = async () => {
     await regenerarReporteActivos();
   } catch (e) {
     console.error('⚠️ Snapshot de activos (no crítico):', e.message);
+  }
+
+  try {
+    const { generados, meses } = await backfillResumenPersonal();
+    if (generados > 0) console.log(`👤 Finanzas personales: ${generados}/${meses} mes(es) generados.`);
+  } catch (e) {
+    console.error('⚠️ Backfill finanzas personales (no crítico):', e.message);
   }
 
   try {

@@ -2,20 +2,42 @@
 // Finanzas Personales (SOLO administrador). Módulo APARTE de la sala de juegos:
 // no lee ni escribe nada del negocio. Solo maneja los ingresos y gastos
 // personales que el administrador registra a mano, filtrados por su usuario.
+//
+// ── Cómo se calculan los reportes (Patrón A, igual que el Estado de Resultados)
+// Los totales de cada mes NO se recalculan al abrir un reporte: se guardan en
+// `ResumenPersonalMes` (un snapshot por usuario/mes) cuando se crea, edita o
+// borra un movimiento, en segundo plano. Los GET solo LEEN esos snapshots.
+//   • Resumen del mes  → 1 snapshot + 1 agregación de acumulados.
+//   • Reporte ANUAL    → 1 consulta que trae ≤24 snapshots (el año + el anterior)
+//                        y se suma en memoria. Costo plano: no toca los
+//                        movimientos ni una vez, por más que crezcan.
+// Los ACUMULADOS (saldo inicial, ahorro acumulado) se derivan al leer sumando
+// los snapshots (12 por año), no se guardan: si se guardaran, editar marzo
+// dejaría mal abril→diciembre y habría que regenerar en cascada.
 import mongoose from 'mongoose';
 import MovimientoPersonal, {
   TIPOS_MOVIMIENTO,
   CATEGORIAS_INGRESO,
   CATEGORIAS_EGRESO,
   CATEGORIAS_DEUDA,
+  CATEGORIAS_FIJAS,
   CATEGORIAS_AHORRO,
   MONEDAS,
   categoriasPorTipo,
   esAhorro,
+  esRetiroAhorro,
   esGastoFijo,
   esDeBatan,
 } from '../models/MovimientoPersonal.js';
+import ResumenPersonalMes, { NOMBRES_MES_PERSONAL } from '../models/ResumenPersonalMes.js';
+import AperturaPersonal from '../models/AperturaPersonal.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
+
+// Versión del formato del snapshot mensual. Subir este número al agregar campos
+// nuevos: los snapshots guardados con versión menor se regeneran solos al leerlos.
+//   v1: totales del mes + desglose por categoría.
+//   v2: + retiros del ahorro (totalRetiroAhorro, desgloseRetiro).
+export const SCHEMA_VERSION = 2;
 
 // Caché en memoria del tipo de cambio (una llamada a Hacienda por día).
 // `cacheTC` guarda el último valor bueno conocido; `cacheDiaTC` es el día CR
@@ -34,6 +56,11 @@ const hoyCostaRica = () =>
     month: '2-digit',
     day: '2-digit',
   }).format(new Date());
+
+// Año en curso EN COSTA RICA. El servidor corre en UTC, así que la noche del 31
+// de diciembre `new Date().getFullYear()` ya devolvería el año siguiente mientras
+// en CR todavía es diciembre.
+const anioActualCR = () => Number(hoyCostaRica().slice(0, 4));
 
 // Resuelve la fecha a guardar según el mes/año elegido en el frontend.
 // El frontend NUNCA envía fechas, solo mes y anio (opcionales): si no vienen,
@@ -125,6 +152,8 @@ export const getCategorias = async (_req, res) => {
     categorias: {
       ingreso: CATEGORIAS_INGRESO,
       egreso: CATEGORIAS_EGRESO,
+      // Un retiro se clasifica con la bolsa de ahorro de la que salió la plata.
+      retiro_ahorro: CATEGORIAS_AHORRO,
     },
   });
 };
@@ -152,6 +181,34 @@ export const addMovimiento = async (req, res) => {
       return res.status(400).json({ message: resultadoFecha.error });
     }
 
+    // Un retiro no puede sacar más de lo que hay acumulado en ese momento.
+    if (esRetiroAhorro(tipo)) {
+      await asegurarSnapshots(req.user.id); // la validación lee snapshots
+      const { anio, mes } = anioMesCR(resultadoFecha.fecha || new Date());
+      const problema = await validarAhorroNoNegativo(req.user.id, [
+        { anio, mes, ahorro: 0, retiro: dinero.monto },
+      ]);
+      if (problema) {
+        // `disponible` es el TOPE de ESTE retiro, no el acumulado del mes: si ya
+        // había otros retiros ese mes, lo que queda es menos. El frontend usa
+        // este número para limitar el campo, así que tiene que ser el real.
+        const tope = Math.max(0, dinero.monto - problema.exceso);
+        const donde = `${NOMBRES_MES[problema.mes - 1]} ${problema.anio}`;
+        const mismoMes = problema.anio === anio && problema.mes === mes;
+        return res.status(400).json({
+          message: tope === 0
+            ? (mismoMes
+                ? `No te queda ahorro para sacar en ${donde}.`
+                : `No podés sacar nada: dejaría el ahorro en negativo en ${donde}.`)
+            : (mismoMes
+                ? `Solo podés sacar ${fmtCRC(tope)}: es lo que te queda en el ahorro a ${donde}.`
+                : `Solo podés sacar ${fmtCRC(tope)}: más que eso deja el ahorro en negativo en ${donde}.`),
+          disponible: tope,          // tope de este movimiento
+          acumulado: problema.disponible, // ahorro acumulado a ese mes (informativo)
+        });
+      }
+    }
+
     const movimiento = await MovimientoPersonal.create({
       usuario: req.user.id,
       tipo,
@@ -163,6 +220,13 @@ export const addMovimiento = async (req, res) => {
       descripcion: req.body.descripcion?.trim() || null,
       ...(resultadoFecha.fecha && { fecha: resultadoFecha.fecha }),
     });
+
+    // Snapshot del mes al día (Patrón A). A diferencia del estado de resultados
+    // del negocio —que se regenera en background— acá se ESPERA: el resumen del
+    // mes que el frontend recarga justo después ya lee del snapshot, así que si
+    // no se espera, la tarjeta no reflejaría el movimiento recién guardado.
+    // Es una agregación de un mes + un upsert: milisegundos.
+    await regenerarResumenDeFecha(req.user.id, movimiento.fecha);
 
     res.status(201).json({ message: 'Movimiento registrado', data: movimiento });
   } catch (error) {
@@ -235,25 +299,25 @@ export const getMovimientos = async (req, res) => {
   }
 };
 
-// ============================================
-// GET /api/finanzas-personales/resumen?mes=&anio=
-// "Estado de resultados personal" del mes: total ingresos, total egresos,
-// balance (ingresos - egresos) y el desglose por categoría de cada uno.
-// Se calcula EN VIVO desde los movimientos del propio usuario (no snapshot):
-// esos movimientos son la única fuente, así que no hay nada que sobreviva a
-// su borrado. Agregación en Mongo (no carga toda la colección a memoria).
-// ============================================
-// Calcula los totales del mes de un usuario: total ingresos, total egresos,
-// balance y desglose por categoría (ordenado de mayor a menor). Se usa tanto
-// para el resumen como para las recomendaciones (mes actual y mes anterior).
-const calcularResumenMes = async (usuarioId, mes, anio) => {
-  const match = {
-    usuario: new mongoose.Types.ObjectId(usuarioId),
-    fecha: crearFiltroMes(mes, anio),
-  };
+// ════════════════════════════════════════════════════════════════════
+// CAPA DE SNAPSHOTS MENSUALES (Patrón A)
+// ════════════════════════════════════════════════════════════════════
 
+// ============================================
+// Calcula los totales de un mes LEYENDO LOS MOVIMIENTOS. Esta es la ÚNICA
+// función que recorre la colección de movimientos, y solo corre cuando hay que
+// (re)generar el snapshot de un mes: al crear/editar/borrar un movimiento, o la
+// primera vez que se abre un mes que nunca se guardó. Nunca en cada carga.
+// Una sola agregación en Mongo (no trae los movimientos a memoria de Node).
+// ============================================
+const construirResumenMes = async (usuarioId, mes, anio) => {
   const grupos = await MovimientoPersonal.aggregate([
-    { $match: match },
+    {
+      $match: {
+        usuario: new mongoose.Types.ObjectId(usuarioId),
+        fecha: crearFiltroMes(mes, anio),
+      },
+    },
     {
       $group: {
         _id: { tipo: '$tipo', categoria: '$categoria' },
@@ -264,27 +328,206 @@ const calcularResumenMes = async (usuarioId, mes, anio) => {
     { $sort: { total: -1 } },
   ]);
 
-  const desglose = { ingreso: [], egreso: [] };
+  const desgloseIngreso = [];
+  const desgloseEgreso = [];
+  const desgloseRetiro = [];
   let totalIngresos = 0;
   let totalEgresos = 0;
+  let totalAhorro = 0;
+  let totalRetiroAhorro = 0;
+  let movimientos = 0;
 
   for (const g of grupos) {
     const fila = { categoria: g._id.categoria, total: g.total, cantidad: g.cantidad };
+    movimientos += g.cantidad;
     if (g._id.tipo === 'ingreso') {
-      desglose.ingreso.push(fila);
+      desgloseIngreso.push(fila);
       totalIngresos += g.total;
+    } else if (esRetiroAhorro(g._id.tipo)) {
+      // Ni ingreso ni egreso: traslado del ahorro al bolsillo del día a día.
+      desgloseRetiro.push(fila);
+      totalRetiroAhorro += g.total;
     } else {
-      desglose.egreso.push(fila);
+      desgloseEgreso.push(fila);
       totalEgresos += g.total;
+      if (esAhorro(fila.categoria)) totalAhorro += g.total;
     }
   }
 
   return {
+    schemaVersion: SCHEMA_VERSION,
+    anio,
+    mes,
+    nombreMes: NOMBRES_MES_PERSONAL[mes],
     totalIngresos,
+    totalGastos: totalEgresos - totalAhorro, // egresos SIN ahorro (consumo)
+    totalAhorro,                             // apartado en el mes (BRUTO)
     totalEgresos,
-    balance: totalIngresos - totalEgresos,
-    desglose, // { ingreso: [{categoria,total,cantidad}], egreso: [...] }
+    totalRetiroAhorro,
+    balanceMes: totalIngresos - totalEgresos, // flujo propio del mes, SIN retiros
+    desgloseIngreso,
+    desgloseEgreso,
+    desgloseRetiro,
+    movimientos,
+    ultimaActualizacion: new Date(),
   };
+};
+
+// Un mes sin snapshot y sin movimientos: se responde en ceros SIN crear el
+// documento (no ensucia la base con 12 docs vacíos por año).
+const mesVacio = (mes, anio) => ({
+  schemaVersion: SCHEMA_VERSION,
+  anio,
+  mes,
+  nombreMes: NOMBRES_MES_PERSONAL[mes],
+  totalIngresos: 0,
+  totalGastos: 0,
+  totalAhorro: 0,
+  totalEgresos: 0,
+  totalRetiroAhorro: 0,
+  balanceMes: 0,
+  desgloseIngreso: [],
+  desgloseEgreso: [],
+  desgloseRetiro: [],
+  movimientos: 0,
+});
+
+// Regenera y GUARDA (upsert) el snapshot de un mes. Si el mes quedó sin ningún
+// movimiento se BORRA el snapshot (en vez de dejar un doc en ceros): así los
+// acumulados no cambian y la base queda limpia. Devuelve el resumen calculado.
+// Puede lanzar: para uso donde queremos reportar el error.
+export const regenerarResumenMes = async (usuarioId, mes, anio) => {
+  const datos = await construirResumenMes(usuarioId, mes, anio);
+
+  if (datos.movimientos === 0) {
+    await ResumenPersonalMes.deleteOne({ usuario: usuarioId, anio, mes });
+    return datos;
+  }
+
+  await ResumenPersonalMes.findOneAndUpdate(
+    { usuario: usuarioId, anio, mes },
+    { $set: { ...datos, usuario: usuarioId } },
+    { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+  );
+  return datos;
+};
+
+// Deriva { anio, mes } en hora Costa Rica de una fecha UTC guardada (igual que
+// el estado de resultados del negocio).
+const anioMesCR = (fecha) => {
+  const cr = new Date(new Date(fecha).toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+  return { anio: cr.getFullYear(), mes: cr.getMonth() + 1 };
+};
+
+// Versión "en background" (como Plays/Ventas/Estado de Resultados): regenera
+// el/los mes(es) CR de las fechas dadas, sin duplicar, y NUNCA lanza. Se llama
+// después de crear/editar/borrar un movimiento. Al editar algo que cambia de
+// mes hay que pasar la fecha VIEJA y la NUEVA (los dos meses se ven afectados).
+export const regenerarResumenDeFecha = async (usuarioId, ...fechas) => {
+  const vistos = new Set();
+  for (const f of fechas) {
+    if (!f) continue;
+    const { anio, mes } = anioMesCR(f);
+    const key = `${anio}-${mes}`;
+    if (vistos.has(key)) continue;
+    vistos.add(key);
+    try {
+      await regenerarResumenMes(usuarioId, mes, anio);
+    } catch (err) {
+      // No propagar: el movimiento ya se guardó bien. El snapshot se rehace solo
+      // en la próxima lectura (asegurarSnapshots) o con POST /regenerar.
+      console.error('⚠️ Error al regenerar el resumen personal del mes:', err.message);
+    }
+  }
+};
+
+// ============================================
+// Red de seguridad: asegura que el usuario tenga snapshot de TODOS los meses en
+// los que tiene movimientos, y que ninguno haya quedado con un formato viejo.
+//
+// ¿Cuándo hace falta? Al desplegar esto por primera vez (los meses que ya
+// existen no tienen snapshot), o si alguien tocó la base a mano. Corre UNA sola
+// vez por proceso y por usuario: la primera lectura después de un reinicio hace
+// una agregación chiquita (una fila por mes) y, si no falta nada, no escribe
+// nada. En prod las tareas de arranque están apagadas (EJECUTAR_MIGRACIONES=
+// false), así que esta es la que mantiene todo consistente sola.
+// ============================================
+const snapshotsVerificados = new Set(); // ids de usuario ya verificados en este proceso
+
+const asegurarSnapshots = async (usuarioId) => {
+  const clave = String(usuarioId);
+  if (snapshotsVerificados.has(clave)) return;
+
+  // Meses (hora CR) en los que el usuario tiene movimientos: una fila por mes.
+  const conDatos = await MovimientoPersonal.aggregate([
+    { $match: { usuario: new mongoose.Types.ObjectId(usuarioId) } },
+    {
+      $group: {
+        _id: {
+          y: { $year: { date: '$fecha', timezone: 'America/Costa_Rica' } },
+          m: { $month: { date: '$fecha', timezone: 'America/Costa_Rica' } },
+        },
+      },
+    },
+  ]);
+
+  // Snapshots que YA están guardados con el formato actual.
+  const guardados = await ResumenPersonalMes.find(
+    { usuario: usuarioId, schemaVersion: SCHEMA_VERSION },
+    'anio mes'
+  ).lean();
+  const alDia = new Set(guardados.map((s) => `${s.anio}-${s.mes}`));
+
+  let generados = 0;
+  for (const c of conDatos) {
+    if (alDia.has(`${c._id.y}-${c._id.m}`)) continue;
+    await regenerarResumenMes(usuarioId, c._id.m, c._id.y);
+    generados++;
+  }
+
+  if (generados > 0) {
+    console.log(`📊 Finanzas personales: ${generados} snapshot(s) mensual(es) generados.`);
+  }
+
+  snapshotsVerificados.add(clave); // solo si terminó bien: un fallo se reintenta
+};
+
+// Lee el snapshot de un mes (SIN recalcular). Si falta o quedó con formato
+// viejo, lo regenera una vez y devuelve lo recién calculado.
+const leerResumenMes = async (usuarioId, mes, anio) => {
+  const guardado = await ResumenPersonalMes.findOne({ usuario: usuarioId, anio, mes }).lean();
+
+  if (guardado && (guardado.schemaVersion || 0) >= SCHEMA_VERSION) return guardado;
+  if (guardado) return regenerarResumenMes(usuarioId, mes, anio); // formato viejo
+
+  // Sin snapshot: puede ser un mes vacío (lo normal) o uno que nunca se generó.
+  const datos = await regenerarResumenMes(usuarioId, mes, anio);
+  return datos.movimientos === 0 ? mesVacio(mes, anio) : datos;
+};
+
+// Adapta un snapshot al shape { totalIngresos, totalEgresos, desglose } que usan
+// componerFinanzasMes y los mensajes inteligentes (se mantiene igual que antes
+// para no cambiar lo que ya consume el frontend).
+const comoResumen = (snap) => ({
+  totalIngresos: snap.totalIngresos || 0,
+  totalEgresos: snap.totalEgresos || 0,
+  totalRetiroAhorro: snap.totalRetiroAhorro || 0,
+  balance: (snap.totalIngresos || 0) - (snap.totalEgresos || 0),
+  desglose: {
+    ingreso: snap.desgloseIngreso || [],
+    egreso: snap.desgloseEgreso || [],
+    // Los retiros van en su propio bloque, con porcentaje sobre el total retirado.
+    retiro: conPorcentaje(snap.desgloseRetiro || []),
+  },
+});
+
+// Agrega `porcentaje` a filas { categoria, total, cantidad } sobre su propio total.
+const conPorcentaje = (filas) => {
+  const total = filas.reduce((s, f) => s + (f.total || 0), 0);
+  return filas.map((f) => ({
+    ...f,
+    porcentaje: total > 0 ? Math.round((f.total / total) * 1000) / 10 : 0,
+  }));
 };
 
 // Suma el ahorro del mes a partir del desglose (todas las categorías de ahorro:
@@ -293,106 +536,287 @@ const calcularResumenMes = async (usuarioId, mes, anio) => {
 const calcularAhorro = (desglose) =>
   desglose.egreso.filter((e) => esAhorro(e.categoria)).reduce((s, e) => s + e.total, 0);
 
-// ============================================
-// Saldo Inicial del Mes (NO se almacena en la base de datos).
-//
-// Se deriva EN VIVO como el "saldo final" acumulado de TODOS los meses
-// anteriores. Matemáticamente, si SaldoFinal[m] = SaldoInicial[m] + Ingresos[m]
-// - Egresos[m] y SaldoInicial[m] = SaldoFinal[m-1], al desplegar la recursión
-// queda que el saldo inicial de un mes es simplemente el neto (ingresos -
-// egresos) de todos los movimientos con fecha ANTERIOR al día 1 de ese mes.
-//
-// Ventajas de calcularlo así (una sola agregación, sin guardar nada):
-//   • Si se edita/borra/agrega cualquier movimiento de un mes previo, el saldo
-//     inicial del mes siguiente se recalcula solo en la próxima consulta.
-//   • Si no hay ningún movimiento anterior, la suma es 0 (primer mes → ₡0).
-// El ahorro está incluido en los egresos, así que resta del saldo acumulado
-// (es dinero apartado que ya no está disponible), acorde con la fórmula pedida.
-// ============================================
-const calcularSaldoInicial = async (usuarioId, mes, anio) => {
-  // Día 1 del mes a medianoche de Costa Rica (06:00 UTC): mismo borde que usa
-  // crearFiltroMes como inicio, para que "antes de este mes" no deje huecos.
-  const inicioMes = new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0));
+// ════════════════════════════════════════════════════════════════════
+// ACUMULADOS (saldo inicial y ahorro acumulado)
+// ════════════════════════════════════════════════════════════════════
 
-  const grupos = await MovimientoPersonal.aggregate([
-    { $match: { usuario: new mongoose.Types.ObjectId(usuarioId), fecha: { $lt: inicioMes } } },
-    { $group: { _id: '$tipo', total: { $sum: '$monto' } } },
+// Convierte (anio, mes) a un número ordenable, para comparar meses sin fechas.
+const ordinalMes = (anio, mes) => anio * 12 + mes;
+
+// Redondea a 1 decimal de forma simétrica: Math.round manda el medio siempre
+// hacia arriba, así que 6,25 daría 6,3 pero −6,25 daría −6,2. Se redondea la
+// magnitud y se le devuelve el signo, para que un porcentaje negativo y su
+// positivo no queden con distinto decimal.
+const redondear1 = (n) => (n < 0 ? -1 : 1) * Math.round(Math.abs(n) * 10) / 10;
+
+// ============================================
+// Saldo de apertura del usuario (o null). Es lo que se traía de ANTES de
+// empezar a usar el módulo: no es movimiento de ningún mes.
+//   • montoDisponible → suma al Saldo Inicial (plata a mano)
+//   • montoAhorro     → suma al Ahorro Acumulado (plata apartada)
+// Aplica desde el mes de corte en adelante.
+// ============================================
+const leerApertura = (usuarioId) => AperturaPersonal.findOne({ usuario: usuarioId }).lean();
+
+// ¿La apertura ya está vigente en el mes consultado (o antes)?
+const aperturaVigente = (apertura, anio, mes) =>
+  !!apertura && ordinalMes(apertura.anioCorte, apertura.mesCorte) <= ordinalMes(anio, mes);
+
+// ============================================
+// Saldo Inicial y Ahorro Acumulado (NO se almacenan: se derivan al leer).
+//
+// Antes esto recorría TODOS los movimientos anteriores en cada carga. Ahora suma
+// los SNAPSHOTS mensuales: como máximo 12 documentos chiquitos por año, en una
+// sola agregación. Sigue siendo exacto y se recalcula solo si se edita un mes
+// viejo (el snapshot de ese mes se regenera y la suma cambia sola), sin cascada.
+//
+//   SaldoInicial[m]    = Σ (ingresos − egresos + retiros) de los meses ANTERIORES
+//                        a m + apertura.montoDisponible
+//   AhorroAcumulado[m] = Σ (ahorro − retiros) de los meses HASTA m (inclusive)
+//                        + apertura.montoAhorro
+//
+// El ahorro está dentro de los egresos, así que RESTA del saldo disponible: es
+// plata apartada que ya no está a mano (por eso se muestra como total aparte). Un
+// retiro hace lo contrario: suma al saldo y resta del acumulado, así que el
+// ahorro acumulado que sale de acá siempre es NETO.
+// Devuelve { saldoInicial, ahorroAcumulado, ahorroPrevio, apertura }.
+// ============================================
+const calcularAcumulados = async (usuarioId, mes, anio) => {
+  const [filas, apertura] = await Promise.all([
+    ResumenPersonalMes.aggregate([
+      {
+        // Todo lo que pasó HASTA el mes consultado (inclusive).
+        $match: {
+          usuario: new mongoose.Types.ObjectId(usuarioId),
+          $or: [{ anio: { $lt: anio } }, { anio, mes: { $lte: mes } }],
+        },
+      },
+      {
+        // Marca los meses ESTRICTAMENTE anteriores (los que forman el saldo inicial).
+        $addFields: {
+          esPrevio: {
+            $or: [
+              { $lt: ['$anio', anio] },
+              { $and: [{ $eq: ['$anio', anio] }, { $lt: ['$mes', mes] }] },
+            ],
+          },
+        },
+      },
+      {
+        $group: {
+          _id: null,
+          ingresosPrevios: { $sum: { $cond: ['$esPrevio', '$totalIngresos', 0] } },
+          egresosPrevios: { $sum: { $cond: ['$esPrevio', '$totalEgresos', 0] } },
+          retirosPrevios: { $sum: { $cond: ['$esPrevio', '$totalRetiroAhorro', 0] } },
+          ahorroPrevio: { $sum: { $cond: ['$esPrevio', '$totalAhorro', 0] } },
+          ahorroHastaElMes: { $sum: '$totalAhorro' },
+          retirosHastaElMes: { $sum: '$totalRetiroAhorro' },
+        },
+      },
+    ]),
+    leerApertura(usuarioId),
   ]);
 
-  let ingresos = 0;
-  let egresos = 0;
-  for (const g of grupos) {
-    if (g._id === 'ingreso') ingresos = g.total;
-    else egresos = g.total;
+  const agg = filas[0] || {
+    ingresosPrevios: 0,
+    egresosPrevios: 0,
+    retirosPrevios: 0,
+    ahorroPrevio: 0,
+    ahorroHastaElMes: 0,
+    retirosHastaElMes: 0,
+  };
+  // La apertura es dinero que YA existía al empezar el mes de corte, así que
+  // cuenta igual para el saldo inicial y para el ahorro previo de ese mismo mes.
+  const vigente = aperturaVigente(apertura, anio, mes);
+  const aportaDisponible = vigente ? apertura.montoDisponible || 0 : 0;
+  const aportaAhorro = vigente ? apertura.montoAhorro || 0 : 0;
+
+  return {
+    // Puede ser negativo si se arrastra un déficit. Los retiros de meses previos
+    // ya devolvieron esa plata al bolsillo, así que suman.
+    saldoInicial: agg.ingresosPrevios - agg.egresosPrevios + agg.retirosPrevios + aportaDisponible,
+    // Ahorro NETO (lo apartado menos lo retirado):
+    ahorroAcumulado: agg.ahorroHastaElMes - agg.retirosHastaElMes + aportaAhorro, // al CIERRE del mes
+    ahorroPrevio: agg.ahorroPrevio - agg.retirosPrevios + aportaAhorro,           // al INICIO del mes
+    apertura: apertura || null,
+  };
+};
+
+// ════════════════════════════════════════════════════════════════════
+// INVARIANTE: el ahorro acumulado NUNCA puede quedar negativo
+// ════════════════════════════════════════════════════════════════════
+
+// Cuánto aporta un movimiento al ahorro acumulado, y en qué mes.
+//   • egreso con categoría de ahorro → aparta plata (+)
+//   • retiro_ahorro                  → saca plata (−)
+//   • cualquier otro                 → no toca el ahorro
+const contribucionAhorro = (mov) => {
+  const { anio, mes } = anioMesCR(mov.fecha);
+  return {
+    anio,
+    mes,
+    ahorro: mov.tipo === 'egreso' && esAhorro(mov.categoria) ? mov.monto : 0,
+    retiro: esRetiroAhorro(mov.tipo) ? mov.monto : 0,
+  };
+};
+
+// ============================================
+// Verifica que, aplicando los cambios pedidos, el ahorro acumulado NETO no quede
+// negativo en NINGÚN mes. No alcanza con mirar el mes del movimiento: si se
+// retiró de más en agosto, bajar el ahorro de julio también rompe agosto.
+//
+// `deltas`: [{ anio, mes, ahorro, retiro }] con los cambios (pueden ser negativos:
+// así se modela borrar o editar). `aperturaOverride`: `undefined` usa la apertura
+// guardada; `null` simula que no hay; un objeto { montoAhorro, mesCorte, anioCorte }
+// simula el valor nuevo (para validar que se pueda bajar, mover o borrar).
+//
+// Devuelve null si todo bien, o { mensaje, disponible, mes, anio } con el primer
+// mes que se pasaría y cuánto había realmente disponible ahí.
+// ============================================
+const validarAhorroNoNegativo = async (usuarioId, deltas = [], aperturaOverride = undefined) => {
+  const [snapshots, apertura] = await Promise.all([
+    ResumenPersonalMes.find({ usuario: usuarioId }, 'anio mes totalAhorro totalRetiroAhorro').lean(),
+    leerApertura(usuarioId),
+  ]);
+
+  // Estado actual mes por mes, indexado por ordinal para poder ordenarlo.
+  const porOrdinal = new Map();
+  const tomar = (anio, mes) => {
+    const o = ordinalMes(anio, mes);
+    if (!porOrdinal.has(o)) porOrdinal.set(o, { anio, mes, ahorro: 0, retiro: 0 });
+    return porOrdinal.get(o);
+  };
+
+  for (const s of snapshots) {
+    const fila = tomar(s.anio, s.mes);
+    fila.ahorro += s.totalAhorro || 0;
+    fila.retiro += s.totalRetiroAhorro || 0;
+  }
+  for (const d of deltas) {
+    if (!d) continue;
+    const fila = tomar(d.anio, d.mes);
+    fila.ahorro += d.ahorro || 0;
+    fila.retiro += d.retiro || 0;
   }
 
-  return ingresos - egresos; // puede ser negativo si se arrastra un déficit
+  // Aporte de la apertura (lo que ya estaba apartado antes de usar el módulo).
+  const efectiva = aperturaOverride !== undefined ? aperturaOverride : apertura;
+  const montoApertura = efectiva?.montoAhorro || 0;
+  const ordinalApertura = efectiva ? ordinalMes(efectiva.anioCorte, efectiva.mesCorte) : null;
+
+  let acumulado = 0;
+  let aperturaSumada = false;
+
+  for (const o of [...porOrdinal.keys()].sort((a, b) => a - b)) {
+    const fila = porOrdinal.get(o);
+
+    // La apertura entra al cruzar su mes de corte (antes de los movimientos de ese mes).
+    if (!aperturaSumada && ordinalApertura !== null && o >= ordinalApertura) {
+      acumulado += montoApertura;
+      aperturaSumada = true;
+    }
+
+    // Lo que realmente había disponible para retirar en este mes.
+    const disponible = acumulado + fila.ahorro;
+    if (fila.retiro > disponible) {
+      return {
+        // Ahorro acumulado a ese mes (antes de los retiros del mes).
+        disponible,
+        // Por cuánto se pasa el TOTAL de retiros de ese mes. Con esto el que
+        // llama calcula el tope exacto del movimiento que se está guardando:
+        // si ya había otros retiros ese mes, el tope NO es `disponible`.
+        exceso: fila.retiro - disponible,
+        mes: fila.mes,
+        anio: fila.anio,
+        mensaje: `Solo tenés ${fmtCRC(disponible)} acumulados en ahorro a ${NOMBRES_MES[fila.mes - 1]} ${fila.anio}`,
+      };
+    }
+
+    acumulado = disponible - fila.retiro;
+  }
+
+  return null;
 };
 
 // ============================================
 // Gasto de consumo PROMEDIO por mes (sin ahorro) de los meses ANTERIORES al
 // consultado. Con esto los mensajes pueden decir algo que no está en pantalla:
-// cuántos meses aguantaría el saldo disponible si se cayeran los ingresos.
-// Se promedia solo entre los meses que SÍ tuvieron gastos (si hay un mes vacío
-// no diluye el promedio). Devuelve null si no hay historial previo.
+// cuántos meses aguantaría el dinero si se cayeran los ingresos.
+// Se promedia solo entre los meses que SÍ tuvieron gastos (un mes vacío no
+// diluye el promedio). Lee snapshots, no movimientos. null si no hay historial.
 // ============================================
 const calcularGastoPromedioMensual = async (usuarioId, mes, anio, meses = 3) => {
-  const fin = new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0));        // día 1 del mes consultado
-  const inicio = new Date(Date.UTC(anio, mes - 1 - meses, 1, 6, 0, 0, 0)); // N meses atrás
+  // Los N meses anteriores al consultado, como pares {anio, mes} exactos (así la
+  // consulta pide justo esos snapshots y no depende de cuántos años haya).
+  const ventana = [];
+  for (let i = 1; i <= meses; i++) {
+    const o = ordinalMes(anio, mes) - i - 1; // -1: ordinal es 1-based en el mes
+    ventana.push({ anio: Math.floor(o / 12), mes: (o % 12) + 1 });
+  }
 
-  const grupos = await MovimientoPersonal.aggregate([
-    {
-      $match: {
-        usuario: new mongoose.Types.ObjectId(usuarioId),
-        tipo: 'egreso',
-        categoria: { $nin: CATEGORIAS_AHORRO },
-        fecha: { $gte: inicio, $lt: fin },
-      },
-    },
-    {
-      // Agrupamos por mes en hora de Costa Rica (no UTC) para que un gasto de
-      // la noche del último día no se cuente en el mes siguiente.
-      $group: {
-        _id: { $dateToString: { date: '$fecha', format: '%Y-%m', timezone: 'America/Costa_Rica' } },
-        total: { $sum: '$monto' },
-      },
-    },
-  ]);
+  const filas = await ResumenPersonalMes.find(
+    { usuario: usuarioId, totalGastos: { $gt: 0 }, $or: ventana },
+    'totalGastos'
+  ).lean();
 
-  if (grupos.length === 0) return null;
-  const total = grupos.reduce((s, g) => s + g.total, 0);
-  return Math.round(total / grupos.length);
+  if (filas.length === 0) return null;
+  const total = filas.reduce((s, f) => s + f.totalGastos, 0);
+  return Math.round(total / filas.length);
 };
 
-// A partir del resumen crudo del mes (calcularResumenMes) y su saldo inicial,
+// A partir del resumen del mes (el snapshot, vía comoResumen) y sus acumulados,
 // arma el bloque financiero que consume el frontend. El saldo inicial se suma a
 // TODOS los cálculos del mes (es dinero disponible del mes anterior), pero NO
 // se cuenta como ingreso: `totalIngresos` y `desglose.ingreso` quedan intactos.
-//   Disponible  = SaldoInicial + Ingresos
-//   SaldoFinal  = SaldoInicial + Ingresos - Gastos - Ahorro (= Disponible - Egresos)
-//   Balance     = SaldoFinal (dinero restante al cerrar el mes, ya con el saldo inicial)
-//   LibreParaGastar = SaldoFinal - SaldoInicial: cuánto se puede gastar todavía
-//     sin meterle mano al dinero que se traía. Como el saldo inicial se cancela,
-//     equivale a Ingresos - Egresos: lo que el mes generó por sí solo. El ahorro
-//     ya viene restado, así que es plata realmente libre. Negativo = ya se tocó
-//     el saldo inicial (y el monto es cuánto se le sacó).
-const componerFinanzasMes = (resumen, saldoInicial) => {
-  const { totalIngresos, totalEgresos, desglose } = resumen;
+//   Disponible  = SaldoInicial + Ingresos + RetirosDelAhorro
+//   SaldoFinal  = Disponible - Gastos - Ahorro
+//   Balance     = SaldoFinal (nombre viejo que se mantiene por compatibilidad)
+//   BalanceMes  = Ingresos - Egresos: lo que el mes generó por sí solo, SIN retiros
+//   VariacionSaldo = BalanceMes + Retiros = SaldoFinal - SaldoInicial
+//   LibreParaGastar = BalanceMes: cuánto se puede gastar todavía sin meterle mano
+//     al dinero que se traía ni al ahorro. El ahorro ya viene restado, así que es
+//     plata realmente libre. Negativo = ya se tocó el saldo inicial o el ahorro
+//     (y el monto es cuánto se le sacó).
+//
+// `ahorroAcumulado` es el TOTAL apartado hasta el cierre de este mes (incluye el
+// saldo de apertura): no entra en el saldo disponible —es plata que ya salió del
+// bolsillo del día a día— pero se devuelve para mostrarlo en su propia tarjeta y
+// para el colchón: `patrimonio` = lo que hay a mano + lo apartado.
+// Un RETIRO del ahorro (`totalRetiroAhorro`) devuelve plata al bolsillo del día a
+// día: suma a `disponible` y a `saldoFinal`, pero NO a `totalIngresos` (no es
+// plata nueva; si contara como ingreso, los porcentajes del mes y la comparación
+// contra el mes anterior se romperían — el mes siguiente diría "tus ingresos
+// bajaron 80%"). Tampoco toca `libreParaGastar`: eso mide lo que el mes generó
+// por sí solo, y sacar del ahorro no es generar.
+const componerFinanzasMes = (resumen, saldoInicial, ahorroAcumulado = 0) => {
+  const { totalIngresos, totalEgresos, totalRetiroAhorro = 0, desglose } = resumen;
   const totalAhorro = calcularAhorro(desglose);
   const totalGastos = totalEgresos - totalAhorro; // egresos SIN ahorro (gasto de consumo)
-  const disponible = saldoInicial + totalIngresos;
-  const saldoFinal = disponible - totalGastos - totalAhorro; // = saldoInicial + ingresos - egresos
+  const disponible = saldoInicial + totalIngresos + totalRetiroAhorro;
+  const saldoFinal = disponible - totalGastos - totalAhorro;
+  const balanceMes = totalIngresos - totalEgresos; // flujo propio del mes, sin retiros
+  const ahorroNetoMes = totalAhorro - totalRetiroAhorro;
+  const pct = (parte) => (totalIngresos > 0 ? redondear1((parte / totalIngresos) * 100) : 0);
 
   return {
     saldoInicial,   // dinero traído del mes anterior (NO es ingreso)
-    totalIngresos,  // ingresos propios del mes (sin saldo inicial)
-    disponible,     // saldoInicial + ingresos
+    totalIngresos,  // ingresos propios del mes (sin saldo inicial, sin retiros)
+    totalRetiroAhorro, // sacado del ahorro este mes
+    disponible,     // saldoInicial + ingresos + retiros
     totalGastos,    // egresos sin ahorro
-    totalAhorro,    // suma de categorías de ahorro
+    totalAhorro,    // ahorro apartado ESTE mes (BRUTO)
+    ahorroNetoMes,  // totalAhorro − totalRetiroAhorro (puede ser negativo)
     totalEgresos,   // gastos + ahorro (compat con lo anterior)
-    saldoFinal,     // saldo con el que se cierra el mes
+    saldoFinal,     // saldo con el que se cierra el mes (plata a mano)
     balance: saldoFinal, // el "Balance del mes" ahora usa el saldo inicial
-    libreParaGastar: saldoFinal - saldoInicial, // "Puedo gastar hasta": techo sin tocar el saldo inicial
+    balanceMes,     // ingresos − egresos: lo que el mes generó por sí solo
+    variacionSaldo: balanceMes + totalRetiroAhorro, // saldoFinal − saldoInicial
+    // "Puedo gastar hasta": techo sin tocar lo que se traía NI el ahorro.
+    libreParaGastar: balanceMes,
+    ahorroAcumulado, // TOTAL apartado hasta hoy, ya NETO (con el saldo de apertura)
+    patrimonio: saldoFinal + ahorroAcumulado, // a mano + apartado
+    tasaAhorro: pct(ahorroNetoMes),      // sobre el ahorro NETO (la que vale)
+    tasaAhorroBruta: pct(totalAhorro),   // sobre lo apartado, para el hábito
     desglose,
   };
 };
@@ -408,11 +832,28 @@ export const getResumenMensual = async (req, res) => {
       });
     }
 
-    const [resumen, saldoInicial] = await Promise.all([
-      calcularResumenMes(req.user.id, mes, anio),
-      calcularSaldoInicial(req.user.id, mes, anio),
+    // Snapshots al día (solo la 1ª vez por proceso; después no hace nada).
+    await asegurarSnapshots(req.user.id);
+
+    const [snap, acum] = await Promise.all([
+      leerResumenMes(req.user.id, mes, anio),
+      calcularAcumulados(req.user.id, mes, anio),
     ]);
-    res.status(200).json({ mes, anio, ...componerFinanzasMes(resumen, saldoInicial) });
+
+    res.status(200).json({
+      mes,
+      anio,
+      ...componerFinanzasMes(comoResumen(snap), acum.saldoInicial, acum.ahorroAcumulado),
+      apertura: acum.apertura
+        ? {
+            montoDisponible: acum.apertura.montoDisponible || 0,
+            montoAhorro: acum.apertura.montoAhorro || 0,
+            mesCorte: acum.apertura.mesCorte,
+            anioCorte: acum.apertura.anioCorte,
+            vigente: aperturaVigente(acum.apertura, anio, mes),
+          }
+        : null,
+    });
   } catch (error) {
     console.error('❌ Error al generar el resumen personal:', error);
     res.status(500).json({ message: 'Error al generar el resumen', error: error.message });
@@ -465,6 +906,10 @@ const PRIORIDAD_NIVEL = { critico: 0, advertencia: 1, consejo: 2, bien: 3, info:
 // todos los avisos posibles, se ordenan por urgencia y se muestran los primeros.
 const MAX_RECOMENDACIONES = 4;
 
+// El reporte anual se abre a propósito (no es la pantalla de todos los días), así
+// que aguanta un par de mensajes más que la vista del mes.
+const MAX_RECOMENDACIONES_ANUALES = 6;
+
 // Cambios de al menos ₡5.000 en una categoría: menos que eso es ruido.
 const UMBRAL_CAMBIO = 5000;
 
@@ -481,26 +926,29 @@ const UMBRAL_CAMBIO = 5000;
 // Cada mensaje trae `nivel` (para que el frontend lo pinte), `icono` y `mensaje`.
 //   niveles: 'critico' | 'advertencia' | 'bien' | 'consejo' | 'info'
 // ============================================
-const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoPromedio = null, mes, anio }) => {
+const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcumulado = 0, gastoPromedio = null, mes, anio }) => {
   const recs = [];
   const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
 
   // --- Números del mes actual (el ahorro se separa: es dinero apartado, no gasto)
-  const fin = componerFinanzasMes(actual, saldoInicial);
+  const fin = componerFinanzasMes(actual, saldoInicial, ahorroAcumulado);
   const { totalIngresos, totalGastos, totalAhorro, totalEgresos, saldoFinal } = fin;
+  const totalRetiroAhorro = fin.totalRetiroAhorro;
+  const ahorroNetoMes = fin.ahorroNetoMes; // apartado − retirado
   const filasAhorro = actual.desglose.egreso.filter((e) => esAhorro(e.categoria));
   const filasGasto = actual.desglose.egreso.filter((e) => !esAhorro(e.categoria));
 
   // --- Números del mes anterior (para comparar)
   const filasGastoPrevio = (previo.desglose?.egreso || []).filter((e) => !esAhorro(e.categoria));
-  const ahorroPrevio = calcularAhorro(previo.desglose || { egreso: [] });
-  const gastoPrevio = previo.totalEgresos - ahorroPrevio;
+  const ahorroBrutoPrevio = calcularAhorro(previo.desglose || { egreso: [] });
+  const ahorroPrevio = ahorroBrutoPrevio - (previo.totalRetiroAhorro || 0); // neto, para comparar peras con peras
+  const gastoPrevio = previo.totalEgresos - ahorroBrutoPrevio;
   const ingresoPrevio = previo.totalIngresos;
   const hayMesPrevio = ingresoPrevio > 0 || previo.totalEgresos > 0;
   const nombrePrevio = NOMBRES_MES[(mes === 1 ? 12 : mes - 1) - 1];
 
   // Sin movimientos: no hay nada que analizar todavía.
-  if (totalIngresos === 0 && totalEgresos === 0) {
+  if (totalIngresos === 0 && totalEgresos === 0 && totalRetiroAhorro === 0) {
     add('info', '📝', 'Todavía no registraste movimientos este mes. Anotá tus ingresos y gastos para ver los avisos.');
     return recs;
   }
@@ -515,11 +963,12 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoProme
     add('critico', '🕳️', `Arrancaste el mes debiendo ${fmtCRC(Math.abs(saldoInicial))}: venís arrastrando un hueco de meses anteriores. Mientras el saldo final no quede positivo, cada mes nuevo empieza en contra.`);
   }
 
-  // --- 1) ¿El mes se pagó solo o se financió con el saldo acumulado?
-  // `flujo` es lo que entró menos TODO lo que salió (gastos + ahorro), sin
-  // contar el saldo inicial: mide si el mes se sostuvo por sí mismo. Es el
-  // mismo número que la tarjeta "Puedo gastar hasta" (fin.libreParaGastar),
-  // así que se toma de ahí para que el aviso y la tarjeta nunca se contradigan.
+  // --- 1) ¿El mes se pagó solo o se financió con plata de antes?
+  // `flujo` es lo que entró menos TODO lo que salió (gastos + ahorro), sin contar
+  // el saldo inicial ni los retiros del ahorro: mide si el mes se sostuvo por sí
+  // mismo. Es el mismo número que la tarjeta "Puedo gastar hasta"
+  // (fin.libreParaGastar), así que se toma de ahí para que el aviso y la tarjeta
+  // nunca se contradigan.
   const flujo = fin.libreParaGastar;
   if (totalIngresos === 0 && totalGastos > 0) {
     add('advertencia', '❓', `Registraste ${fmtCRC(totalGastos)} en gastos y ningún ingreso este mes. Si te falta anotar el salario, todos los porcentajes de abajo van a salir mal.`);
@@ -528,15 +977,39 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoProme
     // sobregiro de gasto: si se apartó ahorro hay que sumarlo o el monto no
     // cuadra con la tarjeta "Puedo gastar hasta".
     const sobregiro = totalGastos - totalIngresos;
-    add('critico', '🚨', totalAhorro > 0
-      ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y encima apartaste ${fmtCRC(totalAhorro)} de ahorro. En total le sacaste ${fmtCRC(Math.abs(flujo))} al saldo de meses anteriores, no lo tapaste con dinero nuevo.`
-      : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Ese hueco lo estás tapando con el saldo de meses anteriores, no con dinero nuevo.`);
+    if (totalRetiroAhorro > 0) {
+      // El hueco NO se tapó con el saldo viejo: se tapó sacando del ahorro (del
+      // todo o en parte). Decir otra cosa sería falso.
+      const resto = sobregiro - totalRetiroAhorro;
+      add('critico', '🚨', resto > 0
+        ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro para cubrirlo y los otros ${fmtCRC(resto)} salieron del saldo que traías.`
+        : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y lo tapaste sacando ${fmtCRC(totalRetiroAhorro)} del ahorro. Tu acumulado bajó a ${fmtCRC(ahorroAcumulado)}: el mes se financió con plata vieja, no con dinero nuevo.`);
+    } else {
+      add('critico', '🚨', totalAhorro > 0
+        ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y encima apartaste ${fmtCRC(totalAhorro)} de ahorro. En total le sacaste ${fmtCRC(Math.abs(flujo))} al saldo de meses anteriores, no lo tapaste con dinero nuevo.`
+        : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Ese hueco lo estás tapando con el saldo de meses anteriores, no con dinero nuevo.`);
+    }
   } else if (flujo < 0) {
     add('advertencia', '🏦', `Para apartar ${fmtCRC(totalAhorro)} de ahorro tuviste que sacar ${fmtCRC(Math.abs(flujo))} del saldo acumulado. Así el ahorro solo cambia de bolsillo: lo sano es que salga de lo que entra en el mes.`);
   } else if (totalIngresos > 0 && flujo < totalIngresos * 0.05) {
     add('advertencia', '😬', `${mesAMedias ? 'Vas al filo' : 'Cerraste al filo'}: de los ${fmtCRC(totalIngresos)} que entraron ${mesAMedias ? 'solo quedan' : 'solo sobraron'} ${fmtCRC(flujo)} libres después de gastos y ahorro. Un imprevisto te deja en rojo.`);
   } else if (flujo > 0) {
     add('bien', '✅', `${mesAMedias ? 'Por ahora el mes va sano' : 'Mes sano'}: lo que entró alcanzó para los gastos y el ahorro, y ${mesAMedias ? 'quedan' : 'todavía sobraron'} ${fmtCRC(flujo)} libres. Tu saldo pasó de ${fmtCRC(saldoInicial)} a ${fmtCRC(saldoFinal)}.`);
+  }
+
+  // --- 1b) Retiro del ahorro sin que el mes lo necesitara para cubrirse.
+  // (Si hubo sobregiro, el aviso 🚨 de arriba ya contó esa historia.)
+  if (totalRetiroAhorro > 0 && totalGastos <= totalIngresos) {
+    if (totalIngresos === 0 && totalGastos === 0) {
+      // El retiro es lo único que hay en el mes: no se puede opinar del flujo.
+      add('info', '🏧', `Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro; el acumulado quedó en ${fmtCRC(ahorroAcumulado)}. Todavía no registraste los ingresos ni los gastos de este mes.`);
+    } else if (ahorroNetoMes < 0) {
+      add('advertencia', '🏧', `Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro y apartaste ${fmtCRC(totalAhorro)}: en neto tu ahorro bajó ${fmtCRC(Math.abs(ahorroNetoMes))} este mes y quedó en ${fmtCRC(ahorroAcumulado)}. El mes daba para cubrirse solo, así que vale revisar si ese retiro era necesario.`);
+    } else if (ahorroNetoMes > 0) {
+      add('info', '🏧', `Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro, pero apartaste ${fmtCRC(totalAhorro)}: igual quedó ${fmtCRC(ahorroNetoMes)} arriba y el acumulado cerró en ${fmtCRC(ahorroAcumulado)}.`);
+    } else {
+      add('info', '🏧', `Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro este mes; el acumulado quedó en ${fmtCRC(ahorroAcumulado)}. Como el mes cerró en positivo, podés reponerlo sin apretarte.`);
+    }
   }
 
   // --- 2) Proyección de cierre (solo si el mes va a medias y ya hay días suficientes)
@@ -670,9 +1143,12 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoProme
     add(pct >= 20 ? 'advertencia' : 'info', '🚗', `Batán te costó ${fmtCRC(totalBatan)} este mes (${listarFilas(filasBatan)}), el ${pct}% de tus gastos.${comparacion}`);
   }
 
-  // --- 10) Ahorro: lo que interesa es la TASA y cómo se mueve, no el monto
-  if (totalIngresos > 0) {
-    const tasa = Math.round((totalAhorro / totalIngresos) * 100);
+  // --- 10) Ahorro: lo que interesa es la TASA y cómo se mueve, no el monto.
+  // La tasa va sobre el ahorro NETO (apartado − retirado): apartar ₡100.000 y
+  // sacar ₡300.000 el mismo mes no es "ahorré 12%". Si hubo retiro, el aviso 🏧
+  // ya contó esa historia con los dos números, así que este no se repite.
+  if (totalIngresos > 0 && totalRetiroAhorro === 0) {
+    const tasa = Math.round((ahorroNetoMes / totalIngresos) * 100);
     const tasaPrevia = ingresoPrevio > 0 ? Math.round((ahorroPrevio / ingresoPrevio) * 100) : null;
     const meta = Math.round(totalIngresos * 0.1);
 
@@ -689,21 +1165,33 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, gastoProme
     }
   }
 
-  // --- 11) ¿Cuánto aguanta el saldo disponible sin ingresos? (fondo de emergencia)
-  // Usa el gasto promedio de los meses anteriores; si no hay historial, el de
-  // este mes. El ahorro apartado NO cuenta acá: esto es el dinero a mano.
+  // --- 11) ¿Cuánto aguanta el dinero sin ingresos? (fondo de emergencia)
+  // El colchón real son las DOS cosas: la plata a mano (saldoFinal) MÁS el
+  // ahorro acumulado de todos los meses y del saldo de apertura. Se nombran por
+  // separado para que se entienda qué parte hay que tocar si algo pasa: usar el
+  // ahorro no es lo mismo que gastar lo que quedó del mes.
+  // Referencia de gasto: el promedio de los meses anteriores; si no hay
+  // historial, el de este mes.
   const gastoReferencia = gastoPromedio || totalGastos;
   if (gastoReferencia > 0) {
-    const mesesCubiertos = saldoFinal / gastoReferencia;
+    const colchon = saldoFinal + ahorroAcumulado; // = fin.patrimonio
+    const mesesCubiertos = colchon / gastoReferencia;
     const metaColchon = gastoReferencia * 3;
-    if (saldoFinal <= 0) {
-      add('critico', '🛟', `Te quedás sin saldo disponible (${fmtCRC(saldoFinal)}). Cualquier imprevisto entra directo como deuda; lo primero es reconstruir un colchón, aunque sea de un mes de gastos (${fmtCRC(gastoReferencia)}).`);
+    // "₡120.000 a mano + ₡945.000 ahorrados" (el desglose solo si hay ahorro).
+    const detalle = ahorroAcumulado > 0
+      ? `${fmtCRC(saldoFinal)} a mano + ${fmtCRC(ahorroAcumulado)} ahorrados`
+      : `${fmtCRC(saldoFinal)} a mano`;
+
+    if (colchon <= 0) {
+      add('critico', '🛟', `No tenés colchón: entre lo que quedó a mano y lo ahorrado no hay nada (${fmtCRC(colchon)}). Cualquier imprevisto entra directo como deuda; la primera meta es juntar un mes de gastos (${fmtCRC(gastoReferencia)}).`);
+    } else if (saldoFinal <= 0) {
+      add('advertencia', '🛟', `Te quedás sin plata a mano (${fmtCRC(saldoFinal)}): tu colchón son los ${fmtCRC(ahorroAcumulado)} que tenés ahorrados, y alcanzan para ${mesesCubiertos.toFixed(1).replace('.', ',')} meses de gastos. Cualquier imprevisto ahora se paga rompiendo el ahorro.`);
     } else if (mesesCubiertos < 1) {
-      add('advertencia', '🛟', `Tu saldo disponible (${fmtCRC(saldoFinal)}, sin contar el ahorro apartado) cubre ${Math.round(mesesCubiertos * 30)} días de gastos. La meta es 3 meses: ${fmtCRC(metaColchon)}.`);
+      add('advertencia', '🛟', `Tu colchón (${detalle}) cubre ${Math.round(mesesCubiertos * 30)} días de gastos. La meta son 3 meses: ${fmtCRC(metaColchon)}.`);
     } else if (mesesCubiertos < 3) {
-      add('consejo', '🛟', `Con ${fmtCRC(saldoFinal)} disponibles aguantarías ${mesesCubiertos.toFixed(1).replace('.', ',')} meses sin ingresos (gastás ~${fmtCRC(gastoReferencia)} al mes). Te faltan ${fmtCRC(metaColchon - saldoFinal)} para el colchón de 3 meses.`);
+      add('consejo', '🛟', `Con ${detalle} aguantarías ${mesesCubiertos.toFixed(1).replace('.', ',')} meses sin ingresos (gastás ~${fmtCRC(gastoReferencia)} al mes). Te faltan ${fmtCRC(metaColchon - colchon)} para el colchón de 3 meses.`);
     } else {
-      add('bien', '🛟', `Tu saldo disponible (${fmtCRC(saldoFinal)}) cubre ${Math.floor(mesesCubiertos)} meses de gastos. Eso ya es un fondo de emergencia de verdad.`);
+      add('bien', '🛟', `Tu colchón (${detalle}) cubre ${Math.floor(mesesCubiertos)} meses de gastos. Eso ya es un fondo de emergencia de verdad.`);
     }
   }
 
@@ -735,18 +1223,33 @@ export const getRecomendaciones = async (req, res) => {
     const mesPrevio = mes === 1 ? 12 : mes - 1;
     const anioPrevio = mes === 1 ? anio - 1 : anio;
 
-    const [actual, previo, saldoInicial, gastoPromedio] = await Promise.all([
-      calcularResumenMes(req.user.id, mes, anio),
-      calcularResumenMes(req.user.id, mesPrevio, anioPrevio),
-      calcularSaldoInicial(req.user.id, mes, anio),
+    await asegurarSnapshots(req.user.id);
+
+    // Todo sale de snapshots ya sumados: no se recorren los movimientos.
+    const [snapActual, snapPrevio, acum, gastoPromedio] = await Promise.all([
+      leerResumenMes(req.user.id, mes, anio),
+      leerResumenMes(req.user.id, mesPrevio, anioPrevio),
+      calcularAcumulados(req.user.id, mes, anio),
       calcularGastoPromedioMensual(req.user.id, mes, anio),
     ]);
+
+    const actual = comoResumen(snapActual);
+    const previo = comoResumen(snapPrevio);
+    const { saldoInicial, ahorroAcumulado } = acum;
 
     res.status(200).json({
       mes,
       anio,
-      resumen: componerFinanzasMes(actual, saldoInicial),
-      recomendaciones: construirRecomendaciones({ actual, previo, saldoInicial, gastoPromedio, mes, anio }),
+      resumen: componerFinanzasMes(actual, saldoInicial, ahorroAcumulado),
+      recomendaciones: construirRecomendaciones({
+        actual,
+        previo,
+        saldoInicial,
+        ahorroAcumulado,
+        gastoPromedio,
+        mes,
+        anio,
+      }),
     });
   } catch (error) {
     console.error('❌ Error al generar recomendaciones:', error);
@@ -756,20 +1259,663 @@ export const getRecomendaciones = async (req, res) => {
 
 // ============================================
 // GET /api/finanzas-personales/anios-disponibles
-// Años en los que el usuario tiene movimientos (para el selector del frontend).
+// Años con datos (para el selector del frontend y el botón del reporte anual).
+// Sale de los snapshots mensuales (no de los movimientos) y siempre incluye el
+// año actual, aunque todavía no se haya registrado nada.
 // ============================================
 export const getAniosDisponibles = async (req, res) => {
   try {
-    const anios = await MovimientoPersonal.aggregate([
-      { $match: { usuario: new mongoose.Types.ObjectId(req.user.id) } },
-      { $group: { _id: { $year: '$fecha' } } },
-      { $sort: { _id: -1 } },
+    await asegurarSnapshots(req.user.id);
+
+    const [conSnapshot, apertura] = await Promise.all([
+      ResumenPersonalMes.distinct('anio', { usuario: req.user.id }),
+      leerApertura(req.user.id),
     ]);
 
-    res.status(200).json({ anios: anios.map((a) => a._id) });
+    const anios = new Set(conSnapshot);
+    anios.add(anioActualCR());
+    // El año del que arranca la apertura también se puede consultar.
+    if (apertura) anios.add(apertura.anioCorte);
+
+    res.status(200).json({ anios: [...anios].sort((a, b) => b - a) });
   } catch (error) {
     console.error('❌ Error al obtener años disponibles:', error);
     res.status(500).json({ message: 'Error al obtener los años', error: error.message });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════
+// SALDO DE APERTURA — lo que se traía de antes de usar el módulo
+// ════════════════════════════════════════════════════════════════════
+
+// ============================================
+// GET /api/finanzas-personales/apertura
+// Devuelve el saldo de apertura del usuario (o null si nunca lo registró).
+// ============================================
+export const getApertura = async (req, res) => {
+  try {
+    const apertura = await leerApertura(req.user.id);
+    if (!apertura) {
+      return res.status(200).json({ data: null });
+    }
+    res.status(200).json({
+      data: {
+        ...apertura,
+        montoTotal: (apertura.montoDisponible || 0) + (apertura.montoAhorro || 0),
+        nombreMesCorte: NOMBRES_MES_PERSONAL[apertura.mesCorte],
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error al obtener el saldo de apertura:', error);
+    res.status(500).json({ message: 'Error al obtener el saldo de apertura', error: error.message });
+  }
+};
+
+// ============================================
+// PUT /api/finanzas-personales/apertura
+// Crea o actualiza el saldo de apertura (uno solo por usuario: se edita, no se
+// acumula). Body: { montoDisponible?, montoAhorro?, mes, anio, descripcion? }
+//
+//   • montoAhorro     → plata YA APARTADA de meses anteriores. Va al Ahorro
+//                       Acumulado y NO al saldo disponible (es dinero apartado,
+//                       igual que la categoría Ahorro de cualquier mes).
+//   • montoDisponible → plata A MANO al empezar. Suma al Saldo Inicial.
+//   • mes/anio        → desde qué mes aplica (el primer mes que se lleva acá).
+//
+// Al menos uno de los dos montos debe ser > 0. NO crea ningún movimiento: no
+// toca los ingresos ni los gastos de ningún mes, así que los mensajes
+// inteligentes y las comparaciones mes contra mes quedan intactos.
+// ============================================
+export const guardarApertura = async (req, res) => {
+  try {
+    const mes = parseInt(req.body.mes);
+    const anio = parseInt(req.body.anio);
+    if (!mes || !anio || mes < 1 || mes > 12 || anio < 2000 || anio > 2100) {
+      return res.status(400).json({
+        message: 'mes (1-12) y anio son obligatorios: es el mes desde el que aplica el saldo de apertura',
+      });
+    }
+
+    // No tiene sentido declarar un saldo de apertura a futuro.
+    const cr = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Costa_Rica' }));
+    if (ordinalMes(anio, mes) > ordinalMes(cr.getFullYear(), cr.getMonth() + 1)) {
+      return res.status(400).json({ message: 'El mes de corte no puede ser futuro' });
+    }
+
+    const leerMonto = (valor, nombre) => {
+      if (valor === undefined || valor === null || valor === '') return { monto: 0 };
+      const n = Number(valor);
+      if (isNaN(n) || n < 0) return { error: `${nombre} debe ser un número de 0 o más` };
+      return { monto: Math.round(n) };
+    };
+
+    const disp = leerMonto(req.body.montoDisponible, 'montoDisponible');
+    if (disp.error) return res.status(400).json({ message: disp.error });
+    const ahor = leerMonto(req.body.montoAhorro, 'montoAhorro');
+    if (ahor.error) return res.status(400).json({ message: ahor.error });
+
+    if (disp.monto === 0 && ahor.monto === 0) {
+      return res.status(400).json({
+        message: 'Indicá al menos un monto: montoAhorro (lo que ya tenías apartado) o montoDisponible (lo que tenías a mano)',
+      });
+    }
+
+    // Bajar el ahorro de la apertura (o mover el mes de corte hacia adelante)
+    // puede dejar en negativo un retiro que ya usaba esa plata.
+    await asegurarSnapshots(req.user.id);
+    const problema = await validarAhorroNoNegativo(req.user.id, [], {
+      montoAhorro: ahor.monto,
+      mesCorte: mes,
+      anioCorte: anio,
+    });
+    if (problema) {
+      const donde = `${NOMBRES_MES[problema.mes - 1]} ${problema.anio}`;
+      // El ahorro de la apertura solo cuenta desde el mes de corte, así que solo
+      // se puede dar un mínimo exacto si el mes que falla es el de corte o posterior.
+      const aplicaMinimo = ordinalMes(problema.anio, problema.mes) >= ordinalMes(anio, mes);
+      const minimo = ahor.monto + problema.exceso;
+      return res.status(400).json({
+        message: aplicaMinimo
+          ? `El ahorro de la apertura no puede bajar de ${fmtCRC(minimo)}: ya hay retiros que usaban esa plata y el acumulado quedaría en negativo en ${donde}.`
+          : `Con ese mes de corte el ahorro acumulado quedaría en negativo en ${donde}: hay retiros anteriores al corte que no tendrían de dónde salir.`,
+        ...(aplicaMinimo && { minimo }),
+        acumulado: problema.disponible,
+      });
+    }
+
+    // Último instante ANTES del mes de corte (día 1 a medianoche CR, menos 1 ms).
+    const fechaCorte = new Date(Date.UTC(anio, mes - 1, 1, 6, 0, 0, 0) - 1);
+
+    const apertura = await AperturaPersonal.findOneAndUpdate(
+      { usuario: req.user.id },
+      {
+        $set: {
+          usuario: req.user.id,
+          montoDisponible: disp.monto,
+          montoAhorro: ahor.monto,
+          mesCorte: mes,
+          anioCorte: anio,
+          fechaCorte,
+          descripcion: req.body.descripcion?.trim() || null,
+        },
+      },
+      { upsert: true, new: true, runValidators: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(200).json({
+      message: `Saldo de apertura guardado (vigente desde ${NOMBRES_MES_PERSONAL[mes]} ${anio})`,
+      data: apertura,
+    });
+  } catch (error) {
+    console.error('❌ Error al guardar el saldo de apertura:', error);
+    res.status(500).json({ message: 'Error al guardar el saldo de apertura', error: error.message });
+  }
+};
+
+// ============================================
+// DELETE /api/finanzas-personales/apertura — Borra el saldo de apertura.
+// No borra ningún movimiento (la apertura nunca fue uno).
+// ============================================
+export const deleteApertura = async (req, res) => {
+  try {
+    const existe = await leerApertura(req.user.id);
+    if (!existe) {
+      return res.status(404).json({ message: 'No tenías un saldo de apertura registrado' });
+    }
+
+    // Si hay retiros que usaban el ahorro de la apertura, borrarla lo dejaría negativo.
+    if (existe.montoAhorro > 0) {
+      await asegurarSnapshots(req.user.id);
+      const problema = await validarAhorroNoNegativo(req.user.id, [], null);
+      if (problema) {
+        return res.status(400).json({
+          message: `No se puede borrar el saldo de apertura: ya retiraste parte de ese ahorro. ${problema.mensaje}`,
+          disponible: problema.disponible,
+        });
+      }
+    }
+
+    const borrada = await AperturaPersonal.findOneAndDelete({ usuario: req.user.id });
+    if (!borrada) {
+      return res.status(404).json({ message: 'No tenías un saldo de apertura registrado' });
+    }
+    res.status(200).json({ message: 'Saldo de apertura eliminado' });
+  } catch (error) {
+    console.error('❌ Error al eliminar el saldo de apertura:', error);
+    res.status(500).json({ message: 'Error al eliminar el saldo de apertura', error: error.message });
+  }
+};
+
+// ════════════════════════════════════════════════════════════════════
+// REPORTE ANUAL
+// ════════════════════════════════════════════════════════════════════
+
+// Une los desgloses por categoría de varios meses en uno solo del año.
+// Devuelve filas { categoria, total, cantidad, porcentaje } de mayor a menor.
+const unirDesglose = (filasPorMes) => {
+  const mapa = new Map();
+  for (const fila of filasPorMes) {
+    const acc = mapa.get(fila.categoria) || { categoria: fila.categoria, total: 0, cantidad: 0 };
+    acc.total += fila.total || 0;
+    acc.cantidad += fila.cantidad || 0;
+    mapa.set(fila.categoria, acc);
+  }
+  const filas = [...mapa.values()].sort((a, b) => b.total - a.total);
+  const total = filas.reduce((s, f) => s + f.total, 0);
+  return filas.map((f) => ({
+    ...f,
+    porcentaje: total > 0 ? Math.round((f.total / total) * 1000) / 10 : 0,
+  }));
+};
+
+// ============================================
+// Mensajes inteligentes del AÑO. Misma idea que los del mes, pero mirando el año
+// completo: si el saldo creció o se achicó, cuántos meses cerraron en rojo, qué
+// categoría se llevó la plata, cómo viene contra el año pasado y si el colchón
+// alcanza. No repiten los números que ya se ven en las tarjetas.
+// ============================================
+const construirRecomendacionesAnuales = ({
+  anio,
+  totales,
+  saldoInicialAnio,
+  saldoFinalAnio,
+  ahorroFinalAnio,
+  meses,
+  desgloseGasto,
+  comparativo,
+  enCurso,
+  mesesConMovimiento,
+}) => {
+  const recs = [];
+  const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
+
+  if (mesesConMovimiento === 0) {
+    add('info', '📝', `No hay movimientos registrados en ${anio}. Registrá tus ingresos y gastos para ver el reporte del año.`);
+    return recs;
+  }
+
+  const { totalIngresos, totalGastos, totalAhorro } = totales;
+  const totalRetiroAhorro = totales.totalRetiroAhorro || 0;
+  const ahorroNeto = totales.ahorroNeto ?? totalAhorro;
+  const conMov = meses.filter((m) => m.movimientos > 0);
+  const promedioGasto = Math.round(totalGastos / mesesConMovimiento);
+
+  // --- 1) Resultado del año: ¿el saldo creció o se achicó?
+  const difSaldo = saldoFinalAnio - saldoInicialAnio;
+  const enRojo = conMov.filter((m) => m.balanceMes < 0);
+  // Con retiros de por medio, hablar del ahorro apartado (bruto) engañaría: lo
+  // que importa es cuánto subió o bajó el ahorro en el año.
+  const frasAhorro = totalRetiroAhorro > 0
+    ? `tu ahorro ${ahorroNeto >= 0 ? `subió ${fmtCRC(ahorroNeto)}` : `bajó ${fmtCRC(Math.abs(ahorroNeto))}`} en neto (apartaste ${fmtCRC(totalAhorro)} y sacaste ${fmtCRC(totalRetiroAhorro)})`
+    : `apartaste ${fmtCRC(totalAhorro)} de ahorro`;
+
+  if (difSaldo > 0) {
+    add('bien', '📅', `${enCurso ? `${anio} va bien` : `Cerraste ${anio} mejor de lo que lo arrancaste`}: tu saldo pasó de ${fmtCRC(saldoInicialAnio)} a ${fmtCRC(saldoFinalAnio)} (${fmtCRC(difSaldo)} más), y ${frasAhorro}.`);
+  } else if (difSaldo < 0) {
+    add('advertencia', '📅', `En ${anio} tu saldo bajó ${fmtCRC(Math.abs(difSaldo))} (de ${fmtCRC(saldoInicialAnio)} a ${fmtCRC(saldoFinalAnio)}): en el año salió más de lo que entró. Si el ahorro (${fmtCRC(totalAhorro)}) explica la baja, es plata que cambió de bolsillo; si no, se consumió el colchón.`);
+  }
+
+  // --- 1b) Retiros del ahorro en el año
+  if (totalRetiroAhorro > 0) {
+    const mesesConRetiro = conMov.filter((m) => (m.totalRetiroAhorro || 0) > 0);
+    const cuales = mesesConRetiro.map((m) => m.nombreMes).join(', ');
+    add(ahorroNeto < 0 ? 'advertencia' : 'info', '🏧', ahorroNeto < 0
+      ? `En ${anio} sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro (${cuales}) y apartaste ${fmtCRC(totalAhorro)}: en el año tu ahorro bajó ${fmtCRC(Math.abs(ahorroNeto))}. Cerrás con ${fmtCRC(ahorroFinalAnio)} acumulados.`
+      : `En ${anio} sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro (${cuales}), pero apartaste ${fmtCRC(totalAhorro)}: igual terminás ${fmtCRC(ahorroNeto)} arriba, con ${fmtCRC(ahorroFinalAnio)} acumulados.`);
+  }
+
+  // --- 2) Meses en rojo: el patrón que no se ve en el total del año
+  if (enRojo.length > 0) {
+    const cuales = enRojo.map((m) => m.nombreMes).join(', ');
+    const peor = enRojo.reduce((a, b) => (a.balanceMes <= b.balanceMes ? a : b));
+    add(enRojo.length >= 3 ? 'critico' : 'advertencia', '🚨', `${enRojo.length} de ${mesesConMovimiento} ${enRojo.length === 1 ? 'mes cerró' : 'meses cerraron'} gastando más de lo que entró (${cuales}). El peor fue ${peor.nombreMes} con ${fmtCRC(peor.balanceMes)}. Esos son los meses que hay que mirar para que no se repitan.`);
+  }
+
+  // --- 3) Tasa de ahorro del año, sobre el ahorro NETO (apartado − retirado):
+  // si se sacó casi todo lo que se apartó, la tasa bruta contaría un cuento.
+  if (totalIngresos > 0) {
+    const tasa = Math.round((ahorroNeto / totalIngresos) * 100);
+    const meta = Math.round(totalIngresos * 0.1);
+    if (ahorroNeto <= 0) {
+      add('consejo', '💰', totalAhorro > 0
+        ? `En ${anio} el ahorro no creció: apartaste ${fmtCRC(totalAhorro)} pero sacaste ${fmtCRC(totalRetiroAhorro)}. Con el 10% de lo que entró habrías juntado ${fmtCRC(meta)}.`
+        : `En ${anio} no apartaste nada de ahorro sobre ${fmtCRC(totalIngresos)} de ingresos. Con el 10% habrías juntado ${fmtCRC(meta)}.`);
+    } else if (tasa < 10) {
+      add('consejo', '💰', `Tu ahorro creció ${fmtCRC(ahorroNeto)} en el año: el ${tasa}% de lo que entró. Para llegar al 10% te faltaron ${fmtCRC(meta - ahorroNeto)}. Sale más fácil apartando ${fmtCRC(Math.round(meta / 12))} por mes que de golpe.`);
+    } else {
+      add('bien', '💰', `Tu ahorro creció ${fmtCRC(ahorroNeto)} en ${anio}, el ${tasa}% de tus ingresos${enCurso ? ' hasta ahora' : ''}. Con ese ritmo son ${fmtCRC(Math.round((ahorroNeto / mesesConMovimiento) * 12))} por año.`);
+    }
+  }
+
+  // --- 4) La categoría que se llevó el año
+  if (desgloseGasto.length > 0 && totalGastos > 0) {
+    const top = desgloseGasto[0];
+    const porMes = Math.round(top.total / mesesConMovimiento);
+    add(top.porcentaje >= 30 ? 'advertencia' : 'info', '🎯', `Lo que más te costó en ${anio}: ${top.categoria}, ${fmtCRC(top.total)} (${top.porcentaje}% de todos tus gastos, ~${fmtCRC(porMes)} por mes). Recortar un 10% ahí son ${fmtCRC(Math.round(top.total * 0.1))} al año.`);
+  }
+
+  // --- 5) Gastos fijos del año (la parte que no se puede mover)
+  const totalFijos = desgloseGasto
+    .filter((f) => CATEGORIAS_FIJAS.includes(f.categoria))
+    .reduce((s, f) => s + f.total, 0);
+  if (totalFijos > 0 && totalIngresos > 0) {
+    const pct = Math.round((totalFijos / totalIngresos) * 100);
+    if (pct >= 35) {
+      add(pct >= 50 ? 'advertencia' : 'info', '🧱', `Los gastos fijos del año (alquiler, servicios, internet, seguros, cuota del banco, suscripciones) fueron ${fmtCRC(totalFijos)}: el ${pct}% de todo lo que entró. Es la parte que sigue llegando aunque los ingresos bajen.`);
+    }
+  }
+
+  // --- 6) Deudas del año
+  const totalDeuda = desgloseGasto
+    .filter((f) => CATEGORIAS_DEUDA.includes(f.categoria))
+    .reduce((s, f) => s + f.total, 0);
+  if (totalDeuda > 0 && totalIngresos > 0) {
+    const pct = Math.round((totalDeuda / totalIngresos) * 100);
+    if (pct >= 15) {
+      add(pct >= 30 ? 'critico' : 'advertencia', '💳', `En ${anio} pagaste ${fmtCRC(totalDeuda)} en deudas: el ${pct}% de tus ingresos del año (~${fmtCRC(Math.round(totalDeuda / mesesConMovimiento))} por mes). Arriba del 30% del ingreso es zona de riesgo.`);
+    }
+  }
+
+  // --- 7) Comparación con el año anterior
+  if (comparativo) {
+    const partes = [];
+    const linea = (etiqueta, ahora, antes) => {
+      if (antes <= 0) return;
+      const dif = ahora - antes;
+      const pct = Math.round((Math.abs(dif) / antes) * 100);
+      if (pct < 5) return;
+      partes.push(`${etiqueta} ${dif > 0 ? 'subieron' : 'bajaron'} ${pct}%`);
+    };
+    linea('los ingresos', totalIngresos, comparativo.totalIngresos);
+    linea('los gastos', totalGastos, comparativo.totalGastos);
+    linea('el ahorro', totalAhorro, comparativo.totalAhorro);
+    if (partes.length > 0) {
+      const aviso = enCurso
+        ? ` Ojo: ${anio} va en ${mesesConMovimiento} ${mesesConMovimiento === 1 ? 'mes' : 'meses'} contra los ${comparativo.mesesConMovimiento} de ${anio - 1}, así que todavía no es comparable de igual a igual.`
+        : '';
+      add('info', '↔️', `Contra ${anio - 1}: ${partes.join(', ')}.${aviso}`);
+    }
+  }
+
+  // --- 8) Mes más caro vs. el promedio del año
+  if (conMov.length >= 3 && promedioGasto > 0) {
+    const caro = conMov.reduce((a, b) => (a.totalGastos >= b.totalGastos ? a : b));
+    const exceso = caro.totalGastos - promedioGasto;
+    if (exceso > promedioGasto * 0.3) {
+      const pct = Math.round((exceso / promedioGasto) * 100);
+      add('info', '📌', `${caro.nombreMes} fue tu mes más caro: ${fmtCRC(caro.totalGastos)}, un ${pct}% arriba de tu promedio (${fmtCRC(promedioGasto)}). Vale revisar qué pasó ese mes para no repetirlo.`);
+    }
+  }
+
+  // --- 9) Colchón al cierre del año (a mano + apartado)
+  if (promedioGasto > 0) {
+    const colchon = saldoFinalAnio + ahorroFinalAnio;
+    const mesesCubiertos = colchon / promedioGasto;
+    const detalle = ahorroFinalAnio > 0
+      ? `${fmtCRC(saldoFinalAnio)} a mano + ${fmtCRC(ahorroFinalAnio)} ahorrados`
+      : `${fmtCRC(saldoFinalAnio)} a mano`;
+    if (mesesCubiertos >= 3) {
+      add('bien', '🛟', `${enCurso ? 'Hoy' : `Al cerrar ${anio}`} tenés ${detalle}: ${Math.floor(mesesCubiertos)} meses de gastos cubiertos (gastás ~${fmtCRC(promedioGasto)} al mes). Ese es un fondo de emergencia de verdad.`);
+    } else if (colchon > 0) {
+      add('consejo', '🛟', `${enCurso ? 'Hoy' : `Al cerrar ${anio}`} tu colchón es ${detalle}: ${mesesCubiertos.toFixed(1).replace('.', ',')} meses de gastos. Para llegar a los 3 meses recomendados te faltan ${fmtCRC(promedioGasto * 3 - colchon)}.`);
+    }
+  }
+
+  return recs
+    .sort((a, b) => PRIORIDAD_NIVEL[a.nivel] - PRIORIDAD_NIVEL[b.nivel])
+    .slice(0, MAX_RECOMENDACIONES_ANUALES);
+};
+
+// ============================================
+// GET /api/finanzas-personales/resumen-anual?anio=2026
+// Reporte del AÑO completo. Barato: una sola consulta trae los snapshots del año
+// y del anterior (máximo 24 documentos chiquitos) y todo lo demás se calcula en
+// memoria. No recorre los movimientos ni una vez.
+//
+// Devuelve:
+//   totales        → ingresos, gastos, ahorro, egresos y balance del año
+//   saldoInicialAnio / saldoFinalAnio / ahorroInicioAnio / ahorroFinalAnio
+//   apertura       → si el saldo de apertura cae DENTRO de este año, se muestra
+//                    como línea aparte para que los números cuadren:
+//                    saldoFinal = saldoInicial + apertura + ingresos − egresos
+//   meses[12]      → fila por mes (para la tabla y el gráfico), con el saldo
+//                    arrastrado mes a mes
+//   desglose       → por categoría del año: ingreso, gasto (sin ahorro) y ahorro
+//   promedios, destacados, comparativo (año anterior) y mensajes del año
+// ============================================
+export const getResumenAnual = async (req, res) => {
+  try {
+    const anio = parseInt(req.query.anio);
+    if (!anio || anio < 2000 || anio > 2100) {
+      return res.status(400).json({ message: 'El parámetro anio es obligatorio. Ej: ?anio=2026' });
+    }
+
+    await asegurarSnapshots(req.user.id);
+
+    // UNA consulta para el año y el anterior (≤24 docs) + los acumulados al 1 de enero.
+    const [snapshots, acum] = await Promise.all([
+      ResumenPersonalMes.find({ usuario: req.user.id, anio: { $in: [anio - 1, anio] } })
+        .sort({ anio: 1, mes: 1 })
+        .lean(),
+      calcularAcumulados(req.user.id, 1, anio),
+    ]);
+
+    const delAnio = snapshots.filter((s) => s.anio === anio);
+    const delPrevio = snapshots.filter((s) => s.anio === anio - 1);
+    const porMes = new Map(delAnio.map((s) => [s.mes, s]));
+
+    const saldoInicialAnio = acum.saldoInicial;   // saldo al 1 de enero
+    const ahorroInicioAnio = acum.ahorroPrevio;   // ahorro apartado al 1 de enero
+    const apertura = acum.apertura;
+    // ¿El saldo de apertura arranca DENTRO de este año? Entonces entra como una
+    // línea propia en el mes de corte (y no está en saldoInicialAnio).
+    const aperturaEnElAnio = apertura && apertura.anioCorte === anio ? apertura : null;
+
+    // ── Tabla mes por mes, arrastrando el saldo y el ahorro acumulado ──
+    let saldo = saldoInicialAnio;
+    let ahorroAcum = ahorroInicioAnio;
+    const meses = [];
+
+    for (let mes = 1; mes <= 12; mes++) {
+      const snap = porMes.get(mes) || mesVacio(mes, anio);
+
+      // El saldo de apertura entra ANTES de los movimientos de su mes de corte.
+      const aplicaApertura = !!aperturaEnElAnio && aperturaEnElAnio.mesCorte === mes;
+      if (aplicaApertura) {
+        saldo += aperturaEnElAnio.montoDisponible || 0;
+        ahorroAcum += aperturaEnElAnio.montoAhorro || 0;
+      }
+
+      const saldoInicialMes = saldo;
+      const retiro = snap.totalRetiroAhorro || 0;
+      // Un retiro devuelve plata al bolsillo: sube el saldo y baja el acumulado.
+      saldo += snap.balanceMes + retiro;
+      ahorroAcum += snap.totalAhorro - retiro;
+
+      meses.push({
+        anio,
+        mes,
+        nombreMes: NOMBRES_MES_PERSONAL[mes],
+        totalIngresos: snap.totalIngresos,
+        totalGastos: snap.totalGastos,
+        totalAhorro: snap.totalAhorro,       // apartado en el mes (BRUTO)
+        totalRetiroAhorro: retiro,
+        ahorroNetoMes: snap.totalAhorro - retiro,
+        totalEgresos: snap.totalEgresos,
+        balanceMes: snap.balanceMes,          // ingresos − egresos (sin retiros)
+        variacionSaldo: snap.balanceMes + retiro, // saldoFinal − saldoInicial
+        saldoInicial: saldoInicialMes,
+        saldoFinal: saldo,
+        ahorroAcumulado: ahorroAcum,          // NETO al cierre del mes
+        movimientos: snap.movimientos,
+        aperturaAplicada: aplicaApertura,
+        registrado: snap.movimientos > 0,
+      });
+    }
+
+    const saldoFinalAnio = saldo;
+    const ahorroFinalAnio = ahorroAcum;
+
+    // ── Totales del año ──
+    const sumar = (filas, campo) => filas.reduce((s, f) => s + (f[campo] || 0), 0);
+    const totales = {
+      totalIngresos: sumar(delAnio, 'totalIngresos'),
+      totalGastos: sumar(delAnio, 'totalGastos'),
+      totalAhorro: sumar(delAnio, 'totalAhorro'),        // apartado en el año (BRUTO)
+      totalRetiroAhorro: sumar(delAnio, 'totalRetiroAhorro'),
+      totalEgresos: sumar(delAnio, 'totalEgresos'),
+      movimientos: sumar(delAnio, 'movimientos'),
+    };
+    totales.ahorroNeto = totales.totalAhorro - totales.totalRetiroAhorro;
+    totales.balance = totales.totalIngresos - totales.totalEgresos; // flujo propio, SIN retiros
+    // Cuánto se movió la plata a mano en el año (esto es lo que cierra la
+    // identidad del recorrido del saldo, ver más abajo).
+    totales.variacionSaldo = totales.balance + totales.totalRetiroAhorro;
+    const pctAnio = (parte) =>
+      totales.totalIngresos > 0 ? redondear1((parte / totales.totalIngresos) * 100) : 0;
+    totales.tasaAhorro = pctAnio(totales.ahorroNeto);      // NETA (la que vale)
+    totales.tasaAhorroBruta = pctAnio(totales.totalAhorro); // sobre lo apartado
+
+    // ── Desglose por categoría del año ──
+    const filasEgreso = delAnio.flatMap((s) => s.desgloseEgreso || []);
+    const desglose = {
+      ingreso: unirDesglose(delAnio.flatMap((s) => s.desgloseIngreso || [])),
+      gasto: unirDesglose(filasEgreso.filter((f) => !esAhorro(f.categoria))),
+      ahorro: unirDesglose(filasEgreso.filter((f) => esAhorro(f.categoria))),
+      // Retiros aparte: si fueran gasto, la dona de consumo contaría como plata
+      // gastada algo que solo cambió de bolsillo.
+      retiro: unirDesglose(delAnio.flatMap((s) => s.desgloseRetiro || [])),
+    };
+
+    // ── Promedios (solo sobre los meses con movimientos: un mes vacío no diluye) ──
+    const conMov = meses.filter((m) => m.movimientos > 0);
+    const mesesConMovimiento = conMov.length;
+    const prom = (total) => (mesesConMovimiento > 0 ? Math.round(total / mesesConMovimiento) : 0);
+    const promedios = {
+      mesesConMovimiento,
+      ingresos: prom(totales.totalIngresos),
+      gastos: prom(totales.totalGastos),
+      ahorro: prom(totales.totalAhorro),
+    };
+
+    // ── Destacados ──
+    const mejor = (campo, mayor = true) => {
+      if (conMov.length === 0) return null;
+      const m = conMov.reduce((a, b) => ((mayor ? a[campo] >= b[campo] : a[campo] <= b[campo]) ? a : b));
+      return { mes: m.mes, nombreMes: m.nombreMes, monto: m[campo] };
+    };
+    const destacados = {
+      mejorMes: mejor('balanceMes', true),
+      peorMes: mejor('balanceMes', false),
+      mesMasCaro: mejor('totalGastos', true),
+      mesMasIngresos: mejor('totalIngresos', true),
+      mesMasAhorro: mejor('totalAhorro', true),
+      mesMasRetiro: totales.totalRetiroAhorro > 0 ? mejor('totalRetiroAhorro', true) : null,
+      categoriaTopGasto: desglose.gasto[0] || null,
+      mesesEnRojo: conMov.filter((m) => m.balanceMes < 0).map((m) => ({
+        mes: m.mes,
+        nombreMes: m.nombreMes,
+        balanceMes: m.balanceMes,
+      })),
+    };
+
+    // ── Comparativo con el año anterior (del mismo find, sin consulta extra) ──
+    let comparativo = null;
+    if (delPrevio.length > 0) {
+      const prevIngresos = sumar(delPrevio, 'totalIngresos');
+      const prevGastos = sumar(delPrevio, 'totalGastos');
+      const prevAhorro = sumar(delPrevio, 'totalAhorro');
+      const prevRetiro = sumar(delPrevio, 'totalRetiroAhorro');
+      const prevEgresos = sumar(delPrevio, 'totalEgresos');
+      const variacion = (ahora, antes) =>
+        antes > 0 ? redondear1(((ahora - antes) / antes) * 100) : null;
+
+      comparativo = {
+        anio: anio - 1,
+        totalIngresos: prevIngresos,
+        totalGastos: prevGastos,
+        totalAhorro: prevAhorro,
+        totalRetiroAhorro: prevRetiro,
+        ahorroNeto: prevAhorro - prevRetiro,
+        totalEgresos: prevEgresos,
+        balance: prevIngresos - prevEgresos,
+        mesesConMovimiento: delPrevio.filter((s) => s.movimientos > 0).length,
+        variacion: {
+          ingresos: variacion(totales.totalIngresos, prevIngresos),
+          gastos: variacion(totales.totalGastos, prevGastos),
+          // Contra el ahorro NETO del año anterior (peras con peras).
+          ahorro: variacion(totales.ahorroNeto, prevAhorro - prevRetiro),
+        },
+      };
+    }
+
+    const enCurso = anio === anioActualCR();
+
+    res.status(200).json({
+      anio,
+      enCurso,
+      totales,
+      saldoInicialAnio,
+      saldoFinalAnio,
+      ahorroInicioAnio,
+      ahorroFinalAnio,
+      patrimonioFinal: saldoFinalAnio + ahorroFinalAnio, // a mano + apartado
+
+      // "Recorrido del saldo": los cuatro términos que llevan del saldo inicial
+      // al final, ya listos para pintar en fila. La identidad exacta es
+      //   saldoInicialAnio + aperturaDisponible + balance + retiroAhorro = saldoFinalAnio
+      // (`balance` es ingresos − egresos y NO incluye los retiros: se suman aparte
+      // a propósito, para que "lo que el año generó" no se confunda con plata
+      // que solo cambió de bolsillo).
+      recorridoSaldo: {
+        saldoInicialAnio,
+        aperturaDisponible: aperturaEnElAnio?.montoDisponible || 0,
+        balance: totales.balance,
+        retiroAhorro: totales.totalRetiroAhorro,
+        saldoFinalAnio,
+      },
+      apertura: aperturaEnElAnio
+        ? {
+            montoDisponible: aperturaEnElAnio.montoDisponible || 0,
+            montoAhorro: aperturaEnElAnio.montoAhorro || 0,
+            mesCorte: aperturaEnElAnio.mesCorte,
+            nombreMesCorte: NOMBRES_MES_PERSONAL[aperturaEnElAnio.mesCorte],
+          }
+        : null,
+      meses,
+      desglose,
+      promedios,
+      destacados,
+      comparativo,
+      mensajes: construirRecomendacionesAnuales({
+        anio,
+        totales,
+        saldoInicialAnio,
+        saldoFinalAnio,
+        ahorroFinalAnio,
+        meses,
+        desgloseGasto: desglose.gasto,
+        comparativo,
+        enCurso,
+        mesesConMovimiento,
+      }),
+    });
+  } catch (error) {
+    console.error('❌ Error al generar el reporte anual personal:', error);
+    res.status(500).json({ message: 'Error al generar el reporte anual', error: error.message });
+  }
+};
+
+// ============================================
+// POST /api/finanzas-personales/regenerar[?anio=]
+// Botón "Regenerar" (como en los reportes del negocio): recalcula los snapshots
+// mensuales desde los movimientos. Normalmente NO hace falta —se mantienen solos
+// en cada guardado— pero sirve si se tocó la base a mano o para forzar un
+// refresco. Con ?anio= regenera solo ese año; sin parámetro, todos.
+// ============================================
+export const regenerarSnapshots = async (req, res) => {
+  try {
+    const anioFiltro = req.query.anio ? parseInt(req.query.anio) : null;
+    if (req.query.anio && (!anioFiltro || anioFiltro < 2000 || anioFiltro > 2100)) {
+      return res.status(400).json({ message: 'anio inválido' });
+    }
+
+    // Meses con movimientos + meses que ya tienen snapshot (para dejar en cero /
+    // borrar los que quedaron huérfanos si se borraron datos por fuera).
+    const [conDatos, guardados] = await Promise.all([
+      MovimientoPersonal.aggregate([
+        { $match: { usuario: new mongoose.Types.ObjectId(req.user.id) } },
+        {
+          $group: {
+            _id: {
+              y: { $year: { date: '$fecha', timezone: 'America/Costa_Rica' } },
+              m: { $month: { date: '$fecha', timezone: 'America/Costa_Rica' } },
+            },
+          },
+        },
+      ]),
+      ResumenPersonalMes.find({ usuario: req.user.id }, 'anio mes').lean(),
+    ]);
+
+    const candidatos = new Set();
+    for (const c of conDatos) candidatos.add(`${c._id.y}-${c._id.m}`);
+    for (const g of guardados) candidatos.add(`${g.anio}-${g.mes}`);
+
+    let regenerados = 0;
+    for (const clave of candidatos) {
+      const [a, m] = clave.split('-').map(Number);
+      if (anioFiltro && a !== anioFiltro) continue;
+      await regenerarResumenMes(req.user.id, m, a);
+      regenerados++;
+    }
+
+    res.status(200).json({
+      message: `${regenerados} mes(es) regenerados${anioFiltro ? ` de ${anioFiltro}` : ''}.`,
+      regenerados,
+    });
+  } catch (error) {
+    console.error('❌ Error al regenerar los snapshots personales:', error);
+    res.status(500).json({ message: 'Error al regenerar los reportes', error: error.message });
   }
 };
 
@@ -921,11 +2067,57 @@ export const updateMovimiento = async (req, res) => {
       return res.status(400).json({ message: 'No se enviaron campos para actualizar' });
     }
 
+    // ¿La edición toca el ahorro acumulado? Puede romperlo de varias formas:
+    // subir un retiro, bajar/borrar un ahorro que un retiro posterior ya usó,
+    // mover cualquiera de los dos de mes, o cambiarle el tipo o la categoría.
+    const antes = contribucionAhorro(actual);
+    const despues = contribucionAhorro({
+      tipo: $set.tipo ?? actual.tipo,
+      categoria: $set.categoria ?? actual.categoria,
+      monto: $set.monto ?? actual.monto,
+      fecha: $set.fecha ?? actual.fecha,
+    });
+
+    if (antes.ahorro || antes.retiro || despues.ahorro || despues.retiro) {
+      await asegurarSnapshots(req.user.id);
+      const problema = await validarAhorroNoNegativo(req.user.id, [
+        { anio: antes.anio, mes: antes.mes, ahorro: -antes.ahorro, retiro: -antes.retiro },
+        { anio: despues.anio, mes: despues.mes, ahorro: despues.ahorro, retiro: despues.retiro },
+      ]);
+      if (problema) {
+        const donde = `${NOMBRES_MES[problema.mes - 1]} ${problema.anio}`;
+        if (despues.retiro > 0) {
+          // Se está subiendo (o moviendo) un retiro: el tope es cuánto puede valer.
+          const tope = Math.max(0, despues.retiro - problema.exceso);
+          return res.status(400).json({
+            message: tope === 0
+              ? `No podés dejar ese retiro: no hay ahorro que lo cubra en ${donde}.`
+              : `Ese retiro no puede pasar de ${fmtCRC(tope)}: más que eso deja el ahorro en negativo en ${donde}.`,
+            disponible: tope,
+            acumulado: problema.disponible,
+          });
+        }
+        // Se está bajando o reclasificando un ahorro que un retiro ya usó.
+        const minimo = despues.ahorro + problema.exceso;
+        return res.status(400).json({
+          message: `Ese ahorro no puede bajar de ${fmtCRC(minimo)}: ya retiraste esa plata y el acumulado quedaría en negativo en ${donde}.`,
+          minimo,
+          acumulado: problema.disponible,
+        });
+      }
+    }
+
+    const fechaVieja = actual.fecha; // por si el movimiento cambia de mes
+
     const movimiento = await MovimientoPersonal.findByIdAndUpdate(
       req.params.id,
       { $set },
       { new: true, runValidators: true }
     );
+
+    // Si cambió de mes hay DOS meses afectados: el viejo (queda sin ese monto) y
+    // el nuevo. Se regeneran los dos snapshots.
+    await regenerarResumenDeFecha(req.user.id, fechaVieja, movimiento.fecha);
 
     res.status(200).json({ message: 'Movimiento actualizado', data: movimiento });
   } catch (error) {
@@ -943,7 +2135,9 @@ export const deleteMovimiento = async (req, res) => {
       return res.status(400).json({ message: 'ID inválido' });
     }
 
-    const movimiento = await MovimientoPersonal.findOneAndDelete({
+    // Se busca ANTES de borrar: si era un ahorro que un retiro posterior ya usó,
+    // borrarlo dejaría el acumulado en negativo y hay que rechazarlo.
+    const movimiento = await MovimientoPersonal.findOne({
       _id: req.params.id,
       usuario: req.user.id,
     });
@@ -951,6 +2145,29 @@ export const deleteMovimiento = async (req, res) => {
     if (!movimiento) {
       return res.status(404).json({ message: 'Movimiento no encontrado' });
     }
+
+    const aporte = contribucionAhorro(movimiento);
+    if (aporte.ahorro > 0) {
+      await asegurarSnapshots(req.user.id);
+      const problema = await validarAhorroNoNegativo(req.user.id, [
+        { anio: aporte.anio, mes: aporte.mes, ahorro: -aporte.ahorro, retiro: 0 },
+      ]);
+      if (problema) {
+        const donde = `${NOMBRES_MES[problema.mes - 1]} ${problema.anio}`;
+        return res.status(400).json({
+          message: `No se puede borrar: ${fmtCRC(problema.exceso)} de ese ahorro ya los retiraste, y el acumulado quedaría en negativo en ${donde}. Borrá o bajá ese retiro primero.`,
+          // Si en vez de borrarlo lo querés bajar, este es el mínimo que puede quedar.
+          minimo: problema.exceso,
+          acumulado: problema.disponible,
+        });
+      }
+    }
+
+    await MovimientoPersonal.deleteOne({ _id: movimiento._id });
+
+    // Snapshot del mes al día. Si el mes se quedó sin movimientos, el snapshot
+    // se borra (regenerarResumenMes lo hace) y los acumulados se ajustan solos.
+    await regenerarResumenDeFecha(req.user.id, movimiento.fecha);
 
     res.status(200).json({ message: 'Movimiento eliminado', id: req.params.id });
   } catch (error) {

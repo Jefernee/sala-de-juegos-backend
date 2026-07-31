@@ -12,8 +12,16 @@
 // personal y no se mezcle con nadie más.
 import mongoose from 'mongoose';
 
-// Tipos de movimiento
-export const TIPOS_MOVIMIENTO = ['ingreso', 'egreso'];
+// Tipos de movimiento.
+//   ingreso       → entra plata nueva
+//   egreso        → sale plata (incluye apartar ahorro: ver CATEGORIAS_AHORRO)
+//   retiro_ahorro → se saca plata del ahorro para usarla. NO es ingreso (no es
+//                   plata nueva) ni egreso (no se gastó todavía): es un TRASLADO
+//                   del bolsillo "apartado" al bolsillo "a mano". Sube el saldo
+//                   disponible y baja el ahorro acumulado, y deja el patrimonio
+//                   total igual. Si después se gasta, eso se registra aparte como
+//                   el egreso que sea.
+export const TIPOS_MOVIMIENTO = ['ingreso', 'egreso', 'retiro_ahorro'];
 
 // Categorías predefinidas (decisión del usuario: lista fija, no texto libre).
 // Se pueden ampliar/cambiar cuando el usuario lo pida.
@@ -94,6 +102,9 @@ export const CATEGORIAS_BATAN = ['Comida en Batán', 'Viajes a Batán'];
 // Helper: ¿esta categoría de egreso es ahorro?
 export const esAhorro = (categoria) => CATEGORIAS_AHORRO.includes(categoria);
 
+// Helper: ¿este movimiento es un retiro del ahorro?
+export const esRetiroAhorro = (tipo) => tipo === 'retiro_ahorro';
+
 // Helpers de grupo para los mensajes inteligentes.
 export const esGastoFijo = (categoria) => CATEGORIAS_FIJAS.includes(categoria);
 export const esDeBatan = (categoria) => CATEGORIAS_BATAN.includes(categoria);
@@ -102,9 +113,14 @@ export const esDeBatan = (categoria) => CATEGORIAS_BATAN.includes(categoria);
 // USD solo guarda el origen del pago para referencia.
 export const MONEDAS = ['CRC', 'USD'];
 
-// Devuelve la lista de categorías válida según el tipo de movimiento.
-export const categoriasPorTipo = (tipo) =>
-  tipo === 'ingreso' ? CATEGORIAS_INGRESO : CATEGORIAS_EGRESO;
+// Devuelve la lista de categorías válida según el tipo de movimiento. Un retiro
+// se clasifica con la MISMA categoría de ahorro de la que salió la plata (así se
+// sabe de qué bolsa se sacó: Ahorro, Ahorro CreAI o Ahorro MEP).
+export const categoriasPorTipo = (tipo) => {
+  if (tipo === 'ingreso') return CATEGORIAS_INGRESO;
+  if (tipo === 'retiro_ahorro') return CATEGORIAS_AHORRO;
+  return CATEGORIAS_EGRESO;
+};
 
 const movimientoPersonalSchema = new mongoose.Schema(
   {
