@@ -2,6 +2,7 @@ import Inventario from "../models/Inventario.js";
 import cloudinary from "../config/cloudinary.js";
 import { mongoose } from "../db.js";
 import Sale from "../models/sale.js";
+import { ROL_VENDEDOR } from "../config/roles.js";
 // Helper: fecha actual en zona horaria de Costa Rica
 // medianoche Costa Rica (UTC-6) = 06:00 UTC
 const getFechaCostaRica = () => {
@@ -12,33 +13,155 @@ const getFechaCostaRica = () => {
 // ─────────────────────────────────────────────────────────────────
 // Calcula el stock disponible de una RECETA a partir
 // del stock actual de sus ingredientes (deben venir populados en
-// receta.ingredienteId con al menos `cantidad` y `precioCompra`):
+// receta.ingredienteId con al menos `nombre`, `cantidad` y `precioCompra`):
 //   stock = floor(min(ingrediente.cantidad / cantidadRequerida))
 //   costo = Σ (precioCompra del ingrediente × cantidad requerida)
-// Retorna null si la receta no tiene ingredientes, si falta/está sin populate
-// alguno, o si no alcanza para preparar ni una unidad. Devolver null permite
-// ocultar la receta agotada del catálogo. Compartido entre el catálogo público
-// y la pantalla de venta para que ambos usen la MISMA regla de disponibilidad.
+//
+// SIEMPRE devuelve un objeto { stock, costo, limitante, motivo }, incluso
+// cuando la receta no se puede preparar (stock: 0). Antes devolvía null en ese
+// caso y quien lo llamaba escondía la receta por completo: el producto
+// desaparecía de ventas y del catálogo sin ninguna explicación, y el dueño no
+// tenía forma de saber qué ingrediente faltaba. Ahora se informa el
+// `limitante` (el ingrediente que topa la producción) y un `motivo` legible
+// para que el frontend pueda mostrar "Agotado: falta X".
 // ─────────────────────────────────────────────────────────────────
 const calcularStockReceta = (receta) => {
-  if (!receta?.receta || receta.receta.length === 0) return null;
+  const ingredientes = receta?.receta || [];
+
+  if (ingredientes.length === 0) {
+    return {
+      stock: 0,
+      costo: 0,
+      limitante: null,
+      motivo: 'Esta receta no tiene ingredientes configurados. Editála para agregarlos.',
+    };
+  }
+
   let stock = Infinity;
   let costo = 0;
-  for (const comp of receta.receta) {
+  let limitante = null;
+
+  for (const comp of ingredientes) {
     const ing = comp.ingredienteId;
-    if (!ing) return null; // ingrediente borrado o sin populate
-    stock = Math.min(stock, Math.floor(ing.cantidad / comp.cantidad));
+
+    // Si el ingrediente fue borrado del inventario, populate deja null.
+    // Si quien llama olvidó el populate, llega un ObjectId (sin `cantidad`).
+    if (!ing || typeof ing.cantidad !== 'number') {
+      return {
+        stock: 0,
+        costo: 0,
+        limitante: null,
+        motivo: `El ingrediente "${comp.nombre || 'desconocido'}" ya no existe en el inventario. Actualizá la receta.`,
+      };
+    }
+
+    const posibles = Math.floor(ing.cantidad / comp.cantidad);
+    if (posibles < stock) {
+      stock = posibles;
+      limitante = {
+        nombre: ing.nombre || comp.nombre,
+        disponible: ing.cantidad,
+        requeridoPorUnidad: comp.cantidad,
+        unidad: ing.unidad || 'unidades',
+      };
+    }
+
     costo += (ing.precioCompra || 0) * comp.cantidad;
   }
-  if (stock <= 0 || stock === Infinity) return null;
-  return { stock, costo };
+
+  if (!Number.isFinite(stock) || stock < 0) stock = 0;
+
+  const motivo = stock > 0 || !limitante
+    ? null
+    : `No alcanza "${limitante.nombre}": hay ${limitante.disponible} ${limitante.unidad} y cada unidad necesita ${limitante.requeridoPorUnidad}.`;
+
+  return { stock, costo, limitante, motivo };
 };
 
-// GET
+// Campos que hay que popular para poder calcular el stock de una receta.
+const POPULATE_INGREDIENTES = 'nombre cantidad precioCompra unidad';
+
+// ─────────────────────────────────────────────────────────────────
+// Listas cerradas de unidades y envases.
+// Antes eran texto libre y en la base quedaron valores mezclados ("Gramos" y
+// "gramos", "Paquete" y "paquete"), que ensucian los filtros y los reportes.
+// Se normaliza a minúscula y se valida contra estas listas; el frontend usa
+// desplegables con exactamente estos valores.
+// ─────────────────────────────────────────────────────────────────
+export const UNIDADES_VALIDAS = ['unidades', 'gramos', 'kilos', 'mililitros', 'litros', 'onzas'];
+export const ENVASES_VALIDOS = ['paquete', 'balde', 'botella', 'caja', 'bolsa', 'saco', 'tarro', 'sobre', 'bandeja'];
+
+const normalizar = (valor) => (typeof valor === 'string' ? valor.trim().toLowerCase() : valor);
+
+// Devuelve { ok: true, valor } o { ok: false, error }
+const validarDeLista = (valor, lista, etiqueta) => {
+  const limpio = normalizar(valor);
+  if (!limpio) return { ok: true, valor: null };
+  if (!lista.includes(limpio)) {
+    return {
+      ok: false,
+      error: `${etiqueta} "${valor}" no es válida. Opciones: ${lista.join(', ')}.`,
+    };
+  }
+  return { ok: true, valor: limpio };
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Quita del ítem toda información de costos. Se usa con el rol vendedor:
+// necesita el catálogo para cobrar, pero no tiene por qué ver los márgenes.
+// ─────────────────────────────────────────────────────────────────
+const sinCostos = (item) => {
+  const { precioCompra, ...resto } = item;
+  if (Array.isArray(resto.receta)) {
+    resto.receta = resto.receta.map((comp) => {
+      const ing = comp.ingredienteId;
+      if (!ing || typeof ing !== 'object') return comp;
+      const { precioCompra: _costo, ...ingSinCosto } = ing;
+      return { ...comp, ingredienteId: ingSinCosto };
+    });
+  }
+  return resto;
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Prepara un ítem de inventario para el frontend.
+//
+// En la base de datos las recetas guardan `cantidad: 0` y `precioCompra: 0`
+// (no tienen stock propio: se calculan desde los ingredientes). Devolver esos
+// ceros hacía que cualquier pantalla que mire `cantidad` tratara la receta
+// como agotada, incluso teniendo ingredientes de sobra. Acá se reemplazan por
+// los valores calculados en vivo, y se agregan `agotado` / `motivoAgotado`
+// para que el frontend pueda mostrar el porqué en vez de esconder el producto.
+// Los productos simples pasan igual, solo con la bandera `agotado`.
+// ─────────────────────────────────────────────────────────────────
+const prepararItem = (item) => {
+  if (!item) return item;
+
+  if (item.tipo !== 'receta') {
+    return { ...item, agotado: (item.cantidad ?? 0) <= 0 };
+  }
+
+  const { stock, costo, limitante, motivo } = calcularStockReceta(item);
+
+  return {
+    ...item,
+    cantidad: stock,          // stock calculado desde los ingredientes
+    precioCompra: costo,      // costo real de preparar una unidad
+    stockCalculado: stock,
+    agotado: stock <= 0,
+    motivoAgotado: motivo,
+    ingredienteLimitante: limitante,
+  };
+};
+
+// GET — inventario completo (incluye recetas con su stock ya calculado)
 export const getInventario = async (req, res) => {
   try {
-    const data = await Inventario.find().populate("createdBy", "nombre email");
-    res.json(data);
+    const data = await Inventario.find()
+      .populate("createdBy", "nombre email")
+      .populate("receta.ingredienteId", POPULATE_INGREDIENTES)
+      .lean();
+    res.json(data.map(prepararItem));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -163,9 +286,23 @@ export const addProducto = async (req, res) => {
       const savedReceta = await nuevaReceta.save();
       console.log(`✅ Receta "${savedReceta.nombre}" creada con ${recetaValidada.length} ingrediente(s)`);
 
+      // Se relee con los ingredientes populados para devolverla con su stock
+      // calculado (y avisar de una si ya nace agotada por falta de ingredientes).
+      const recetaCreada = await Inventario.findById(savedReceta._id)
+        .populate('receta.ingredienteId', POPULATE_INGREDIENTES)
+        .lean();
+      const recetaLista = prepararItem(recetaCreada);
+
+      if (recetaLista.agotado) {
+        console.log(`⚠️ La receta nace agotada: ${recetaLista.motivoAgotado}`);
+      }
+
       return res.status(201).json({
         message: 'Receta creada exitosamente',
-        producto: savedReceta,
+        producto: recetaLista,
+        advertencia: recetaLista.agotado
+          ? `La receta se creó, pero no se puede preparar todavía. ${recetaLista.motivoAgotado}`
+          : undefined,
       });
     }
 
@@ -199,6 +336,13 @@ export const addProducto = async (req, res) => {
     console.log("\n🔨 Creando objeto producto...");
     const inicioCreacion = Date.now();
 
+    // Unidad y envase salen de listas cerradas y se guardan en minúscula.
+    const unidad = validarDeLista(body.unidad, UNIDADES_VALIDAS, 'La unidad');
+    if (!unidad.ok) return res.status(400).json({ error: unidad.error, code: 'UNIDAD_INVALIDA' });
+
+    const envase = validarDeLista(body.nombreEnvase, ENVASES_VALIDOS, 'El envase');
+    if (!envase.ok) return res.status(400).json({ error: envase.error, code: 'ENVASE_INVALIDO' });
+
     const producto = new Inventario({
       nombre: body.nombre,
       cantidad: Number(body.cantidad),
@@ -208,9 +352,9 @@ export const addProducto = async (req, res) => {
       imagen: req.cloudinaryUrl,
       seVende: body.seVende === "true" || body.seVende === true,
       tipo: 'producto',
-      unidad: body.unidad?.trim() || 'unidades',
+      unidad: unidad.valor || 'unidades',
       cantidadPorEnvase: body.cantidadPorEnvase ? Number(body.cantidadPorEnvase) : null,
-      nombreEnvase: body.nombreEnvase?.trim() || null,
+      nombreEnvase: envase.valor,
       createdBy: userId,
     });
 
@@ -323,17 +467,67 @@ export const updateProducto = async (req, res) => {
     });
 
     // ✅ Campos editables (cantidad NO incluida aquí)
-    const $set = {
-      nombre: req.body.nombre,
-      precioCompra: Number(req.body.precioCompra) || 0,
-      precioVenta: Number(req.body.precioVenta) || 0,
-      seVende: req.body.seVende === "true" || req.body.seVende === true,
-      updatedAt: new Date(),
-    };
+    // Cada campo se toca SOLO si vino en el body. Antes se asignaban siempre,
+    // así que una petición que no mandara `seVende` lo dejaba en false (el
+    // producto desaparecía de ventas y del catálogo) y una que no mandara los
+    // precios los ponía en 0. Editar solo los ingredientes de una receta podía
+    // apagarla o borrarle el precio sin que nadie lo pidiera.
+    const $set = { updatedAt: new Date() };
 
-    if (req.body.unidad !== undefined)           $set.unidad           = req.body.unidad?.trim() || 'unidades';
+    const esRecetaFinal = (req.body.tipo || productoActual.tipo || 'producto') === 'receta';
+
+    if (req.body.nombre !== undefined)      $set.nombre      = req.body.nombre;
+    if (req.body.precioVenta !== undefined) $set.precioVenta = Number(req.body.precioVenta) || 0;
+    if (req.body.seVende !== undefined)     $set.seVende     = req.body.seVende === "true" || req.body.seVende === true;
+
+    // Las recetas no tienen precio de compra propio: su costo se calcula en
+    // vivo desde los ingredientes, así que se mantiene en 0.
+    if (req.body.precioCompra !== undefined && !esRecetaFinal) {
+      $set.precioCompra = Number(req.body.precioCompra) || 0;
+    }
+
     if (req.body.cantidadPorEnvase !== undefined) $set.cantidadPorEnvase = req.body.cantidadPorEnvase ? Number(req.body.cantidadPorEnvase) : null;
-    if (req.body.nombreEnvase !== undefined)      $set.nombreEnvase      = req.body.nombreEnvase?.trim() || null;
+
+    if (req.body.nombreEnvase !== undefined) {
+      const envase = validarDeLista(req.body.nombreEnvase, ENVASES_VALIDOS, 'El envase');
+      if (!envase.ok) return res.status(400).json({ error: envase.error, code: 'ENVASE_INVALIDO' });
+      $set.nombreEnvase = envase.valor;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Cambio de UNIDAD: bloqueado si el producto ya se usa como ingrediente.
+    //
+    // Las recetas guardan cuánto se gasta del ingrediente EN SU UNIDAD ACTUAL
+    // (ej. "100 gramos de Helado Combinado"). Si alguien cambia la unidad del
+    // producto a "kilos", ese 100 pasa a significar 100 kilos: la receta queda
+    // costeada y descontada mal, en silencio. Es la misma familia del problema
+    // de los "44 vasos": un número que ya no significa lo que significaba.
+    // Se rechaza con un mensaje que dice exactamente qué recetas lo usan.
+    // ─────────────────────────────────────────────────────────────────
+    if (req.body.unidad !== undefined) {
+      const unidad = validarDeLista(req.body.unidad, UNIDADES_VALIDAS, 'La unidad');
+      if (!unidad.ok) return res.status(400).json({ error: unidad.error, code: 'UNIDAD_INVALIDA' });
+
+      const unidadNueva = unidad.valor || 'unidades';
+      const unidadActual = normalizar(productoActual.unidad) || 'unidades';
+
+      if (unidadNueva !== unidadActual) {
+        const recetasQueLoUsan = await Inventario.find({ 'receta.ingredienteId': req.params.id })
+          .select('nombre')
+          .lean();
+
+        if (recetasQueLoUsan.length > 0) {
+          const nombres = recetasQueLoUsan.map((r) => `"${r.nombre}"`).join(', ');
+          return res.status(400).json({
+            error: `No se puede cambiar la unidad de "${productoActual.nombre}" de ${unidadActual} a ${unidadNueva}: se usa como ingrediente en ${nombres}. Esas recetas tienen anotada la cantidad en ${unidadActual} y quedarían mal costeadas. Primero ajustá las cantidades en esas recetas, o creá un producto nuevo con la unidad correcta.`,
+            code: 'UNIDAD_EN_USO_EN_RECETAS',
+            recetasAfectadas: recetasQueLoUsan.map((r) => r.nombre),
+          });
+        }
+      }
+
+      $set.unidad = unidadNueva;
+    }
 
     // ─────────────────────────────────────────────────────────────────
     // Actualización de ingredientes de una receta.
@@ -341,8 +535,7 @@ export const updateProducto = async (req, res) => {
     // los ingredientes. Solo aplica cuando el item es tipo 'receta'.
     // ─────────────────────────────────────────────────────────────────
     if (req.body.receta !== undefined) {
-      const tipoFinal = req.body.tipo || productoActual.tipo || 'producto';
-      if (tipoFinal !== 'receta') {
+      if (!esRecetaFinal) {
         return res.status(400).json({ error: 'Solo se puede actualizar la receta de un producto de tipo "receta"' });
       }
 
@@ -358,6 +551,12 @@ export const updateProducto = async (req, res) => {
       const idsUnicos = new Set(recetaRaw.map(r => r.ingredienteId?.toString()));
       if (idsUnicos.size !== recetaRaw.length) {
         return res.status(400).json({ error: 'La receta tiene ingredientes duplicados' });
+      }
+
+      // Una receta no puede llevarse a sí misma como ingrediente (haría que su
+      // stock dependiera de su propio stock, que siempre es 0).
+      if (idsUnicos.has(req.params.id.toString())) {
+        return res.status(400).json({ error: 'Una receta no puede ser ingrediente de sí misma' });
       }
 
       const ingredienteIds = recetaRaw.map(r => r.ingredienteId).filter(Boolean);
@@ -392,9 +591,8 @@ export const updateProducto = async (req, res) => {
     //   - envasesAAgregar: número de envases comprados; se multiplica por cantidadPorEnvase
     //     (ej. 2 botellas × 500 ml/botella = 1000 ml). Requiere cantidadPorEnvase configurado.
     // Las recetas no tienen stock propio; se ignora cualquier reposición.
-    const esReceta = productoActual.tipo === 'receta' || req.body.tipo === 'receta';
     let cantidadAAgregar = 0;
-    if (!esReceta) {
+    if (!esRecetaFinal) {
       const envasesAAgregar = Number(req.body.envasesAAgregar) || 0;
       const porEnvase = productoActual.cantidadPorEnvase || ($set.cantidadPorEnvase ?? null);
       if (envasesAAgregar > 0 && porEnvase) {
@@ -463,7 +661,10 @@ export const updateProducto = async (req, res) => {
         new: true,          // retorna el documento actualizado
         runValidators: true,
       }
-    ).populate("createdBy", "nombre email");
+    )
+      .populate("createdBy", "nombre email")
+      .populate("receta.ingredienteId", POPULATE_INGREDIENTES)
+      .lean();
 
     if (!productoActualizado) {
       console.error("❌ No se pudo actualizar el producto");
@@ -477,9 +678,11 @@ export const updateProducto = async (req, res) => {
       imagenNueva: productoActualizado.imagen,
     });
 
+    // Se devuelve ya preparado para que el frontend vea de una el stock real
+    // de la receta (y el motivo, si quedó agotada) sin pedir otra vez el ítem.
     res.json({
       message: "Producto actualizado exitosamente",
-      producto: productoActualizado,
+      producto: prepararItem(productoActualizado),
     });
 
   } catch (error) {
@@ -501,6 +704,24 @@ export const deleteProducto = async (req, res) => {
 
     if (!producto) {
       return res.status(404).json({ error: "Producto no encontrado" });
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // No se borra un producto que se usa como ingrediente: la receta quedaría
+    // apuntando a un ítem inexistente y dejaría de poder venderse (el POS
+    // avisaría "un ingrediente ya no existe"). Se rechaza diciendo cuáles son.
+    // ─────────────────────────────────────────────────────────────────
+    const recetasQueLoUsan = await Inventario.find({ 'receta.ingredienteId': req.params.id })
+      .select('nombre')
+      .lean();
+
+    if (recetasQueLoUsan.length > 0) {
+      const nombres = recetasQueLoUsan.map((r) => `"${r.nombre}"`).join(', ');
+      return res.status(400).json({
+        error: `No se puede borrar "${producto.nombre}" porque se usa como ingrediente en ${nombres}. Quitalo de esas recetas primero.`,
+        code: 'INGREDIENTE_EN_USO',
+        recetasAfectadas: recetasQueLoUsan.map((r) => r.nombre),
+      });
     }
 
     if (producto.imagen) {
@@ -578,6 +799,7 @@ export const getProductosPaginados = async (req, res) => {
         "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo receta unidad cantidadPorEnvase nombreEnvase createdBy createdAt updatedAt"
       )
       .populate("createdBy", "nombre email")
+      .populate("receta.ingredienteId", POPULATE_INGREDIENTES)
       .limit(limit)
       .skip(skip)
       .sort({ createdAt: -1 })
@@ -585,7 +807,9 @@ export const getProductosPaginados = async (req, res) => {
 
     const total = await Inventario.countDocuments(query);
 
-    const productosOptimizados = productos.map((producto) => {
+    // prepararItem le pone a cada receta su stock real calculado desde los
+    // ingredientes (antes el catálogo las mostraba siempre en 0).
+    const productosOptimizados = productos.map(prepararItem).map((producto) => {
       return {
         ...producto,
         imagenOptimizada: producto.imagen,
@@ -625,22 +849,36 @@ export const getProductosPaginados = async (req, res) => {
 // Antes este endpoint mostraba productos agotados, mostraba las recetas
 // siempre con cantidad 0 (no entendía el tipo 'receta') y pedía campos
 // inexistentes (imagenOptimizada / imagenOriginal). Todo eso quedó corregido.
+//
+// SOBRE LOS CAMPOS QUE NO ESTÁN ACÁ: este endpoint no lleva `receta`,
+// `precioCompra` ni `ingredienteLimitante` a propósito. Es la única ruta sin
+// token, y esos campos revelarían el costo de cada ingrediente y el stock
+// interno. Sí se manda `tipo` (para poder distinguir una receta en el menú) y
+// `agotado`, que con `?incluirAgotados=true` permite mostrar el ítem marcado
+// como agotado con un texto genérico, sin decir qué ingrediente falta.
 export const getProductosPublicos = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 12;
     const search = (req.query.search || "").trim();
     const searchFiltro = search ? { nombre: { $regex: search, $options: "i" } } : {};
+    const incluirAgotados = req.query.incluirAgotados === "true";
 
-    // ── Productos simples disponibles (con stock) ──
-    const productosSimples = await Inventario.find({
+    // ── Productos simples (con stock, o todos si se piden los agotados) ──
+    const productosSimples = (await Inventario.find({
       seVende: true,
       tipo: { $ne: "receta" },
-      cantidad: { $gt: 0 },
+      ...(incluirAgotados ? {} : { cantidad: { $gt: 0 } }),
       ...searchFiltro,
     })
-      .select("nombre imagen precioVenta cantidad createdAt")
-      .lean();
+      .select("nombre imagen precioVenta cantidad tipo createdAt")
+      .lean())
+      .map((p) => ({
+        ...p,
+        tipo: p.tipo || "producto",
+        agotado: (p.cantidad ?? 0) <= 0,
+        motivoAgotado: (p.cantidad ?? 0) <= 0 ? "Temporalmente agotado" : null,
+      }));
 
     // ── Recetas: stock calculado desde el stock de sus ingredientes ──
     const recetasRaw = await Inventario.find({
@@ -649,19 +887,26 @@ export const getProductosPublicos = async (req, res) => {
       ...searchFiltro,
     })
       .select("nombre imagen precioVenta receta createdAt")
-      .populate("receta.ingredienteId", "cantidad precioCompra")
+      .populate("receta.ingredienteId", POPULATE_INGREDIENTES)
       .lean();
 
     const recetasDisponibles = [];
     for (const receta of recetasRaw) {
       const calc = calcularStockReceta(receta);
-      if (!calc) continue; // sin stock suficiente → no aparece en el catálogo
+      // Por defecto, el menú del cliente esconde lo que no se puede preparar,
+      // igual que esconde los productos sin stock. Con ?incluirAgotados=true se
+      // devuelven marcados, pero SIN decir qué ingrediente falta: el motivo
+      // real menciona stock interno y no puede salir en una ruta sin token.
+      if (calc.stock <= 0 && !incluirAgotados) continue;
       recetasDisponibles.push({
         _id: receta._id,
         nombre: receta.nombre,
         imagen: receta.imagen,
         precioVenta: receta.precioVenta,
         cantidad: calc.stock, // stock calculado a partir de los ingredientes
+        tipo: "receta",
+        agotado: calc.stock <= 0,
+        motivoAgotado: calc.stock <= 0 ? "Temporalmente agotado" : null,
         createdAt: receta.createdAt,
       });
     }
@@ -671,7 +916,9 @@ export const getProductosPublicos = async (req, res) => {
     // total y el número de páginas queden EXACTOS aun con el stock de recetas
     // calculado en JS, y que las recetas agotadas no cuenten para la paginación.
     const disponibles = [...productosSimples, ...recetasDisponibles].sort(
-      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+      (a, b) =>
+        Number(a.agotado) - Number(b.agotado) || // lo disponible primero
+        new Date(b.createdAt) - new Date(a.createdAt)
     );
 
     const totalProducts = disponibles.length;
@@ -765,19 +1012,16 @@ export const getProductosParaVenta = async (req, res) => {
       .populate('receta.ingredienteId', 'nombre cantidad precioCompra unidad cantidadPorEnvase nombreEnvase')
       .lean();
 
-    const recetasConStock = [];
-
-    for (const receta of recetasRaw) {
-      const calc = calcularStockReceta(receta); // misma regla que el catálogo público
-      if (!calc) continue; // sin ingredientes / faltante / stock insuficiente
-
-      recetasConStock.push({
-        ...receta,
-        cantidad: calc.stock,       // Stock calculado para el frontend
-        precioCompra: calc.costo,   // Costo real calculado de ingredientes
-        totalVendido: 0,            // Se calcula a continuación
-      });
-    }
+    // A DIFERENCIA del catálogo público, acá las recetas agotadas SÍ se
+    // devuelven, marcadas con `agotado: true` y el `motivoAgotado`. Antes se
+    // descartaban en silencio y el producto simplemente no existía en la
+    // pantalla de venta: imposible saber si estaba mal configurado, apagado o
+    // sin ingredientes. El frontend debe mostrarlas deshabilitadas con el
+    // motivo; la venta igual se rechaza en el servidor si no hay stock.
+    const recetasConStock = recetasRaw.map((receta) => ({
+      ...prepararItem(receta),
+      totalVendido: 0, // Se calcula a continuación
+    }));
 
     // Obtener totalVendido de las recetas en una sola consulta
     if (recetasConStock.length > 0) {
@@ -794,11 +1038,22 @@ export const getProductosParaVenta = async (req, res) => {
     }
 
     // ── 3. Combinar, ordenar y limitar a 100 ────────────────────────
-    const todos = [...productosSimples, ...recetasConStock]
-      .sort((a, b) => b.totalVendido - a.totalVendido || a.nombre.localeCompare(b.nombre))
+    // Lo vendible primero y lo agotado al final, para que las recetas sin
+    // ingredientes no estorben arriba pero sigan estando visibles.
+    const todos = [...productosSimples.map(prepararItem), ...recetasConStock]
+      .sort((a, b) =>
+        Number(a.agotado) - Number(b.agotado) ||
+        b.totalVendido - a.totalVendido ||
+        a.nombre.localeCompare(b.nombre)
+      )
       .slice(0, 100);
 
+    const agotadas = recetasConStock.filter((r) => r.agotado);
     console.log(`✅ ${productosSimples.length} producto(s) simple(s) + ${recetasConStock.length} receta(s) = ${todos.length} total`);
+    if (agotadas.length > 0) {
+      console.log(`⚠️ ${agotadas.length} receta(s) agotada(s) (se envían marcadas, no se esconden):`);
+      agotadas.forEach((r) => console.log(`   • ${r.nombre} → ${r.motivoAgotado}`));
+    }
 
     if (todos.length > 0) {
       console.log("\n🏆 Top 5 más vendidos (productos + recetas):");
@@ -807,9 +1062,13 @@ export const getProductosParaVenta = async (req, res) => {
       });
     }
 
-    res.json({ productos: todos, totalEncontrados: todos.length });
+    // Los vendedores no ven costos ni márgenes (ver `sinCostos`).
+    const esVendedor = req.user?.rol === ROL_VENDEDOR;
+    const respuesta = esVendedor ? todos.map(sinCostos) : todos;
 
-    console.log("✅ Productos y recetas enviados al frontend\n");
+    res.json({ productos: respuesta, totalEncontrados: respuesta.length });
+
+    console.log(`✅ Productos y recetas enviados al frontend${esVendedor ? ' (sin costos: rol vendedor)' : ''}\n`);
   } catch (error) {
     console.error("\n❌ Error al obtener productos para venta:", error);
     console.error("Mensaje:", error.message);
@@ -832,14 +1091,16 @@ export const getProductoById = async (req, res) => {
 
     const producto = await Inventario.findById(req.params.id)
       .populate('createdBy', 'nombre email')
-      .populate('receta.ingredienteId', 'nombre cantidad precioCompra precioVenta imagen seVende tipo')
+      .populate('receta.ingredienteId', 'nombre cantidad precioCompra precioVenta imagen seVende tipo unidad')
       .lean();
 
     if (!producto) {
       return res.status(404).json({ error: 'Producto no encontrado' });
     }
 
-    res.json({ producto });
+    // Si es receta, viene con su stock y costo calculados + el motivo si está
+    // agotada, para que el formulario de edición muestre el estado real.
+    res.json({ producto: prepararItem(producto) });
   } catch (error) {
     console.error('Error al obtener producto por ID:', error);
     res.status(500).json({ error: 'Error al obtener producto', mensaje: error.message });

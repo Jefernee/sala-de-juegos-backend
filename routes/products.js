@@ -16,9 +16,20 @@ import {
 
 const router = express.Router();
 
-// ✅ RUTAS PÚBLICAS
+// ✅ RUTA PÚBLICA — catálogo para el cliente.
+// Solo expone nombre, imagen, precio de venta y disponibilidad.
+// NUNCA precioCompra ni la receta: eso revelaría los márgenes del negocio.
 router.get("/public", getProductosPublicos);
-router.get("/para-venta", getProductosParaVenta);
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/products/para-venta — pantalla de ventas (POS).
+// PROTEGIDA: antes era pública y devolvía el precioCompra de cada producto y
+// la receta completa con el costo de cada ingrediente, así que cualquiera con
+// la URL podía leer los márgenes del negocio. Ahora pide token; además, a los
+// vendedores se les ocultan los costos dentro del controlador (solo el
+// administrador y los colaboradores los ven).
+// ─────────────────────────────────────────────────────────────────
+router.get("/para-venta", authMiddleware, getProductosParaVenta);
 
 // ─────────────────────────────────────────────────────────────────
 // GET /api/products/ingredientes
