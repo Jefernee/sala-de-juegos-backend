@@ -59,6 +59,28 @@ const juegoResumenSchema = new mongoose.Schema(
 );
  
 // ─────────────────────────────────────────────
+// Sub-schema: cliente del Top 10 del mes
+// Se guarda solo lo que la tarjeta del reporte muestra; el detalle completo
+// (todos los clientes, por semana/quincena/rango) sale del endpoint
+// GET /api/monthly-reports/:año/:mes/clientes, que calcula al vuelo.
+// ─────────────────────────────────────────────
+const topClienteSchema = new mongoose.Schema(
+  {
+    posicion: { type: Number, default: 0 },
+    cliente: { type: String, required: true },
+    sesiones: { type: Number, default: 0 },
+    tiempoTotalMinutos: { type: Number, default: 0 },
+    montoTotal: { type: Number, default: 0 },
+    totalPlay4: { type: Number, default: 0 },
+    totalPlay5: { type: Number, default: 0 },
+    totalPingPong: { type: Number, default: 0 },
+    diasDistintos: { type: Number, default: 0 },
+    ultimaVisita: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
+// ─────────────────────────────────────────────
 // Schema principal del reporte mensual
 // ─────────────────────────────────────────────
 const monthlyReportSchema = new mongoose.Schema(
@@ -106,6 +128,13 @@ const monthlyReportSchema = new mongoose.Schema(
     // ── Juegos más jugados ────────────────────
     // Ordenados de mayor a menor por vecesJugado
     juegosMasJugados: [juegoResumenSchema],
+
+    // ── Top 10 de clientes que más jugaron ────
+    // Ordenados por cantidad de sesiones, de mayor a menor.
+    // Los reportes creados ANTES de esta función no lo traen: el GET del
+    // reporte lo calcula al vuelo y lo guarda (ver getReporteMensual), así los
+    // meses viejos no necesitan regenerarse a mano.
+    topClientes: [topClienteSchema],
  
     // ── Metadata ──────────────────────────────
     ultimaActualizacion: { type: Date, default: Date.now },

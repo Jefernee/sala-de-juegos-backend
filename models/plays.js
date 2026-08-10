@@ -168,6 +168,12 @@ const playSchema = new mongoose.Schema({
 // ✅ ELIMINADO el middleware pre('save') problemático
 // Ahora el controlador se encarga de asignar tipoPlay y los totales
 
+// Casi todo lo que consulta plays lo hace por rango de fechas: los reportes
+// mensuales, el estado de resultados, el ranking de clientes y el listado
+// (que además ordena por fecha descendente). Sin este índice, cada uno de esos
+// recorría la colección entera.
+playSchema.index({ fecha: -1 });
+
 const Play = mongoose.model('Play', playSchema);
 
 export default Play;

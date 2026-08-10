@@ -1,6 +1,15 @@
 import Play from '../models/plays.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
- 
+import { regexBusquedaFlexible } from '../utils/textoBusqueda.js';
+import {
+  construirRankingClientes,
+  construirTopClientes,
+  periodosDelMes,
+  resolverPeriodo,
+  formatearMinutos,
+  ORDENES_VALIDOS,
+} from '../utils/rankingClientes.js';
+
 // ─────────────────────────────────────────────
 // Helpers internos
 // ─────────────────────────────────────────────
@@ -135,6 +144,10 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
     porLugar: Object.values(lugaresMap),
     porDia: Object.values(diasMap).sort((a, b) => a.dia - b.dia),
     juegosMasJugados,
+    // Top 10 de clientes del mes, al lado de los juegos más jugados. El cálculo
+    // vive en utils/rankingClientes.js y lo comparten este generador, el de
+    // playsController y el endpoint de ranking por periodo.
+    topClientes: construirTopClientes(plays),
     ultimaActualizacion: new Date(),
     periodoInicio,
     periodoFin,
@@ -256,6 +269,34 @@ export const getReporteMensual = async (req, res) => {
         mensaje: `No existe reporte para ${NOMBRES_MESES[mes - 1]} ${año}. Genéralo primero.`,
       });
     }
+
+    // Respaldo de UNA sola vez para reportes guardados ANTES de que existiera el
+    // Top 10. Hace falta porque regenerar un año anterior está bloqueado (ver
+    // generarReporteMensual), así que sin esto los meses viejos se quedarían sin
+    // Top 10 para siempre.
+    //
+    // Este GET NO recalcula en cada carga: el Top 10 se guarda en el reporte y
+    // de ahí en adelante se lee tal cual. La condición pide además que el mes
+    // tenga plays; si no, un mes vacío (que nunca va a tener clientes) volvería
+    // a consultar la base en cada visita sin poder guardar nada.
+    const necesitaTopClientes =
+      (!Array.isArray(reporte.topClientes) || reporte.topClientes.length === 0) &&
+      ((reporte.playsIncluidos || 0) > 0 || (reporte.totalSesiones || 0) > 0);
+
+    if (necesitaTopClientes) {
+      const { inicio, fin } = getRangoMesUTC(año, mes);
+      const plays = await Play.find({ fecha: { $gte: inicio, $lte: fin } }).lean();
+      reporte.topClientes = construirTopClientes(plays);
+
+      // En background: si falla, el reporte ya se respondió bien.
+      if (reporte.topClientes.length > 0) {
+        MonthlyReport.updateOne({ año, mes }, { $set: { topClientes: reporte.topClientes } })
+          .catch((err) => console.error('⚠️ No se pudo guardar el Top 10 de clientes:', err.message));
+      }
+    } else if (!Array.isArray(reporte.topClientes)) {
+      reporte.topClientes = []; // mes sin plays: lista vacía, sin tocar la base
+    }
+
     return res.status(200).json({ ok: true, reporte });
   } catch (error) {
     console.error('Error obteniendo reporte mensual:', error);
@@ -263,6 +304,98 @@ export const getReporteMensual = async (req, res) => {
   }
 };
  
+// ─────────────────────────────────────────────
+// Ranking de clientes: quién jugó más en un periodo
+//
+// GET /api/monthly-reports/:año/:mes/clientes
+//
+// Query params:
+//   periodo     mes (por defecto) | semana | quincena | personalizado
+//   semana      1-5   (si periodo=semana)   → bloques fijos: 1-7, 8-14, 15-21, 22-28, 29-fin
+//   quincena    1 | 2 (si periodo=quincena) → días 1-15 y 16-fin
+//   desde/hasta YYYY-MM-DD (si periodo=personalizado)
+//   ordenarPor  sesiones (por defecto) | tiempo | monto
+//   buscar      filtra el ranking por nombre (sin tildes ni mayúsculas)
+//
+// Devuelve SIEMPRE a todos los clientes del periodo, del que más jugó al que
+// menos. No se pagina ni se corta: el dueño pidió ver la lista completa.
+//
+// Se calcula al vuelo desde los plays en vez de leerlo del reporte guardado,
+// porque las semanas y los rangos libres no están en ningún snapshot, y así
+// cualquier mes (incluidos los años cerrados) funciona sin regenerar nada.
+// ─────────────────────────────────────────────
+
+export const getRankingClientes = async (req, res) => {
+  try {
+    const año = parseInt(req.params.año);
+    const mes = parseInt(req.params.mes);
+    if (isNaN(año) || isNaN(mes) || mes < 1 || mes > 12) {
+      return res.status(400).json({ ok: false, mensaje: 'Año o mes inválido.' });
+    }
+
+    const resuelto = resolverPeriodo(año, mes, req.query);
+    if (!resuelto.ok) {
+      return res.status(400).json({ ok: false, mensaje: resuelto.mensaje });
+    }
+    const { periodo } = resuelto;
+
+    const ordenarPor = ORDENES_VALIDOS.includes(req.query.ordenarPor)
+      ? req.query.ordenarPor
+      : 'sesiones';
+
+    const plays = await Play.find({ fecha: { $gte: periodo.desde, $lte: periodo.hasta } }).lean();
+    const ranking = construirRankingClientes(plays, { ordenarPor });
+    let clientes = ranking;
+
+    // Filtro por nombre: se aplica DESPUÉS de rankear, para que la posición
+    // que se ve sea la real dentro del periodo y no la del resultado filtrado.
+    const textoBusqueda = req.query.buscar ?? req.query.cliente ?? req.query.q;
+    const regexCliente  = regexBusquedaFlexible(textoBusqueda);
+    if (regexCliente) clientes = clientes.filter((c) => regexCliente.test(c.cliente));
+
+    // Los totales son SIEMPRE los del periodo completo, no los del filtro: así
+    // se puede comparar a un cliente contra el total sin perder la referencia.
+    const totales = plays.reduce(
+      (acc, p) => {
+        acc.sesiones++;
+        acc.tiempoTotalMinutos += p.tiempoPagado || 0;
+        acc.montoTotal         += p.total        || 0;
+        return acc;
+      },
+      { sesiones: 0, tiempoTotalMinutos: 0, montoTotal: 0 }
+    );
+
+    const opciones = periodosDelMes(año, mes);
+
+    return res.status(200).json({
+      ok: true,
+      año,
+      mes,
+      nombreMes: NOMBRES_MESES[mes - 1],
+      periodo,
+      ordenarPor,
+      busqueda: regexCliente ? String(textoBusqueda).trim() : null,
+      // Los periodos que el frontend puede ofrecer, con sus fechas ya resueltas:
+      // solo hay que dibujar los botones, sin repetir la cuenta de los días.
+      opciones: {
+        mes: opciones.mes,
+        quincenas: opciones.quincenas,
+        semanas: opciones.semanas,
+      },
+      totales: {
+        ...totales,
+        tiempoTotalTexto: formatearMinutos(totales.tiempoTotalMinutos),
+        clientesDistintos: ranking.length,
+        clientesMostrados: clientes.length,
+      },
+      clientes,
+    });
+  } catch (error) {
+    console.error('Error obteniendo ranking de clientes:', error);
+    return res.status(500).json({ ok: false, mensaje: 'Error interno del servidor.', error: error.message });
+  }
+};
+
 export const getAnosDisponibles = async (req, res) => {
   try {
     const años = await MonthlyReport.distinct('año');

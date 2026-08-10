@@ -5,6 +5,8 @@ import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 import { getUTCDateRanges } from '../utils/dateUtils.js';
 import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
 import { alertarAvisoWhatsAppFallido } from '../utils/alertasEmail.js';
+import { regexBusquedaFlexible } from '../utils/textoBusqueda.js';
+import { construirTopClientes } from '../utils/rankingClientes.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers de costo y tipo
@@ -238,6 +240,10 @@ const calcularDatosReporte = (plays, año, mes, inicio, fin) => {
     porLugar:    Object.values(lugaresMap),
     porDia:      Object.values(diasMap).sort((a, b) => a.dia - b.dia),
     juegosMasJugados: Object.values(juegosMap).sort((a, b) => b.vecesJugado - a.vecesJugado),
+    // Los 10 clientes que más jugaron en el mes, igual que juegosMasJugados.
+    // El cálculo es compartido (utils/rankingClientes.js) con el endpoint de
+    // ranking por periodo, para que nunca digan cosas distintas.
+    topClientes: construirTopClientes(plays),
     ultimaActualizacion: new Date(),
     periodoInicio: inicio,
     periodoFin:    fin,
@@ -277,6 +283,11 @@ export const regenerarReporteDeFecha = async (fechaPlay) => {
 
 // ─────────────────────────────────────────────────────────────────
 // GET - Todos los plays con paginación y filtros
+//
+// Búsqueda por nombre de cliente: ?cliente=jose (alias: ?buscar= o ?q=).
+// Encuentra coincidencias PARCIALES y sin importar tildes ni mayúsculas, así
+// "jose" trae "José Pérez" y "mari" trae todas las Marías. Se combina con los
+// demás filtros y con la paginación.
 // ─────────────────────────────────────────────────────────────────
 
 export const getAllPlays = async (req, res) => {
@@ -294,6 +305,12 @@ export const getAllPlays = async (req, res) => {
         filtro.tiempoPendiente = { $gte: minPendiente };
     }
 
+    // Un texto de puros espacios (o de puros signos) no filtra nada: se ignora
+    // en vez de devolver una lista vacía sin explicación.
+    const textoBusqueda = req.query.cliente ?? req.query.buscar ?? req.query.q;
+    const regexCliente  = regexBusquedaFlexible(textoBusqueda);
+    if (regexCliente) filtro.cliente = regexCliente;
+
     const total      = await Play.countDocuments(filtro);
     const plays      = await Play.find(filtro).sort({ fecha: -1, createdAt: -1 }).skip(skip).limit(limit);
     const totalPages = Math.ceil(total / limit);
@@ -301,6 +318,9 @@ export const getAllPlays = async (req, res) => {
     res.status(200).json({
       success: true,
       data: plays,
+      // Se devuelve lo que se buscó para que el frontend pueda mostrar
+      // "3 resultados para «jose»" sin guardar estado aparte.
+      busqueda: regexCliente ? String(textoBusqueda).trim() : null,
       pagination: { total, count: plays.length, page, limit, totalPages, hasNextPage: page < totalPages, hasPrevPage: page > 1 },
     });
   } catch (error) {

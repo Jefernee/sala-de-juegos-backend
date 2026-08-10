@@ -199,6 +199,20 @@ const connectDB = async () => {
 
     if (!arranqueDisparado) {
       arranqueDisparado = true;
+
+      // El scheduler de fin de sesión arranca SIEMPRE, tenga o no migraciones
+      // pendientes. Antes vivía dentro de tareasDeArranque(), así que con
+      // EJECUTAR_MIGRACIONES=false (como está en producción) nunca se prendía y
+      // el aviso de WhatsApp quedaba dependiendo de un solo motor: el trigger de
+      // Atlas. Este es el respaldo de ese trigger, no una tarea de una sola vez.
+      // Es seguro llamarlo siempre: se auto-protege contra doble arranque y
+      // el envío ya es idempotente (ver utils/finSesionScheduler.js).
+      try {
+        iniciarSchedulerFinSesion();
+      } catch (e) {
+        console.error('⚠️ Scheduler de WhatsApp (no crítico):', e.message);
+      }
+
       if (process.env.EJECUTAR_MIGRACIONES === 'false') {
         console.log('⏭️  Tareas de arranque OMITIDAS (EJECUTAR_MIGRACIONES=false).');
       } else {
@@ -299,11 +313,8 @@ const tareasDeArranque = async () => {
     console.error('⚠️ Backfill finanzas personales (no crítico):', e.message);
   }
 
-  try {
-    iniciarSchedulerFinSesion();
-  } catch (e) {
-    console.error('⚠️ Scheduler de WhatsApp (no crítico):', e.message);
-  }
+  // El scheduler de fin de sesión ya NO se arranca acá: se movió a connectDB()
+  // para que se prenda también cuando las migraciones están desactivadas.
 
   console.log('✅ Tareas de arranque completadas.');
 };
