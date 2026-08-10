@@ -231,14 +231,16 @@ export const updateTorneo = async (req, res) => {
       return res.status(400).json({ message: error });
     }
 
-    // Imagen: nueva reemplaza y borra la anterior.
+    // Imagen: la nueva reemplaza a la anterior, pero la vieja se borra DESPUÉS
+    // de guardar. Si se borrara antes y el save fallara, el torneo quedaría
+    // apuntando a un afiche que ya no existe.
+    let imagenAnteriorABorrar = null;
     if (req.cloudinaryUrl) {
-      const anterior = torneo.imagenUrl;
       campos.imagenUrl = req.cloudinaryUrl;
-      if (anterior) await eliminarImagenCloudinary(anterior);
+      if (torneo.imagenUrl) imagenAnteriorABorrar = torneo.imagenUrl;
     } else if (req.body.eliminarImagen === true && torneo.imagenUrl) {
       campos.imagenUrl = null;
-      await eliminarImagenCloudinary(torneo.imagenUrl);
+      imagenAnteriorABorrar = torneo.imagenUrl;
     }
 
     if (Object.keys(campos).length === 0) {
@@ -247,6 +249,8 @@ export const updateTorneo = async (req, res) => {
 
     Object.assign(torneo, campos);
     const guardado = await torneo.save();
+
+    if (imagenAnteriorABorrar) await eliminarImagenCloudinary(imagenAnteriorABorrar);
 
     const inscritos = await Inscripcion.countDocuments({ torneoId: guardado._id });
     console.log(`✅ Torneo "${guardado.nombre}" actualizado`);
@@ -272,9 +276,13 @@ export const deleteTorneo = async (req, res) => {
     const torneo = await Torneo.findById(req.params.id);
     if (!torneo) return res.status(404).json({ message: 'Torneo no encontrado' });
 
-    if (torneo.imagenUrl) await eliminarImagenCloudinary(torneo.imagenUrl);
+    // El afiche se borra al final: si se borrara primero y fallara el borrado
+    // del torneo, quedaría publicado sin imagen.
+    const imagenABorrar = torneo.imagenUrl;
     const { deletedCount } = await Inscripcion.deleteMany({ torneoId: torneo._id });
     await Torneo.findByIdAndDelete(torneo._id);
+
+    if (imagenABorrar) await eliminarImagenCloudinary(imagenABorrar);
 
     console.log(`✅ Torneo "${torneo.nombre}" eliminado (+${deletedCount} inscripción(es))`);
     return res.status(200).json({

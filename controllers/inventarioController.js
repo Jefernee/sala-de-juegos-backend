@@ -1,5 +1,9 @@
 import Inventario from "../models/Inventario.js";
 import cloudinary from "../config/cloudinary.js";
+// Extracción del public_id y borrado, en un solo lugar. Este archivo tenía dos
+// copias inline de esa lógica (una en editar y otra en borrar), con un fallo
+// sutil en el respaldo que dejaba imágenes huérfanas.
+import { eliminarImagenCloudinary } from "../utils/cloudinaryUtils.js";
 import { mongoose } from "../db.js";
 import Sale from "../models/sale.js";
 import { ROL_VENDEDOR } from "../config/roles.js";
@@ -606,37 +610,16 @@ export const updateProducto = async (req, res) => {
     }
     console.log(`📦 Unidades a agregar al stock: ${cantidadAAgregar}`);
 
-    // ✅ Imagen: si viene nueva, actualizar URL y eliminar la anterior
+    // ✅ Imagen: si viene nueva, se apunta a ella. La anterior se borra DESPUÉS
+    // de guardar (ver más abajo), no acá: si se borrara primero y la
+    // actualización fallara —una validación, la base caída—, la imagen vieja ya
+    // no existiría pero el producto seguiría apuntando a ella, y quedaría con la
+    // foto rota sin forma de recuperarla.
+    let imagenAnteriorABorrar = null;
     if (req.cloudinaryUrl) {
       console.log("🖼️ Nueva imagen detectada en Cloudinary:", req.cloudinaryUrl);
       $set.imagen = req.cloudinaryUrl;
-
-      if (productoActual.imagen) {
-        try {
-          const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
-          const match = productoActual.imagen.match(regex);
-
-          let publicId;
-          if (match) {
-            publicId = match[1];
-          } else {
-            const urlParts = productoActual.imagen.split("/");
-            const uploadIndex = urlParts.findIndex((part) => part === "upload");
-            if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
-              const pathAfterUpload = urlParts.slice(uploadIndex + 2).join("/");
-              publicId = pathAfterUpload.replace(/\.[^/.]+$/, "");
-            }
-          }
-
-          if (publicId) {
-            console.log("🗑️ Eliminando imagen anterior:", publicId);
-            const deleteResult = await cloudinary.uploader.destroy(publicId);
-            console.log("Resultado eliminación:", deleteResult);
-          }
-        } catch (cloudinaryError) {
-          console.error("⚠️ Error al eliminar imagen anterior:", cloudinaryError);
-        }
-      }
+      if (productoActual.imagen) imagenAnteriorABorrar = productoActual.imagen;
     } else {
       console.log("ℹ️ No se recibió nueva imagen, se mantiene la actual");
     }
@@ -670,6 +653,11 @@ export const updateProducto = async (req, res) => {
       console.error("❌ No se pudo actualizar el producto");
       return res.status(500).json({ error: "Error al actualizar producto" });
     }
+
+    // Recién ahora, con el producto ya apuntando a la imagen nueva, se borra la
+    // vieja. Si esto falla solo queda una imagen de más en Cloudinary, que no
+    // rompe nada y se puede limpiar después.
+    if (imagenAnteriorABorrar) await eliminarImagenCloudinary(imagenAnteriorABorrar);
 
     console.log("✅ Producto actualizado exitosamente:", {
       id: productoActualizado._id,
@@ -724,42 +712,13 @@ export const deleteProducto = async (req, res) => {
       });
     }
 
-    if (producto.imagen) {
-      try {
-        const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
-        const match = producto.imagen.match(regex);
-
-        let publicId;
-        if (match) {
-          publicId = match[1];
-        } else {
-          const urlParts = producto.imagen.split("/");
-          const uploadIndex = urlParts.findIndex((part) => part === "upload");
-          if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
-            const pathAfterUpload = urlParts.slice(uploadIndex + 2).join("/");
-            publicId = pathAfterUpload.replace(/\.[^/.]+$/, "");
-          }
-        }
-
-        if (publicId) {
-          console.log("Eliminando imagen de Cloudinary con public_id:", publicId);
-          const result = await cloudinary.uploader.destroy(publicId);
-          console.log("Resultado de eliminación en Cloudinary:", result);
-
-          if (result.result === "ok") {
-            console.log("✅ Imagen eliminada de Cloudinary exitosamente");
-          } else {
-            console.warn("⚠️ Cloudinary respondió pero la imagen puede no existir:", result);
-          }
-        } else {
-          console.error("❌ No se pudo extraer el public_id de la URL:", producto.imagen);
-        }
-      } catch (cloudinaryError) {
-        console.error("❌ Error al eliminar imagen de Cloudinary:", cloudinaryError);
-      }
-    }
-
+    // Se borra el producto PRIMERO y la imagen después. Al revés, si el borrado
+    // fallara (por ejemplo por el guard de arriba en una carrera), el producto
+    // seguiría en el catálogo pero ya sin foto.
+    const imagenABorrar = producto.imagen;
     await Inventario.findByIdAndDelete(req.params.id);
+
+    if (imagenABorrar) await eliminarImagenCloudinary(imagenABorrar);
 
     res.json({
       message: "Producto e imagen eliminados correctamente",

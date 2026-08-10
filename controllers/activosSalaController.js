@@ -377,34 +377,36 @@ export const updateActivo = async (req, res) => {
       $set.fechaCompra = fecha;
     }
 
+    // Las imágenes que quedan reemplazadas se anotan acá y se borran DESPUÉS de
+    // guardar. Si se borraran ahora y la actualización fallara, el activo
+    // seguiría apuntando a una imagen que ya no existe: foto rota y sin vuelta
+    // atrás. Al revés, lo peor que pasa es que sobre un archivo en Cloudinary.
+    const imagenesABorrar = [];
+
     // Imagen del artículo: si llegó una nueva, reemplazar y borrar la anterior
     if (req.cloudinaryUrl) {
       console.log('🖼️ Nueva imagen de artículo:', req.cloudinaryUrl);
       $set.imagenUrl = req.cloudinaryUrl;
-      if (activoActual.imagenUrl) {
-        await eliminarImagenCloudinary(activoActual.imagenUrl);
-      }
+      if (activoActual.imagenUrl) imagenesABorrar.push(activoActual.imagenUrl);
     }
 
     // Eliminar foto del artículo (solo si NO se subió una nueva en este request)
     if (req.body.eliminarImagen === true && !req.cloudinaryUrl) {
       $set.imagenUrl = null;
-      if (activoActual.imagenUrl) await eliminarImagenCloudinary(activoActual.imagenUrl);
+      if (activoActual.imagenUrl) imagenesABorrar.push(activoActual.imagenUrl);
     }
 
     // Factura de compra: igual.
     if (req.cloudinaryFacturaUrl) {
       console.log('🧾 Nueva imagen de factura de compra:', req.cloudinaryFacturaUrl);
       $set.imagenFacturaUrl = req.cloudinaryFacturaUrl;
-      if (activoActual.imagenFacturaUrl) {
-        await eliminarImagenCloudinary(activoActual.imagenFacturaUrl);
-      }
+      if (activoActual.imagenFacturaUrl) imagenesABorrar.push(activoActual.imagenFacturaUrl);
     }
 
     // Eliminar factura de compra (solo si NO se subió una nueva en este request)
     if (req.body.eliminarImagenFactura === true && !req.cloudinaryFacturaUrl) {
       $set.imagenFacturaUrl = null;
-      if (activoActual.imagenFacturaUrl) await eliminarImagenCloudinary(activoActual.imagenFacturaUrl);
+      if (activoActual.imagenFacturaUrl) imagenesABorrar.push(activoActual.imagenFacturaUrl);
     }
 
     if (Object.keys($set).length === 0) {
@@ -416,6 +418,9 @@ export const updateActivo = async (req, res) => {
       { $set },
       { new: true, runValidators: true }
     );
+
+    // Ya persistido: ahora sí se pueden borrar las imágenes que quedaron sueltas.
+    for (const url of imagenesABorrar) await eliminarImagenCloudinary(url);
 
     console.log(`✅ Activo "${activoActualizado.nombre}" actualizado`);
     res.status(200).json({ message: 'Activo actualizado', data: activoActualizado });
@@ -445,15 +450,19 @@ export const deleteActivo = async (req, res) => {
       return res.status(404).json({ message: 'Activo no encontrado' });
     }
 
-    // Eliminar imágenes de Cloudinary (si las tiene). Si falla la limpieza no se
-    // bloquea la eliminación del registro.
-    if (activo.imagenUrl) await eliminarImagenCloudinary(activo.imagenUrl);
-    if (activo.imagenFacturaUrl) await eliminarImagenCloudinary(activo.imagenFacturaUrl);
-    for (const rep of activo.reparaciones || []) {
-      if (rep.facturaUrl) await eliminarImagenCloudinary(rep.facturaUrl);
-    }
+    // Foto del artículo, factura de compra y la factura de CADA reparación.
+    const imagenesABorrar = [
+      activo.imagenUrl,
+      activo.imagenFacturaUrl,
+      ...(activo.reparaciones || []).map((rep) => rep.facturaUrl),
+    ].filter(Boolean);
 
+    // Primero el registro y después las imágenes: si se borraran antes y el
+    // findByIdAndDelete fallara, el activo se quedaría en la lista con las fotos
+    // rotas. Si falla la limpieza, solo sobran archivos en Cloudinary.
     await ActivoSala.findByIdAndDelete(req.params.id);
+
+    for (const url of imagenesABorrar) await eliminarImagenCloudinary(url);
 
     console.log(`✅ Activo "${activo.nombre}" eliminado junto a sus imágenes`);
     res.status(200).json({ message: 'Activo e imágenes eliminados correctamente', id: req.params.id });

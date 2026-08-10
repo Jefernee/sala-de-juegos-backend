@@ -14,19 +14,25 @@ import cloudinary from '../config/cloudinary.js';
 export const extraerPublicId = (url) => {
   if (!url) return null;
 
-  const regex = /\/v\d+\/(.+?)(?:\.\w+)?$/;
-  const match = url.match(regex);
+  // Se ignora cualquier ?query al final antes de mirar la extensión.
+  const limpia = String(url).split('?')[0];
+
+  // Caso normal: Cloudinary siempre pone /v<versión>/ en la URL que devuelve al
+  // subir. Todo lo que va después es el public_id (con su carpeta), y esto
+  // funciona aunque haya transformaciones antes de la versión.
+  const match = limpia.match(/\/v\d+\/(.+?)(?:\.\w+)?$/);
   if (match) return match[1];
 
-  // Fallback: buscar después de "upload/"
-  const urlParts = url.split('/');
-  const uploadIndex = urlParts.findIndex((part) => part === 'upload');
-  if (uploadIndex !== -1 && uploadIndex + 2 < urlParts.length) {
-    const pathAfterUpload = urlParts.slice(uploadIndex + 2).join('/');
-    return pathAfterUpload.replace(/\.[^/.]+$/, '');
-  }
+  // Respaldo para URLs sin versión: se toma todo lo que sigue a "upload/".
+  // Antes se cortaba por índice saltando DOS segmentos, dando por hecho que uno
+  // era la versión; sin versión, ese salto se comía la carpeta y devolvía
+  // "abc123" en vez de "productos/abc123". Cloudinary no encontraba ese
+  // public_id, respondía "not found" y la imagen quedaba huérfana en silencio.
+  const despuesDeUpload = limpia.split('/upload/')[1];
+  if (!despuesDeUpload) return null;
 
-  return null;
+  const sinVersion = despuesDeUpload.replace(/^v\d+\//, '');
+  return sinVersion.replace(/\.[^/.]+$/, '') || null;
 };
 
 /**
