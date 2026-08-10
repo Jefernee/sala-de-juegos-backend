@@ -123,126 +123,153 @@ const regenerarReporteDeVenta = async (fechaVenta) => {
 // ─────────────────────────────────────────────────────────────────
 // POST /api/sales  — Registrar nueva venta
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// Validación y costeo de los productos de una venta.
+//
+// La usan addSale (venta nueva) y updateSale (venta editada), para que las dos
+// cobren, cuesten y descuenten EXACTAMENTE igual. Antes esto vivía suelto
+// dentro de addSale y editar no hacía nada de esto.
+//
+// `creditoStock` existe para la edición: son las cantidades que la venta que se
+// está editando YA tiene descontadas del inventario. Al validar el stock hay
+// que sumarlas de vuelta, porque van a liberarse al aplicar el cambio. Sin eso,
+// editar una venta de 5 gaseosas para dejarla en 6 fallaría por "stock
+// insuficiente" aunque solo haga falta una más.
+//
+// Devuelve { error } con la respuesta lista, o { productosConCosto, decrementMap }.
+// ─────────────────────────────────────────────────────────────────
+const procesarProductosDeVenta = async (productos, creditoStock = new Map()) => {
+  const productosConCosto = [];
+
+  // Consolida los descuentos de productos simples Y de ingredientes de recetas
+  // en un solo lugar, para aplicarlos de una sola vez al final. Evita
+  // problemas si el mismo ingrediente aparece en varias recetas de la misma
+  // venta (ej. helado en cono y gelatina).
+  // Clave: id del ítem en Inventario | Valor: { nombre, cantidad } a descontar.
+  const decrementMap = new Map();
+
+  const acumularDescuento = (id, nombre, cantidad) => {
+    const previo = decrementMap.get(id);
+    decrementMap.set(id, { nombre, cantidad: (previo?.cantidad || 0) + cantidad });
+  };
+
+  // Stock que se puede comprometer: lo que hay + lo que esta venta ya tenía
+  // tomado - lo que ya se planificó en esta misma pasada.
+  const disponible = (clave, cantidadEnBase) =>
+    cantidadEnBase + (creditoStock.get(clave) || 0) - (decrementMap.get(clave)?.cantidad || 0);
+
+  for (const item of productos) {
+    if (!item.productoId || !item.nombre || !item.cantidad || item.cantidad <= 0) return { error: { status: 400, body: { error: "Datos de producto inválidos", producto: item } } };
+    if (!item.precioVenta || item.precioVenta <= 0) return { error: { status: 400, body: { error: "Precio de venta inválido", producto: item } } };
+
+    const subtotalCalculado = item.cantidad * item.precioVenta;
+    if (Math.abs(item.subtotal - subtotalCalculado) > 0.01) return { error: { status: 400, body: { error: "Subtotal incorrecto", producto: item.nombre, subtotalRecibido: item.subtotal, subtotalEsperado: subtotalCalculado } } };
+
+    // Para recetas necesitamos los ingredientes poblados
+    const productoDB = await Inventario.findById(item.productoId)
+      .populate('receta.ingredienteId', 'nombre cantidad precioCompra tipo');
+
+    if (!productoDB)         return { error: { status: 404, body: { error: `Producto "${item.nombre}" no encontrado` } } };
+    if (!productoDB.seVende) return { error: { status: 400, body: { error: `"${productoDB.nombre}" no está disponible para venta` } } };
+    if (Math.abs(productoDB.precioVenta - item.precioVenta) > 0.01) return { error: { status: 400, body: { error: `El precio de "${productoDB.nombre}" ha cambiado`, producto: { nombre: productoDB.nombre, precioEnCarrito: item.precioVenta, precioActual: productoDB.precioVenta } } } };
+
+    let costoUnitario;
+    let costoSubtotal;
+
+    if (productoDB.tipo === 'receta') {
+      // ─────────────────────────────────────────────────────────────
+      // RECETAS: en lugar de descontar el stock de la receta misma (que no
+      // existe), se descuenta cada ingrediente. El costo se calcula al vuelo
+      // sumando el precioCompra de los ingredientes.
+      // ─────────────────────────────────────────────────────────────
+      if (!productoDB.receta || productoDB.receta.length === 0) {
+        return { error: { status: 400, body: { error: `La receta "${productoDB.nombre}" no tiene ingredientes configurados. Configúrela antes de vender.` } } };
+      }
+
+      costoUnitario = 0;
+
+      for (const comp of productoDB.receta) {
+        const ing = comp.ingredienteId;
+        if (!ing) {
+          return { error: { status: 400, body: { error: `Un ingrediente de la receta "${productoDB.nombre}" ya no existe en inventario. Actualice la receta.` } } };
+        }
+
+        const cantidadNecesaria = comp.cantidad * item.cantidad;
+        const claveIng = ing._id.toString();
+        const stockReal = disponible(claveIng, ing.cantidad);
+
+        if (stockReal < cantidadNecesaria) {
+          return {
+            error: {
+              status: 400,
+              body: {
+                error: `Stock insuficiente de "${ing.nombre}" para preparar "${productoDB.nombre}"`,
+                producto: { receta: productoDB.nombre, ingrediente: ing.nombre, necesario: cantidadNecesaria, disponible: stockReal },
+              },
+            },
+          };
+        }
+
+        acumularDescuento(claveIng, ing.nombre, cantidadNecesaria);
+        costoUnitario += (ing.precioCompra || 0) * comp.cantidad;
+      }
+
+      costoSubtotal = costoUnitario * item.cantidad;
+
+    } else {
+      // ── PRODUCTOS SIMPLES ─────────────────────────────────────────
+      const claveProducto = productoDB._id.toString();
+      const stockReal = disponible(claveProducto, productoDB.cantidad);
+
+      if (stockReal < item.cantidad) {
+        return { error: { status: 400, body: { error: `Stock insuficiente para "${productoDB.nombre}"`, producto: { nombre: productoDB.nombre, solicitado: item.cantidad, disponible: stockReal } } } };
+      }
+
+      acumularDescuento(claveProducto, productoDB.nombre, item.cantidad);
+      costoUnitario = productoDB.precioCompra || 0;
+      costoSubtotal = costoUnitario * item.cantidad;
+    }
+
+    productosConCosto.push({ productoId: item.productoId, nombre: item.nombre, cantidad: item.cantidad, precioVenta: item.precioVenta, subtotal: item.subtotal, costoUnitario, costoSubtotal });
+  }
+
+  return { productosConCosto, decrementMap };
+};
+
+// Valida los montos de una venta (los mismos chequeos para crear y editar).
+// Devuelve { status, body } si algo no cuadra, o null si está todo bien.
+const validarMontos = ({ productos, total, montoPagado, vuelto }) => {
+  if (!productos || productos.length === 0) return { status: 400, body: { error: "Debe incluir productos en la venta" } };
+  if (!total || !montoPagado)               return { status: 400, body: { error: "Faltan datos de pago" } };
+  if (total <= 0)                           return { status: 400, body: { error: "El total debe ser mayor a 0" } };
+  if (montoPagado < total)                  return { status: 400, body: { error: "El monto pagado es insuficiente", detalles: { total, montoPagado, faltante: total - montoPagado } } };
+
+  const vueltoCalculado = montoPagado - total;
+  if (Math.abs(vuelto - vueltoCalculado) > 0.01) return { status: 400, body: { error: "El vuelto calculado no coincide", vueltoRecibido: vuelto, vueltoEsperado: vueltoCalculado } };
+
+  const totalCalculado = productos.reduce((sum, item) => sum + (item.subtotal || 0), 0);
+  if (Math.abs(total - totalCalculado) > 0.01) return { status: 400, body: { error: "El total no coincide con la suma de subtotales", totalRecibido: total, totalCalculado } };
+
+  return null;
+};
+
+// decrementMap → el arreglo que se guarda en la venta.
+const aDescuentosInventario = (decrementMap) =>
+  [...decrementMap].map(([itemId, { nombre, cantidad }]) => ({ itemId, nombre, cantidad }));
+
 export const addSale = async (req, res) => {
   console.log("\n🚀 ===== INICIO DE PROCESO DE VENTA =====");
 
   try {
     const { productos, total, montoPagado, vuelto, fecha } = req.body;
 
-    if (!productos || productos.length === 0) return res.status(400).json({ error: "Debe incluir productos en la venta" });
-    if (!total || !montoPagado)              return res.status(400).json({ error: "Faltan datos de pago" });
-    if (total <= 0)                          return res.status(400).json({ error: "El total debe ser mayor a 0" });
-    if (montoPagado < total)                 return res.status(400).json({ error: "El monto pagado es insuficiente", detalles: { total, montoPagado, faltante: total - montoPagado } });
+    const errorMontos = validarMontos({ productos, total, montoPagado, vuelto });
+    if (errorMontos) return res.status(errorMontos.status).json(errorMontos.body);
 
-    const vueltoCalculado = montoPagado - total;
-    if (Math.abs(vuelto - vueltoCalculado) > 0.01) return res.status(400).json({ error: "El vuelto calculado no coincide", vueltoRecibido: vuelto, vueltoEsperado: vueltoCalculado });
+    const procesado = await procesarProductosDeVenta(productos);
+    if (procesado.error) return res.status(procesado.error.status).json(procesado.error.body);
 
-    const productosConCosto = [];
-
-    // ─────────────────────────────────────────────────────────────────
-    // Mapa unificado de descuentos de inventario.
-    // Consolida los descuentos de productos simples Y de ingredientes de
-    // recetas en un solo lugar, para aplicarlos atómicamente al final.
-    // Esto evita problemas si el mismo ingrediente aparece en varias
-    // recetas vendidas en la misma transacción (ej. helado en cono y gelatina).
-    // Clave: id del ítem en Inventario | Valor: { nombre, cantidad } a descontar.
-    // El nombre se guarda junto con la venta (descuentosInventario) para poder
-    // devolver EXACTAMENTE esto si algún día se borra, sin depender de que la
-    // receta siga igual.
-    // ─────────────────────────────────────────────────────────────────
-    const decrementMap = new Map();
-
-    // Suma al mapa sin pisar lo ya acumulado para ese mismo ítem.
-    const acumularDescuento = (id, nombre, cantidad) => {
-      const previo = decrementMap.get(id);
-      decrementMap.set(id, { nombre, cantidad: (previo?.cantidad || 0) + cantidad });
-    };
-
-    for (let i = 0; i < productos.length; i++) {
-      const item = productos[i];
-      if (!item.productoId || !item.nombre || !item.cantidad || item.cantidad <= 0) return res.status(400).json({ error: "Datos de producto inválidos", producto: item });
-      if (!item.precioVenta || item.precioVenta <= 0) return res.status(400).json({ error: "Precio de venta inválido", producto: item });
-
-      const subtotalCalculado = item.cantidad * item.precioVenta;
-      if (Math.abs(item.subtotal - subtotalCalculado) > 0.01) return res.status(400).json({ error: "Subtotal incorrecto", producto: item.nombre, subtotalRecibido: item.subtotal, subtotalEsperado: subtotalCalculado });
-
-      // Para recetas necesitamos los ingredientes poblados
-      const productoDB = await Inventario.findById(item.productoId)
-        .populate('receta.ingredienteId', 'nombre cantidad precioCompra tipo');
-
-      if (!productoDB)         return res.status(404).json({ error: `Producto "${item.nombre}" no encontrado` });
-      if (!productoDB.seVende) return res.status(400).json({ error: `"${productoDB.nombre}" no está disponible para venta` });
-      if (Math.abs(productoDB.precioVenta - item.precioVenta) > 0.01) return res.status(400).json({ error: `El precio de "${productoDB.nombre}" ha cambiado`, producto: { nombre: productoDB.nombre, precioEnCarrito: item.precioVenta, precioActual: productoDB.precioVenta } });
-
-      let costoUnitario;
-      let costoSubtotal;
-
-      if (productoDB.tipo === 'receta') {
-        // ─────────────────────────────────────────────────────────────
-        // Lógica de venta para RECETAS.
-        // En lugar de descontar el stock de la receta misma (que no existe),
-        // se descuenta cada ingrediente individualmente.
-        // El costo se calcula en tiempo real sumando precioCompra de ingredientes.
-        // ─────────────────────────────────────────────────────────────
-        if (!productoDB.receta || productoDB.receta.length === 0) {
-          return res.status(400).json({ error: `La receta "${productoDB.nombre}" no tiene ingredientes configurados. Configúrela antes de vender.` });
-        }
-
-        costoUnitario = 0;
-
-        for (const comp of productoDB.receta) {
-          const ing = comp.ingredienteId;
-          if (!ing) {
-            return res.status(400).json({ error: `Un ingrediente de la receta "${productoDB.nombre}" ya no existe en inventario. Actualice la receta.` });
-          }
-
-          const cantidadNecesaria = comp.cantidad * item.cantidad;
-          const claveIng = ing._id.toString();
-
-          // Considerar lo ya planificado para descontar en esta misma venta
-          const yaDescontado = decrementMap.get(claveIng)?.cantidad || 0;
-          const stockReal = ing.cantidad - yaDescontado;
-
-          if (stockReal < cantidadNecesaria) {
-            return res.status(400).json({
-              error: `Stock insuficiente de "${ing.nombre}" para preparar "${productoDB.nombre}"`,
-              producto: {
-                receta: productoDB.nombre,
-                ingrediente: ing.nombre,
-                necesario: cantidadNecesaria,
-                disponible: stockReal,
-              },
-            });
-          }
-
-          acumularDescuento(claveIng, ing.nombre, cantidadNecesaria);
-          costoUnitario += (ing.precioCompra || 0) * comp.cantidad;
-        }
-
-        costoSubtotal = costoUnitario * item.cantidad;
-
-      } else {
-        // ─────────────────────────────────────────────────────────────
-        // Lógica original para PRODUCTOS SIMPLES
-        // ─────────────────────────────────────────────────────────────
-        const claveProducto = productoDB._id.toString();
-        const yaDescontado = decrementMap.get(claveProducto)?.cantidad || 0;
-        const stockReal = productoDB.cantidad - yaDescontado;
-
-        if (stockReal < item.cantidad) {
-          return res.status(400).json({ error: `Stock insuficiente para "${productoDB.nombre}"`, producto: { nombre: productoDB.nombre, solicitado: item.cantidad, disponible: stockReal } });
-        }
-
-        acumularDescuento(claveProducto, productoDB.nombre, item.cantidad);
-        costoUnitario = productoDB.precioCompra || 0;
-        costoSubtotal = costoUnitario * item.cantidad;
-      }
-
-      productosConCosto.push({ productoId: item.productoId, nombre: item.nombre, cantidad: item.cantidad, precioVenta: item.precioVenta, subtotal: item.subtotal, costoUnitario, costoSubtotal });
-    }
-
-    const totalCalculado = productos.reduce((sum, item) => sum + item.subtotal, 0);
-    if (Math.abs(total - totalCalculado) > 0.01) return res.status(400).json({ error: "El total no coincide con la suma de subtotales", totalRecibido: total, totalCalculado });
+    const { productosConCosto, decrementMap } = procesado;
 
     const totalCosto = productosConCosto.reduce((s, p) => s + p.costoSubtotal, 0);
     const ganancia   = total - totalCosto;
@@ -250,8 +277,8 @@ export const addSale = async (req, res) => {
     const fechaVenta = fecha || new Date();
 
     // Se guarda el movimiento de inventario JUNTO con la venta: es lo que
-    // permite devolver exactamente esto si después se borra.
-    const descuentosInventario = [...decrementMap].map(([itemId, { nombre, cantidad }]) => ({ itemId, nombre, cantidad }));
+    // permite devolver exactamente esto si después se borra o se edita.
+    const descuentosInventario = aDescuentosInventario(decrementMap);
 
     const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email, descuentosInventario });
     const ventaGuardada = await newSale.save();
@@ -336,7 +363,78 @@ export const updateSale = async (req, res) => {
     const ventaExistente = await Sale.findById(req.params.id);
     if (!ventaExistente) return res.status(404).json({ error: "Venta no encontrada" });
 
-    const ventaActualizada = await Sale.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+    // ─────────────────────────────────────────────────────────────────
+    // Si la edición toca los productos hay que rehacer la venta entera:
+    // revalidar precios y stock, recalcular costo y ganancia, y mover el
+    // inventario por la DIFERENCIA.
+    //
+    // Antes esto no pasaba: se guardaba req.body tal cual. Cambiar una venta de
+    // 1 a 5 unidades no movía el inventario y dejaba costo y ganancia
+    // calculados con la cantidad vieja, así que el reporte se regeneraba con
+    // números malos sin dar ningún error.
+    // ─────────────────────────────────────────────────────────────────
+    if (req.body.productos !== undefined) {
+      const total       = req.body.total       !== undefined ? req.body.total       : ventaExistente.total;
+      const montoPagado = req.body.montoPagado !== undefined ? req.body.montoPagado : ventaExistente.montoPagado;
+      const vuelto      = req.body.vuelto      !== undefined ? req.body.vuelto      : ventaExistente.vuelto;
+
+      const errorMontos = validarMontos({ productos: req.body.productos, total, montoPagado, vuelto });
+      if (errorMontos) return res.status(errorMontos.status).json(errorMontos.body);
+
+      // Lo que esta venta ya tiene descontado vuelve a estar disponible para
+      // ella misma. Sin este crédito, subir la cantidad fallaría por "stock
+      // insuficiente" contando dos veces lo que ya había tomado.
+      const creditoStock = new Map(
+        (ventaExistente.descuentosInventario || []).map((d) => [String(d.itemId), d.cantidad])
+      );
+
+      const procesado = await procesarProductosDeVenta(req.body.productos, creditoStock);
+      if (procesado.error) return res.status(procesado.error.status).json(procesado.error.body);
+
+      const { productosConCosto, decrementMap } = procesado;
+
+      const totalCosto = productosConCosto.reduce((s, p) => s + p.costoSubtotal, 0);
+
+      // Movimiento NETO por ítem: lo nuevo menos lo viejo. Los ítems que salieron
+      // de la venta quedan con neto negativo y se devuelven al stock.
+      const netos = new Map();
+      for (const [id, { cantidad }] of decrementMap) netos.set(id, cantidad);
+      for (const [id, cantidad] of creditoStock) netos.set(id, (netos.get(id) || 0) - cantidad);
+
+      ventaExistente.productos             = productosConCosto;
+      ventaExistente.total                 = total;
+      ventaExistente.montoPagado           = montoPagado;
+      ventaExistente.vuelto                = vuelto;
+      ventaExistente.totalCosto            = totalCosto;
+      ventaExistente.ganancia              = total - totalCosto;
+      ventaExistente.descuentosInventario  = aDescuentosInventario(decrementMap);
+      if (req.body.fecha !== undefined) ventaExistente.fecha = req.body.fecha;
+
+      const guardada = await ventaExistente.save();
+
+      // El inventario se mueve DESPUÉS de guardar, igual que en el borrado: si
+      // se moviera antes y el save fallara, el stock quedaría cambiado por una
+      // edición que nunca se aplicó.
+      for (const [id, neto] of netos) {
+        if (!neto) continue; // sin cambio para ese ítem
+        await Inventario.findByIdAndUpdate(id, { $inc: { cantidad: -neto }, updatedAt: new Date() });
+      }
+
+      res.json({ message: "Venta actualizada exitosamente", venta: guardada });
+
+      regenerarReporteDeVenta(ventaExistente.fecha);
+      regenerarReporteDeVenta(guardada.fecha);
+      regenerarEstadoDeFecha(ventaExistente.fecha, guardada.fecha);
+      return;
+    }
+
+    // Edición que NO toca los productos (fecha, datos de pago…): el inventario
+    // no se mueve. Se bloquean los campos calculados para que no lleguen
+    // pisados desde afuera y dejen la venta diciendo una cosa y sus productos
+    // otra.
+    const { productos, totalCosto, ganancia, descuentosInventario, usuario, ...camposEditables } = req.body;
+
+    const ventaActualizada = await Sale.findByIdAndUpdate(req.params.id, camposEditables, { new: true, runValidators: true });
     res.json({ message: "Venta actualizada exitosamente", venta: ventaActualizada });
 
     // ✅ Regenerar reportes en background. Si cambió la fecha de mes, se
