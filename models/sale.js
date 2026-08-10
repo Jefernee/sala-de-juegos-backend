@@ -1,6 +1,35 @@
 // models/Sale.js
 import mongoose from 'mongoose';
 
+// ─────────────────────────────────────────────────────────────────
+// Qué se descontó del inventario por esta venta, ítem por ítem.
+//
+// Es el registro EXACTO del movimiento, no una receta para recalcularlo. Al
+// borrar la venta se devuelve esto tal cual, sin volver a mirar el producto.
+//
+// Hace falta porque una receta puede cambiar entre la venta y el borrado: el
+// "Helado con Gelatina" llegó a tener 44 vasos por unidad mal digitados y se
+// corrigió después. Recalculando desde la receta de hoy se devolverían 1 vaso
+// donde se habían descontado 44, y el inventario quedaría mal en silencio.
+//
+// Para una receta hay una línea por INGREDIENTE; para un producto simple, una
+// sola línea con el producto mismo.
+// ─────────────────────────────────────────────────────────────────
+const descuentoInventarioSchema = new mongoose.Schema(
+  {
+    itemId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Inventario',
+      required: true,
+    },
+    // Copia del nombre al momento de la venta: si el ítem se borra del
+    // inventario, todavía se puede decir qué no se pudo devolver.
+    nombre: { type: String, default: '' },
+    cantidad: { type: Number, required: true, min: 0 },
+  },
+  { _id: false }
+);
+
 const saleSchema = new mongoose.Schema({
   productos: [{
     productoId: {
@@ -78,6 +107,13 @@ const saleSchema = new mongoose.Schema({
   fecha: {
     type: Date,
     default: Date.now
+  },
+  // Movimientos de inventario de esta venta. Las ventas anteriores a esta
+  // función no lo tienen: al borrarlas, la devolución se estima desde la
+  // receta/producto actual (ver restaurarInventarioDeVenta).
+  descuentosInventario: {
+    type: [descuentoInventarioSchema],
+    default: [],
   }
 }, {
   timestamps: true

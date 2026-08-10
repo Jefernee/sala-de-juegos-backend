@@ -145,9 +145,18 @@ export const addSale = async (req, res) => {
     // recetas en un solo lugar, para aplicarlos atómicamente al final.
     // Esto evita problemas si el mismo ingrediente aparece en varias
     // recetas vendidas en la misma transacción (ej. helado en cono y gelatina).
-    // Clave: id del ítem en Inventario | Valor: cantidad total a descontar
+    // Clave: id del ítem en Inventario | Valor: { nombre, cantidad } a descontar.
+    // El nombre se guarda junto con la venta (descuentosInventario) para poder
+    // devolver EXACTAMENTE esto si algún día se borra, sin depender de que la
+    // receta siga igual.
     // ─────────────────────────────────────────────────────────────────
     const decrementMap = new Map();
+
+    // Suma al mapa sin pisar lo ya acumulado para ese mismo ítem.
+    const acumularDescuento = (id, nombre, cantidad) => {
+      const previo = decrementMap.get(id);
+      decrementMap.set(id, { nombre, cantidad: (previo?.cantidad || 0) + cantidad });
+    };
 
     for (let i = 0; i < productos.length; i++) {
       const item = productos[i];
@@ -191,7 +200,7 @@ export const addSale = async (req, res) => {
           const claveIng = ing._id.toString();
 
           // Considerar lo ya planificado para descontar en esta misma venta
-          const yaDescontado = decrementMap.get(claveIng) || 0;
+          const yaDescontado = decrementMap.get(claveIng)?.cantidad || 0;
           const stockReal = ing.cantidad - yaDescontado;
 
           if (stockReal < cantidadNecesaria) {
@@ -206,7 +215,7 @@ export const addSale = async (req, res) => {
             });
           }
 
-          decrementMap.set(claveIng, yaDescontado + cantidadNecesaria);
+          acumularDescuento(claveIng, ing.nombre, cantidadNecesaria);
           costoUnitario += (ing.precioCompra || 0) * comp.cantidad;
         }
 
@@ -217,14 +226,14 @@ export const addSale = async (req, res) => {
         // Lógica original para PRODUCTOS SIMPLES
         // ─────────────────────────────────────────────────────────────
         const claveProducto = productoDB._id.toString();
-        const yaDescontado = decrementMap.get(claveProducto) || 0;
+        const yaDescontado = decrementMap.get(claveProducto)?.cantidad || 0;
         const stockReal = productoDB.cantidad - yaDescontado;
 
         if (stockReal < item.cantidad) {
           return res.status(400).json({ error: `Stock insuficiente para "${productoDB.nombre}"`, producto: { nombre: productoDB.nombre, solicitado: item.cantidad, disponible: stockReal } });
         }
 
-        decrementMap.set(claveProducto, yaDescontado + item.cantidad);
+        acumularDescuento(claveProducto, productoDB.nombre, item.cantidad);
         costoUnitario = productoDB.precioCompra || 0;
         costoSubtotal = costoUnitario * item.cantidad;
       }
@@ -240,12 +249,16 @@ export const addSale = async (req, res) => {
 
     const fechaVenta = fecha || new Date();
 
-    const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email });
+    // Se guarda el movimiento de inventario JUNTO con la venta: es lo que
+    // permite devolver exactamente esto si después se borra.
+    const descuentosInventario = [...decrementMap].map(([itemId, { nombre, cantidad }]) => ({ itemId, nombre, cantidad }));
+
+    const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email, descuentosInventario });
     const ventaGuardada = await newSale.save();
 
     // Descontar inventario con $inc atómico para todos los ítems
     // (tanto productos simples como ingredientes de recetas, ya consolidados en decrementMap).
-    for (const [id, cantidad] of decrementMap) {
+    for (const [id, { cantidad }] of decrementMap) {
       await Inventario.findByIdAndUpdate(id, { $inc: { cantidad: -cantidad }, updatedAt: new Date() });
     }
 
@@ -338,7 +351,106 @@ export const updateSale = async (req, res) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// DELETE /api/sales/:id  — regenera reporte en background
+// Devolución de inventario al borrar una venta
+//
+// Borrar una venta significa que NUNCA existió: desaparece de ventas, de los
+// reportes y el inventario vuelve a como estaba. Antes solo se borraba el
+// documento y se regeneraban los reportes; el stock quedaba descontado para
+// siempre, tanto de productos simples como de ingredientes de recetas.
+// ─────────────────────────────────────────────────────────────────
+
+const acumularEnPlan = (mapa, itemId, nombre, cantidad) => {
+  const clave = String(itemId);
+  const previo = mapa.get(clave);
+  mapa.set(clave, { itemId, nombre: nombre || previo?.nombre || '', cantidad: (previo?.cantidad || 0) + cantidad });
+};
+
+/**
+ * Reconstruye el movimiento de inventario de una venta VIEJA, que no guardó
+ * descuentosInventario. Es lo mejor que se puede hacer con lo que hay, pero es
+ * una ESTIMACIÓN: si la receta cambió desde que se hizo la venta, devuelve las
+ * cantidades de la receta de hoy, no las que realmente se descontaron.
+ * @param {Object} venta
+ * @returns {Promise<{plan: Object[], noEncontrados: string[]}>}
+ */
+const estimarPlanDesdeProductos = async (venta) => {
+  const mapa = new Map();
+  const noEncontrados = [];
+
+  for (const item of (venta.productos || [])) {
+    const productoDB = await Inventario.findById(item.productoId).populate('receta.ingredienteId', 'nombre');
+
+    if (!productoDB) {
+      noEncontrados.push(item.nombre || 'producto desconocido');
+      continue;
+    }
+
+    if (productoDB.tipo === 'receta') {
+      for (const comp of (productoDB.receta || [])) {
+        const ing = comp.ingredienteId;
+        if (!ing) {
+          noEncontrados.push(`un ingrediente de "${productoDB.nombre}"`);
+          continue;
+        }
+        acumularEnPlan(mapa, ing._id, ing.nombre, comp.cantidad * item.cantidad);
+      }
+    } else {
+      acumularEnPlan(mapa, productoDB._id, productoDB.nombre, item.cantidad);
+    }
+  }
+
+  return { plan: [...mapa.values()], noEncontrados };
+};
+
+/**
+ * Devuelve al inventario lo que descontó una venta. Nunca lanza: informa lo que
+ * pudo y lo que no, para que borrar la venta no se caiga por un ítem raro.
+ * @param {Object} venta - Documento de Sale
+ * @returns {Promise<{devueltos: Object[], noEncontrados: string[], estimado: boolean}>}
+ */
+export const restaurarInventarioDeVenta = async (venta) => {
+  const guardados = venta.descuentosInventario || [];
+  const estimado = guardados.length === 0;
+
+  let plan = [];
+  let noEncontrados = [];
+
+  if (!estimado) {
+    // Camino normal: se devuelve exactamente lo que se descontó.
+    plan = guardados.map((d) => ({ itemId: d.itemId, nombre: d.nombre, cantidad: d.cantidad }));
+  } else {
+    // Venta vieja (o sin productos que muevan inventario): hay que estimarlo.
+    const estimacion = await estimarPlanDesdeProductos(venta);
+    plan = estimacion.plan;
+    noEncontrados = estimacion.noEncontrados;
+  }
+
+  const devueltos = [];
+  for (const linea of plan) {
+    if (!linea.cantidad || linea.cantidad <= 0) continue;
+    try {
+      const actualizado = await Inventario.findByIdAndUpdate(
+        linea.itemId,
+        { $inc: { cantidad: linea.cantidad }, updatedAt: new Date() },
+        { new: true }
+      );
+      if (!actualizado) {
+        // El ítem ya no existe en inventario: no hay dónde devolverlo.
+        noEncontrados.push(linea.nombre || String(linea.itemId));
+        continue;
+      }
+      devueltos.push({ itemId: linea.itemId, nombre: linea.nombre || actualizado.nombre, cantidad: linea.cantidad });
+    } catch (err) {
+      console.error(`⚠️ No se pudo devolver "${linea.nombre}" al inventario:`, err.message);
+      noEncontrados.push(linea.nombre || String(linea.itemId));
+    }
+  }
+
+  return { devueltos, noEncontrados, estimado };
+};
+
+// ─────────────────────────────────────────────────────────────────
+// DELETE /api/sales/:id  — devuelve el inventario y regenera reportes
 // ─────────────────────────────────────────────────────────────────
 export const deleteSale = async (req, res) => {
   try {
@@ -346,8 +458,32 @@ export const deleteSale = async (req, res) => {
     if (!ventaExistente) return res.status(404).json({ error: "Venta no encontrada" });
 
     const fechaVenta = ventaExistente.fecha;
+
+    // Primero se borra la venta y DESPUÉS se devuelve el inventario. En ese
+    // orden a propósito: borrar es una sola operación y es lo que el usuario
+    // pidió, mientras que la devolución son varias y podría fallar en alguna.
+    // Al revés, si la devolución saliera bien y el borrado fallara, quedaría
+    // stock inflado con la venta todavía viva, que es peor y más difícil de
+    // notar. Lo que no se pudo devolver se informa en la respuesta.
     await Sale.findByIdAndDelete(req.params.id);
-    res.json({ message: "Venta eliminada exitosamente", ventaEliminada: { id: ventaExistente._id, total: ventaExistente.total, fecha: ventaExistente.fecha } });
+
+    const { devueltos, noEncontrados, estimado } = await restaurarInventarioDeVenta(ventaExistente);
+
+    if (noEncontrados.length > 0) {
+      console.warn(`⚠️ Venta ${ventaExistente._id} borrada, pero no se pudo devolver al inventario: ${noEncontrados.join(', ')}`);
+    }
+
+    res.json({
+      message: "Venta eliminada exitosamente",
+      ventaEliminada: { id: ventaExistente._id, total: ventaExistente.total, fecha: ventaExistente.fecha },
+      inventario: {
+        devueltos,
+        noEncontrados,
+        // true = la venta es anterior a que se guardara el detalle del
+        // descuento, así que se calculó desde la receta/producto de hoy.
+        estimado,
+      },
+    });
 
     // ✅ Regenerar reportes en background (ventas + estado de resultados)
     regenerarReporteDeVenta(fechaVenta);
