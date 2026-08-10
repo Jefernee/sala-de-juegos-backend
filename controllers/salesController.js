@@ -429,10 +429,18 @@ export const updateSale = async (req, res) => {
     }
 
     // Edición que NO toca los productos (fecha, datos de pago…): el inventario
-    // no se mueve. Se bloquean los campos calculados para que no lleguen
-    // pisados desde afuera y dejen la venta diciendo una cosa y sus productos
-    // otra.
-    const { productos, totalCosto, ganancia, descuentosInventario, usuario, ...camposEditables } = req.body;
+    // no se mueve. Se descartan dos grupos de campos:
+    //   • Calculados (totalCosto, ganancia, descuentosInventario): pisados desde
+    //     afuera dejarían la venta diciendo una cosa y sus productos otra.
+    //   • De Mongo (_id, __v, createdAt, updatedAt): si el frontend reenvía el
+    //     objeto completo tal como lo recibió, mandar _id dentro del update hace
+    //     que Mongo se queje por tocar un campo inmutable y la edición se caiga
+    //     con un 500 sin explicación.
+    const {
+      productos, totalCosto, ganancia, descuentosInventario, usuario,
+      _id, __v, createdAt, updatedAt,
+      ...camposEditables
+    } = req.body;
 
     const ventaActualizada = await Sale.findByIdAndUpdate(req.params.id, camposEditables, { new: true, runValidators: true });
     res.json({ message: "Venta actualizada exitosamente", venta: ventaActualizada });
