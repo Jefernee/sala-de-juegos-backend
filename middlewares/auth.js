@@ -1,7 +1,8 @@
 // middlewares/auth.js
 import jwt from "jsonwebtoken";
+import { cortesListos, tokenInvalidadoPorCorte } from "../utils/cortesSesion.js";
 
-const authMiddleware = (req, res, next) => {
+const authMiddleware = async (req, res, next) => {
   try {
     const authHeader = req.headers.authorization;
 
@@ -37,6 +38,18 @@ const authMiddleware = (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Los tokens ya no vencen solos: el único freno es el corte que hace el
+    // administrador desde el panel. Si este token se firmó antes del corte, se
+    // pide login de nuevo. El código SESION_CERRADA lo distingue de un token
+    // roto, para que el frontend muestre "se cerró la sesión" y no "error".
+    await cortesListos();
+    if (tokenInvalidadoPorCorte(decoded)) {
+      return res.status(401).json({
+        error: "Tu sesión fue cerrada por el administrador. Iniciá sesión de nuevo.",
+        code: "SESION_CERRADA",
+      });
+    }
 
     // Adjuntar información del usuario a la petición
     req.user = {

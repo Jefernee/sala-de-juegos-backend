@@ -10,7 +10,7 @@
 //     usar (ej. gestionar los roles de los demás usuarios). Va DESPUÉS de
 //     authMiddleware, porque necesita req.user.rol.
 import jwt from 'jsonwebtoken';
-import { ROL_ADMIN, ROL_VENDEDOR } from '../config/roles.js';
+import { ROL_ADMIN, ROL_VENDEDOR, ADMIN_EMAIL } from '../config/roles.js';
 
 // Prefijos que un vendedor SÍ puede usar (además de GET en /api/products).
 const VENDEDOR_PERMITIDO = ['/api/auth', '/api/sales', '/api/plays'];
@@ -47,6 +47,26 @@ export const restringirVendedor = (req, res, next) => {
     return res.status(403).json({
       error: 'Tu rol (vendedor) solo tiene acceso a Ventas y Control de plays.',
       code: 'ROL_NO_AUTORIZADO',
+    });
+  }
+  next();
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Solo EL DUEÑO (la cuenta de ADMIN_EMAIL) puede continuar.
+//
+// Más estricto que soloAdmin: hoy hay TRES cuentas con rol 'administrador'
+// (Jefernee, Antoyef y Minor), así que soloAdmin no sirve para las acciones que
+// son del dueño y de nadie más — como cerrar las sesiones de todo el mundo.
+// Se compara por email, en minúscula, contra ADMIN_EMAIL (ver config/roles.js).
+// Requiere authMiddleware antes.
+// ─────────────────────────────────────────────────────────────────
+export const soloDueño = (req, res, next) => {
+  const email = String(req.user?.email || '').trim().toLowerCase();
+  if (email !== ADMIN_EMAIL) {
+    return res.status(403).json({
+      error: 'Esta acción es solo para el dueño de la sala.',
+      code: 'SOLO_DUENO',
     });
   }
   next();

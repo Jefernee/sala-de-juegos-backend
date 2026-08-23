@@ -3,6 +3,8 @@ import User from "../models/User.js";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { ROLES, ROL_ADMIN, ROL_COLABORADOR, ADMIN_EMAIL } from "../config/roles.js";
+import SesionesCorte from "../models/SesionesCorte.js";
+import { refrescarCortes, estadoCortes, segundoDeCorte, cortesListos, tokenInvalidadoPorCorte } from "../utils/cortesSesion.js";
 import { cifrarPassword, descifrarPassword } from "../utils/passwordVisible.js";
 
 // Lee el rol del que hace la petición a partir del Bearer token (si lo hay).
@@ -200,7 +202,22 @@ export const login = async (req, res) => {
         rol: user.rol,
       },
       process.env.JWT_SECRET,
-      { expiresIn: "24h" }
+      // ─────────────────────────────────────────────────────────────
+      // SIN VENCIMIENTO a propósito.
+      //
+      // Antes duraba 24h y el celular del vendedor pedía login todos los días,
+      // en medio del mostrador. Ahora se entra una vez y el teléfono queda
+      // adentro para siempre.
+      //
+      // "Para siempre" solo se corta de una forma: el administrador aprieta
+      // "Cerrar sesiones" y se guarda una fecha de corte que invalida todos los
+      // tokens firmados antes (ver models/SesionesCorte.js). Ese es el freno
+      // que reemplaza al vencimiento: si se pierde un celular, hay que usarlo.
+      //
+      // JWT_EXPIRA_EN existe por si algún día se quiere volver a un
+      // vencimiento ("30d", "12h"). Sin la variable, el token no vence.
+      // ─────────────────────────────────────────────────────────────
+      process.env.JWT_EXPIRA_EN ? { expiresIn: process.env.JWT_EXPIRA_EN } : undefined
     );
     timestamps.jwt = Date.now();
     console.log(`⏱️  Generación JWT: ${timestamps.jwt - timestamps.bcrypt}ms`);
@@ -280,7 +297,20 @@ export const verifyToken = async (req, res) => {
 
     // Verificar token
     const verified = jwt.verify(token, process.env.JWT_SECRET);
-    
+
+    // Mismo freno que el authMiddleware: el frontend llama a /verify al abrir
+    // la app, y si el dueño cerró las sesiones tiene que enterarse ACÁ, antes
+    // de entrar a ninguna pantalla.
+    await cortesListos();
+    if (tokenInvalidadoPorCorte(verified)) {
+      return res.status(401).json({
+        success: false,
+        valid: false,
+        message: "Tu sesión fue cerrada por el administrador. Iniciá sesión de nuevo.",
+        code: "SESION_CERRADA",
+      });
+    }
+
     // Buscar usuario
     const user = await User.findById(verified.id).select("-password");
 
@@ -468,5 +498,147 @@ export const updateUserRol = async (req, res) => {
   } catch (error) {
     console.error("❌ ERROR AL CAMBIAR ROL:", error);
     res.status(500).json({ success: false, message: "Error al cambiar el rol", error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// Lo que SOLO puede hacer la cuenta del dueño (ADMIN_EMAIL).
+//
+// Es una nota para el panel de Usuarios: cuando el dueño entra ahí, ve de un
+// vistazo qué cosas son suyas y de nadie más. Hoy hay TRES cuentas con rol
+// administrador (Jefernee, Antoyef, Minor), y es fácil olvidarse de cuáles
+// están reservadas.
+//
+// Vive en el backend a propósito: es el backend el que hace cumplir cada una de
+// estas reglas, así que la lista no se puede desincronizar de la realidad.
+// ─────────────────────────────────────────────────────────────────
+const PRIVILEGIOS_DEL_DUENO = [
+  {
+    clave: 'cerrar_sesiones',
+    titulo: 'Cerrar las sesiones de todos',
+    detalle:
+      'Obliga a volver a iniciar sesión en todos los dispositivos. Los demás administradores no pueden hacerlo. Usalo si se pierde o se roba un celular con la app abierta.',
+  },
+  {
+    clave: 'ver_contrasenas',
+    titulo: 'Ver las contraseñas de los usuarios',
+    detalle:
+      'En la lista de usuarios solo vos ves la contraseña de cada uno. A los otros administradores ni siquiera se les manda desde el servidor.',
+  },
+  {
+    clave: 'contrasena_protegida',
+    titulo: 'Tu contraseña no te la puede cambiar nadie',
+    detalle:
+      'Ningún otro administrador puede cambiar la contraseña de tu cuenta, así que no pueden entrar como vos.',
+  },
+  {
+    clave: 'rol_protegido',
+    titulo: 'Tu rol no se puede tocar',
+    detalle:
+      'Nadie puede quitarle el rol de administrador a tu cuenta, ni siquiera vos por error.',
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/auth/acceso-dueno   (authMiddleware + soloDueño)
+// La nota del panel de Usuarios + el estado actual de las sesiones.
+// ─────────────────────────────────────────────────────────────────
+export const accesoDueno = async (req, res) => {
+  try {
+    await refrescarCortes();
+    const doc = await SesionesCorte.findOne({ clave: 'sesiones' }).lean();
+    const cortes = estadoCortes();
+
+    // Nombre y correo de los usuarios que tienen un corte individual, para que
+    // el panel no muestre ids sueltos.
+    const ids = cortes.usuariosConCorte.map((u) => u.usuarioId);
+    const usuarios = ids.length ? await User.find({ _id: { $in: ids } }).select('nombre email').lean() : [];
+    const porId = new Map(usuarios.map((u) => [String(u._id), u]));
+
+    res.json({
+      ok: true,
+      cuenta: req.user.email,
+      soloVos: PRIVILEGIOS_DEL_DUENO,
+      sesiones: {
+        cerradasTodasDesde: cortes.global,
+        usuariosConSesionCerrada: cortes.usuariosConCorte.map((u) => ({
+          ...u,
+          nombre: porId.get(u.usuarioId)?.nombre || '',
+          email: porId.get(u.usuarioId)?.email || '',
+        })),
+        ultimoCorte: doc?.ultimoCorte?.fecha ? doc.ultimoCorte : null,
+      },
+    });
+  } catch (error) {
+    console.error('❌ accesoDueno:', error);
+    res.status(500).json({ ok: false, error: 'Error al leer el acceso del dueño', mensaje: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// POST /api/auth/cerrar-sesiones   (authMiddleware + soloDueño)
+// Body: { usuarioId }  → cierra la sesión de ESE usuario.
+// Body vacío           → cierra las de TODOS.
+//
+// Los tokens ya no vencen solos (se entra una vez y el celular queda adentro),
+// así que esta es la única forma de sacar a alguien. Se guarda una fecha de
+// corte y todo token firmado antes deja de servir.
+// ─────────────────────────────────────────────────────────────────
+export const cerrarSesiones = async (req, res) => {
+  try {
+    const { usuarioId } = req.body || {};
+    const corte = new Date();
+
+    const $set = {
+      ultimoCorte: { fecha: corte, porEmail: req.user.email, alcance: usuarioId ? 'usuario' : 'todos' },
+    };
+
+    let objetivo = null;
+    if (usuarioId) {
+      objetivo = await User.findById(usuarioId).select('nombre email').lean();
+      if (!objetivo) return res.status(404).json({ ok: false, error: 'Usuario no encontrado' });
+      $set[`porUsuario.${usuarioId}`] = corte;
+    } else {
+      $set.global = corte;
+    }
+
+    await SesionesCorte.updateOne({ clave: 'sesiones' }, { $set }, { upsert: true });
+
+    // Refresco inmediato: sin esto el corte tardaría hasta un minuto en hacer
+    // efecto, que es justo lo que no se quiere cuando se perdió un celular.
+    await refrescarCortes();
+
+    // El corte también invalida el token del dueño (fue firmado antes), así que
+    // se le devuelve uno nuevo para que NO se saque a sí mismo del sistema.
+    // El `iat` se fuerza al segundo del corte: firmado "normalmente" nacería
+    // dentro del mismo segundo y el propio corte lo daría por viejo.
+    const tokenNuevo = jwt.sign(
+      {
+        id: req.user.id,
+        email: req.user.email,
+        nombre: req.user.nombre,
+        rol: req.user.rol,
+        iat: segundoDeCorte(corte),
+      },
+      process.env.JWT_SECRET,
+      process.env.JWT_EXPIRA_EN ? { expiresIn: process.env.JWT_EXPIRA_EN } : undefined
+    );
+
+    console.log(`🔒 Sesiones cerradas por ${req.user.email} (${usuarioId ? objetivo.email : 'TODOS'})`);
+
+    res.json({
+      ok: true,
+      alcance: usuarioId ? 'usuario' : 'todos',
+      usuario: objetivo ? { id: usuarioId, nombre: objetivo.nombre, email: objetivo.email } : null,
+      corte,
+      mensaje: usuarioId
+        ? `${objetivo.nombre || objetivo.email} va a tener que iniciar sesión de nuevo.`
+        : 'Todos van a tener que iniciar sesión de nuevo. Tu sesión sigue abierta.',
+      // El frontend DEBE guardar este token en lugar del que tenía.
+      token: tokenNuevo,
+    });
+  } catch (error) {
+    console.error('❌ cerrarSesiones:', error);
+    res.status(500).json({ ok: false, error: 'Error al cerrar las sesiones', mensaje: error.message });
   }
 };
