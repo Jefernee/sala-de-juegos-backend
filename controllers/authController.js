@@ -7,6 +7,13 @@ import SesionesCorte from "../models/SesionesCorte.js";
 import { refrescarCortes, estadoCortes, segundoDeCorte, cortesListos, tokenInvalidadoPorCorte } from "../utils/cortesSesion.js";
 import { cifrarPassword, descifrarPassword } from "../utils/passwordVisible.js";
 
+// Vencimiento del token de sesión.
+//
+// Es tan largo que en la práctica la sesión no se cae sola: se entra una vez y
+// el celular queda adentro. NO es "sin vencimiento" a propósito — ver el
+// comentario largo en el login, más abajo.
+const SESION_LARGA = "3650d"; // 10 años
+
 // Lee el rol del que hace la petición a partir del Bearer token (si lo hay).
 // Sirve para que register solo permita asignar un rol distinto de 'colaborador'
 // cuando quien crea el usuario es un administrador autenticado. Nunca lanza.
@@ -203,21 +210,29 @@ export const login = async (req, res) => {
       },
       process.env.JWT_SECRET,
       // ─────────────────────────────────────────────────────────────
-      // SIN VENCIMIENTO a propósito.
+      // LA SESIÓN NO SE CAE SOLA.
       //
       // Antes duraba 24h y el celular del vendedor pedía login todos los días,
       // en medio del mostrador. Ahora se entra una vez y el teléfono queda
-      // adentro para siempre.
+      // adentro.
       //
-      // "Para siempre" solo se corta de una forma: el administrador aprieta
-      // "Cerrar sesiones" y se guarda una fecha de corte que invalida todos los
-      // tokens firmados antes (ver models/SesionesCorte.js). Ese es el freno
-      // que reemplaza al vencimiento: si se pierde un celular, hay que usarlo.
+      // POR QUÉ 10 AÑOS Y NO "SIN VENCIMIENTO": un token sin `exp` es válido
+      // para este backend, pero deja sin respuesta a cualquier frontend que
+      // mire la fecha de vencimiento para saber si la sesión sigue viva. Al no
+      // encontrarla, lo normal es que la dé por vencida y mande al login otra
+      // vez — el token eterno terminaría causando justo lo que se quería
+      // evitar. Con una fecha lejana la sesión es eterna en la práctica y el
+      // token sigue siendo un token corriente para quien lo lea.
       //
-      // JWT_EXPIRA_EN existe por si algún día se quiere volver a un
-      // vencimiento ("30d", "12h"). Sin la variable, el token no vence.
+      // "Eterna" solo se corta de una forma: el dueño aprieta "Cerrar sesiones"
+      // y se guarda una fecha de corte que invalida todos los tokens firmados
+      // antes (ver models/SesionesCorte.js). Ese es el freno que reemplaza al
+      // vencimiento: si se pierde un celular, hay que usarlo.
+      //
+      // JWT_EXPIRA_EN existe por si algún día se quiere volver a un vencimiento
+      // corto ("30d", "12h").
       // ─────────────────────────────────────────────────────────────
-      process.env.JWT_EXPIRA_EN ? { expiresIn: process.env.JWT_EXPIRA_EN } : undefined
+      { expiresIn: process.env.JWT_EXPIRA_EN || SESION_LARGA }
     );
     timestamps.jwt = Date.now();
     console.log(`⏱️  Generación JWT: ${timestamps.jwt - timestamps.bcrypt}ms`);
@@ -621,7 +636,9 @@ export const cerrarSesiones = async (req, res) => {
         iat: segundoDeCorte(corte),
       },
       process.env.JWT_SECRET,
-      process.env.JWT_EXPIRA_EN ? { expiresIn: process.env.JWT_EXPIRA_EN } : undefined
+      // Mismo vencimiento largo que el del login. El `exp` se cuenta desde el
+      // `iat` forzado de arriba.
+      { expiresIn: process.env.JWT_EXPIRA_EN || SESION_LARGA }
     );
 
     console.log(`🔒 Sesiones cerradas por ${req.user.email} (${usuarioId ? objetivo.email : 'TODOS'})`);
