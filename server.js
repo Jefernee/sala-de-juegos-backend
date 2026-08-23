@@ -120,8 +120,31 @@ const allowedOrigins = [
   "http://localhost:5173", // 🔥 Vite
 ].filter(Boolean).map(normalizarOrigen);
 
+// ─────────────────────────────────────────────────────────────────
+// En DESARROLLO se acepta cualquier puerto de localhost.
+//
+// La lista de arriba tiene los puertos escritos a mano, pero Vite no siempre
+// usa el 5173: si ese puerto está ocupado (otra terminal, otro proyecto)
+// arranca solo en el 5174, el 5175, etc. Cuando eso pasa, TODAS las peticiones
+// del frontend mueren con "Not allowed by CORS" y parece que el backend está
+// caído, cuando en realidad está bien. Agregar los puertos de a uno solo
+// posterga el problema hasta el siguiente salto.
+//
+// Solo aplica fuera de producción: en Koyeb sigue mandando la lista cerrada
+// (Netlify + los localhost explícitos), sin comodines.
+// ─────────────────────────────────────────────────────────────────
+const esDesarrollo = process.env.NODE_ENV !== 'production';
+const LOCALHOST_REGEX = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
+const origenPermitido = (origin) => {
+  const limpio = normalizarOrigen(origin);
+  if (allowedOrigins.indexOf(limpio) !== -1) return true;
+  return esDesarrollo && LOCALHOST_REGEX.test(limpio);
+};
+
 console.log("🌍 Entorno:", process.env.NODE_ENV);
 console.log("✅ CORS permitido desde:", allowedOrigins);
+if (esDesarrollo) console.log("✅ CORS: además, cualquier puerto de localhost (solo en desarrollo)");
 
 // ============================================
 // ✅ CONFIGURACIÓN DE CORS
@@ -134,7 +157,7 @@ app.use(
 
       // Comparamos ambos lados normalizados (sin barra final) para no depender
       // de cómo esté escrita la URL.
-      if (allowedOrigins.indexOf(normalizarOrigen(origin)) !== -1) {
+      if (origenPermitido(origin)) {
         callback(null, true);
       } else {
         console.log("❌ Origen bloqueado por CORS:", origin);
