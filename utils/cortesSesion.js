@@ -87,6 +87,30 @@ export const tokenInvalidadoPorCorte = (decoded) => {
   return decoded.iat < segundoDeCorte(corte);
 };
 
+// Cierra la sesión de UNA persona, sin tocar la de nadie más.
+//
+// La usa el backend solo, cuando un cambio deja el token de esa persona
+// desactualizado: el rol viaja DENTRO del token, así que cambiárselo no le hace
+// efecto mientras siga con el que tiene en el celular — y con tokens de 10 años
+// eso sería para siempre. Lo mismo con la contraseña: cambiársela a alguien no
+// serviría de nada si su celular sigue adentro con la sesión vieja.
+//
+// No confundir con el botón "Cerrar sesiones" del dueño: ese es un acto
+// deliberado y queda anotado en `ultimoCorte`. Este es una consecuencia
+// automática de otra acción, y solo deja rastro en el log.
+export const cortarSesionDe = async (usuarioId, motivo) => {
+  const corte = new Date();
+  await SesionesCorte.updateOne(
+    { clave: 'sesiones' },
+    { $set: { [`porUsuario.${usuarioId}`]: corte } },
+    { upsert: true }
+  );
+  // Refresco inmediato: sin esto el corte tardaría hasta un minuto en aplicarse.
+  await refrescarCortes();
+  console.log(`🔒 Sesión de ${usuarioId} cerrada automáticamente (${motivo})`);
+  return corte;
+};
+
 // Lectura del estado actual (para el panel del administrador).
 export const estadoCortes = () => ({
   global: cache.global,

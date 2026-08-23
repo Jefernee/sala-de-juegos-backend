@@ -4,8 +4,9 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import { ROLES, ROL_ADMIN, ROL_COLABORADOR, ADMIN_EMAIL } from "../config/roles.js";
 import SesionesCorte from "../models/SesionesCorte.js";
-import { refrescarCortes, estadoCortes, segundoDeCorte, cortesListos, tokenInvalidadoPorCorte } from "../utils/cortesSesion.js";
+import { refrescarCortes, estadoCortes, segundoDeCorte, cortesListos, tokenInvalidadoPorCorte, cortarSesionDe } from "../utils/cortesSesion.js";
 import { cifrarPassword, descifrarPassword } from "../utils/passwordVisible.js";
+import { refrescarRoles, rolesListos, rolVigente } from "../utils/rolesVigentes.js";
 
 // Vencimiento del token de sesión.
 //
@@ -14,14 +15,20 @@ import { cifrarPassword, descifrarPassword } from "../utils/passwordVisible.js";
 // comentario largo en el login, más abajo.
 const SESION_LARGA = "3650d"; // 10 años
 
-// Lee el rol del que hace la petición a partir del Bearer token (si lo hay).
-// Sirve para que register solo permita asignar un rol distinto de 'colaborador'
-// cuando quien crea el usuario es un administrador autenticado. Nunca lanza.
+// Quién hace la petición, según el Bearer token (si lo hay). Sirve para que
+// register solo permita asignar un rol distinto de 'colaborador' cuando quien
+// crea el usuario es un administrador autenticado. Nunca lanza.
+//
+// El rol se consulta, no se lee del token (ver utils/rolesVigentes.js): si a un
+// administrador lo bajaron a colaborador, su token sigue diciendo
+// "administrador" durante 10 años, y no debería poder seguir creando vendedores
+// con él. Requiere haber llamado a rolesListos() antes.
 const rolDelSolicitante = (req) => {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
   try {
-    return jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET).rol || null;
+    const decoded = jwt.verify(authHeader.split(" ")[1], process.env.JWT_SECRET);
+    return rolVigente(decoded.id) || decoded.rol || null;
   } catch {
     return null;
   }
@@ -69,6 +76,7 @@ export const register = async (req, res) => {
     // usuario con otro rol (ej. un vendedor). Nunca se puede crear un segundo
     // administrador desde acá (ese lo define el email del dueño en la migración).
     let rolAsignado = ROL_COLABORADOR;
+    await rolesListos();
     if (rolDelSolicitante(req) === ROL_ADMIN && ROLES.includes(req.body.rol) && req.body.rol !== ROL_ADMIN) {
       rolAsignado = req.body.rol;
     }
@@ -303,10 +311,11 @@ export const verifyToken = async (req, res) => {
 
     if (!token) {
       console.log("❌ Token no proporcionado");
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        valid: false, 
-        message: "Token no proporcionado" 
+        valid: false,
+        message: "Token no proporcionado",
+        code: "NO_TOKEN",
       });
     }
 
@@ -331,10 +340,14 @@ export const verifyToken = async (req, res) => {
 
     if (!user) {
       console.log("❌ Usuario no encontrado para token");
-      return res.status(401).json({ 
+      // El token está bien firmado pero apunta a alguien que ya no está. Va
+      // como INVALID_TOKEN porque para el frontend el efecto es el mismo: este
+      // token no sirve, hay que volver a entrar.
+      return res.status(401).json({
         success: false,
-        valid: false, 
-        message: "Usuario no encontrado" 
+        valid: false,
+        message: "Usuario no encontrado",
+        code: "INVALID_TOKEN",
       });
     }
 
@@ -356,29 +369,35 @@ export const verifyToken = async (req, res) => {
 
     // Token expirado
     if (error.name === 'TokenExpiredError') {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        valid: false, 
+        valid: false,
         message: "Token expirado",
-        expired: true
+        expired: true,
+        code: "EXPIRED_TOKEN",
       });
     }
 
     // Token inválido
     if (error.name === 'JsonWebTokenError') {
-      return res.status(401).json({ 
+      return res.status(401).json({
         success: false,
-        valid: false, 
+        valid: false,
         message: "Token inválido",
+        code: "INVALID_TOKEN",
         error: process.env.NODE_ENV === 'development' ? error.message : undefined
       });
     }
 
-    // Error genérico
-    res.status(401).json({
+    // Error inesperado (Mongo caído, un bug acá adentro): va como 500, NO como
+    // 401. Un 401 significa "tu sesión no sirve" y el frontend está en su
+    // derecho de mandar al login al recibirlo; devolverlo por un problema
+    // nuestro es justo lo que sacaba al vendedor de la app al abrirla.
+    res.status(500).json({
       success: false,
       valid: false,
       message: "Error al verificar token",
+      code: "AUTH_ERROR",
       error: process.env.NODE_ENV === 'development' ? error.message : 'Error de autenticación'
     });
   }
@@ -451,13 +470,35 @@ export const updateUserPassword = async (req, res) => {
       });
     }
 
+    // Cambiarle la clave a OTRA persona le cierra la sesión: si no, su celular
+    // seguiría adentro con la sesión vieja y el cambio no habría servido de
+    // nada (el token dura 10 años). A uno mismo NO se la cierra — el que acaba
+    // de escribir la contraseña nueva es uno, no hay nada que proteger, y salir
+    // de la app sería un castigo sin motivo.
+    //
+    // El corte va ANTES de guardar a propósito: si fallara después, quedaría
+    // una contraseña nueva con una sesión vieja viva, que es justo lo que no se
+    // quiere. Al revés no hace daño — si falla el guardado, esa persona vuelve
+    // a entrar con la contraseña de siempre.
+    const esUnoMismo = String(user._id) === String(req.user.id);
+    if (!esUnoMismo) {
+      await cortarSesionDe(user._id, `cambio de contraseña por ${req.user.email}`);
+    }
+
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(password, salt);
     user.passwordVisible = cifrarPassword(password);
     await user.save();
 
     console.log(`✅ Contraseña reasignada para ${user.email}`);
-    res.json({ success: true, message: "Contraseña actualizada", user: { id: user._id, email: user.email } });
+    res.json({
+      success: true,
+      message: esUnoMismo
+        ? "Contraseña actualizada."
+        : "Contraseña actualizada. Esa persona va a tener que iniciar sesión de nuevo.",
+      sesionCerrada: !esUnoMismo,
+      user: { id: user._id, email: user.email },
+    });
   } catch (error) {
     console.error("❌ ERROR AL REASIGNAR CONTRASEÑA:", error);
     res.status(500).json({ success: false, message: "Error al reasignar la contraseña", error: error.message });
@@ -504,10 +545,15 @@ export const updateUserRol = async (req, res) => {
     user.rol = rol;
     await user.save();
 
+    // El rol nuevo aplica SIN sacar a esa persona de la app: el backend ya no
+    // le cree al token, consulta el rol (ver utils/rolesVigentes.js). Este
+    // refresco es lo que hace que valga en el acto y no dentro de un minuto.
+    await refrescarRoles();
+
     console.log(`✅ Rol de ${user.email} cambiado a "${rol}"`);
     res.json({
       success: true,
-      message: "Rol actualizado",
+      message: "Rol actualizado. Aplica de inmediato, sin que tenga que volver a iniciar sesión.",
       user: { id: user._id, email: user.email, nombre: user.nombre, rol: user.rol },
     });
   } catch (error) {

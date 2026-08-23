@@ -11,6 +11,7 @@
 //     authMiddleware, porque necesita req.user.rol.
 import jwt from 'jsonwebtoken';
 import { ROL_ADMIN, ROL_VENDEDOR, ADMIN_EMAIL } from '../config/roles.js';
+import { rolesListos, rolVigente } from '../utils/rolesVigentes.js';
 
 // Prefijos que un vendedor SÍ puede usar (además de GET en /api/products).
 const VENDEDOR_PERMITIDO = ['/api/auth', '/api/sales', '/api/plays'];
@@ -26,7 +27,7 @@ const vendedorPuede = (path, method) => {
   return false;
 };
 
-export const restringirVendedor = (req, res, next) => {
+export const restringirVendedor = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   // Sin token: dejamos que el authMiddleware de la ruta responda 401 como siempre.
   if (!authHeader?.startsWith('Bearer ')) return next();
@@ -39,9 +40,15 @@ export const restringirVendedor = (req, res, next) => {
     return next();
   }
 
+  // El rol se consulta, no se lee del token: este guard corre antes que el
+  // authMiddleware y tiene que aplicar el rol de HOY, no el que tenía la
+  // persona el día que hizo login (ver utils/rolesVigentes.js).
+  await rolesListos();
+  const rol = rolVigente(decoded.id) || decoded.rol;
+
   // Solo restringimos a los vendedores. Tokens viejos sin rol (o admin/
   // colaborador) tienen acceso total y pasan de largo.
-  if (decoded.rol !== ROL_VENDEDOR) return next();
+  if (rol !== ROL_VENDEDOR) return next();
 
   if (!vendedorPuede(req.path, req.method)) {
     return res.status(403).json({

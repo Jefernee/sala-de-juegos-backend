@@ -3,7 +3,7 @@
 // El interruptor del administrador para obligar a volver a iniciar sesión.
 //
 // Los tokens JWT no se pueden "borrar": una vez firmados valen hasta que
-// expiran, y ahora expiran en meses para que el celular del vendedor no pida
+// expiran, y ahora expiran en 10 años para que el celular del vendedor no pida
 // login todos los días. Para poder cortarlos igual se guarda una FECHA DE
 // CORTE: todo token emitido ANTES de esa fecha deja de valer.
 //

@@ -1,6 +1,7 @@
 // middlewares/auth.js
 import jwt from "jsonwebtoken";
 import { cortesListos, tokenInvalidadoPorCorte } from "../utils/cortesSesion.js";
+import { rolesListos, rolVigente } from "../utils/rolesVigentes.js";
 
 const authMiddleware = async (req, res, next) => {
   try {
@@ -51,12 +52,19 @@ const authMiddleware = async (req, res, next) => {
       });
     }
 
+    // El rol NO se toma del token, se consulta (ver utils/rolesVigentes.js).
+    // El token dura 10 años: si le creyéramos, cambiarle el rol a alguien no le
+    // haría efecto hasta que volviera a entrar, y no se le va a pedir que
+    // vuelva a entrar solo por eso. Si el caché todavía no sabe nada de este
+    // usuario, se cae al rol del token.
+    await rolesListos();
+
     // Adjuntar información del usuario a la petición
     req.user = {
       id: decoded.id,
       email: decoded.email,
       nombre: decoded.nombre,
-      rol: decoded.rol, // administrador | colaborador | vendedor
+      rol: rolVigente(decoded.id) || decoded.rol, // administrador | colaborador | vendedor
     };
 
     next();
