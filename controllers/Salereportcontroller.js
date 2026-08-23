@@ -1,5 +1,6 @@
 import Sale       from '../models/sale.js';
 import SaleReport  from '../models/Salereport.js';
+import { METODOS_PAGO, METODO_EFECTIVO } from '../config/metodosPago.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers
@@ -39,6 +40,17 @@ async function buildMonthReport(año, mes) {
   const productoMap = new Map(); // key: productoId.toString()
   const diaMap      = new Map(); // key: número de día
 
+  // Efectivo vs SINPE. Se inicializan los dos métodos en cero para que el
+  // reporte siempre traiga las dos llaves y el frontend no tenga que
+  // preguntarse si el mes no tuvo SINPE o si el campo no existe.
+  // OJO: esta función es un GEMELO de la de controllers/salesController.js
+  // (la que se dispara sola al crear/editar/borrar una venta). Todo cambio en
+  // el reporte tiene que hacerse en las dos, o el reporte cambia según quién
+  // lo generó.
+  const porMetodoPago = Object.fromEntries(
+    METODOS_PAGO.map((m) => [m, { cantidadVentas: 0, totalRecaudado: 0 }])
+  );
+
   for (const venta of ventas) {
     const rec      = venta.total    || 0;
     const costo    = venta.totalCosto || 0;   // ← campo nuevo en Sale
@@ -48,6 +60,13 @@ async function buildMonthReport(año, mes) {
     totalMontoPagado += venta.montoPagado || 0;
     totalVuelto      += venta.vuelto      || 0;
     totalCosto       += costo;
+
+    // ── Por método de pago ──────────────────────────────────────────
+    // Las ventas viejas no tienen el campo (y las lee .lean(), que no aplica
+    // el default del schema): cuentan como efectivo, que es lo que fueron.
+    const metodo = METODOS_PAGO.includes(venta.metodoPago) ? venta.metodoPago : METODO_EFECTIVO;
+    porMetodoPago[metodo].cantidadVentas += 1;
+    porMetodoPago[metodo].totalRecaudado += rec;
 
     // ── Por empleado ────────────────────────────────────────────────
     const empKey = venta.nombreUsuario || 'Desconocido';
@@ -141,6 +160,7 @@ async function buildMonthReport(año, mes) {
     totalCosto,
     gananciaTotal,
     margenPromedio,
+    porMetodoPago,
     porEmpleado,
     productosMasVendidos,
     porDia,

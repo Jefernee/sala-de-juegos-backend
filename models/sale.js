@@ -1,5 +1,6 @@
 // models/Sale.js
 import mongoose from 'mongoose';
+import { METODOS_PAGO, METODO_EFECTIVO } from '../config/metodosPago.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Qué se descontó del inventario por esta venta, ítem por ítem.
@@ -82,6 +83,19 @@ const saleSchema = new mongoose.Schema({
     type: Number,
     required: true
   },
+  // Cómo se cobró: efectivo o SINPE. Sirve para separar la caja física de las
+  // transferencias en el reporte del mes.
+  //
+  // NO es required a propósito: las ventas viejas no traen el campo y ponerlo
+  // obligatorio haría que cualquier .save() sobre una de ellas (editar la
+  // fecha, por ejemplo) fallara por validación. Con el default, tanto los
+  // documentos viejos al leerse como las ventas de un frontend viejo que no
+  // mande el campo quedan como "efectivo", que es lo que realmente fueron.
+  metodoPago: {
+    type: String,
+    enum: METODOS_PAGO,
+    default: METODO_EFECTIVO
+  },
   // ── Totales de costo y ganancia por venta ──
   totalCosto: {            // suma de todos los costoSubtotal
     type: Number,
@@ -120,6 +134,7 @@ const saleSchema = new mongoose.Schema({
 });
 
 saleSchema.index({ fecha: -1 });
+saleSchema.index({ metodoPago: 1 });
 saleSchema.index({ usuario: 1 });
 saleSchema.index({ 'productos.productoId': 1 });
 

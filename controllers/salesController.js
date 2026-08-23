@@ -3,6 +3,7 @@ import Sale       from "../models/sale.js";
 import Inventario from "../models/Inventario.js";
 import SaleReport from "../models/Salereport.js";
 import { crearFiltroFechas } from "../utils/dateUtils.js";
+import { METODOS_PAGO, METODO_EFECTIVO, validarMetodoPago } from "../config/metodosPago.js";
 import { regenerarEstadoDeFecha } from "./estadoResultadosController.js";
 
 // ─────────────────────────────────────────────────────────────────
@@ -37,6 +38,13 @@ async function buildMonthReport(año, mes) {
   const productoMap = new Map();
   const diaMap      = new Map();
 
+  // Efectivo vs SINPE. Se inicializan los dos métodos en cero para que el
+  // reporte siempre traiga las dos llaves y el frontend no tenga que
+  // preguntarse si el mes no tuvo SINPE o si el campo no existe.
+  const porMetodoPago = Object.fromEntries(
+    METODOS_PAGO.map((m) => [m, { cantidadVentas: 0, totalRecaudado: 0 }])
+  );
+
   for (const venta of ventas) {
     const rec      = venta.total     || 0;
     const costo    = venta.totalCosto || 0;
@@ -46,6 +54,12 @@ async function buildMonthReport(año, mes) {
     totalMontoPagado += venta.montoPagado || 0;
     totalVuelto      += venta.vuelto      || 0;
     totalCosto       += costo;
+
+    // Las ventas viejas no tienen el campo (y las lee .lean(), que no aplica
+    // el default del schema): cuentan como efectivo, que es lo que fueron.
+    const metodo = METODOS_PAGO.includes(venta.metodoPago) ? venta.metodoPago : METODO_EFECTIVO;
+    porMetodoPago[metodo].cantidadVentas += 1;
+    porMetodoPago[metodo].totalRecaudado += rec;
 
     const empKey = venta.nombreUsuario || 'Desconocido';
     if (!empleadoMap.has(empKey)) {
@@ -82,6 +96,7 @@ async function buildMonthReport(año, mes) {
     año, mes, nombreMes: NOMBRES_MES[mes],
     totalVentas, totalRecaudado, totalMontoPagado, totalVuelto,
     ticketPromedio, totalUnidadesVendidas, totalCosto, gananciaTotal, margenPromedio,
+    porMetodoPago,
     porEmpleado: [...empleadoMap.values()].map((e) => ({ ...e, ticketPromedio: e.totalVentas > 0 ? e.totalRecaudado / e.totalVentas : 0 })).sort((a, b) => b.totalRecaudado - a.totalRecaudado),
     productosMasVendidos: [...productoMap.values()].sort((a, b) => b.totalVendido - a.totalVendido),
     porDia: [...diaMap.values()].sort((a, b) => a.dia - b.dia),
@@ -266,6 +281,15 @@ export const addSale = async (req, res) => {
     const errorMontos = validarMontos({ productos, total, montoPagado, vuelto });
     if (errorMontos) return res.status(errorMontos.status).json(errorMontos.body);
 
+    // Método de pago: se acepta tal cual llega si está en la lista; si no
+    // llega, efectivo. Un valor inventado se rechaza con 400 en vez de dejar
+    // basura guardada que después rompa el desglose del reporte.
+    // Los montos NO se tocan: montoPagado y vuelto se guardan como vinieron
+    // (ya validados arriba). Con SINPE el frontend manda montoPagado = total
+    // y vuelto = 0, que es exactamente lo que esa validación espera.
+    const metodo = validarMetodoPago(req.body.metodoPago);
+    if (!metodo.ok) return res.status(400).json({ error: metodo.error, code: "METODO_PAGO_INVALIDO" });
+
     const procesado = await procesarProductosDeVenta(productos);
     if (procesado.error) return res.status(procesado.error.status).json(procesado.error.body);
 
@@ -280,7 +304,7 @@ export const addSale = async (req, res) => {
     // permite devolver exactamente esto si después se borra o se edita.
     const descuentosInventario = aDescuentosInventario(decrementMap);
 
-    const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email, descuentosInventario });
+    const newSale       = new Sale({ productos: productosConCosto, total, montoPagado, vuelto, metodoPago: metodo.valor, totalCosto, ganancia, fecha: fechaVenta, usuario: req.user.id, nombreUsuario: req.user.nombre, emailUsuario: req.user.email, descuentosInventario });
     const ventaGuardada = await newSale.save();
 
     // Descontar inventario con $inc atómico para todos los ítems
@@ -363,6 +387,17 @@ export const updateSale = async (req, res) => {
     const ventaExistente = await Sale.findById(req.params.id);
     if (!ventaExistente) return res.status(404).json({ error: "Venta no encontrada" });
 
+    // El método se valida acá arriba, antes de las dos ramas, para que el
+    // error sea el mismo 400 con código propio venga o no `productos` en la
+    // edición (y no un ValidationError crudo de Mongoose desde el update).
+    // Si el campo no viene, la venta conserva el que ya tenía.
+    let metodoPagoEditado;
+    if (req.body.metodoPago !== undefined) {
+      const metodo = validarMetodoPago(req.body.metodoPago);
+      if (!metodo.ok) return res.status(400).json({ error: metodo.error, code: "METODO_PAGO_INVALIDO" });
+      metodoPagoEditado = metodo.valor;
+    }
+
     // ─────────────────────────────────────────────────────────────────
     // Si la edición toca los productos hay que rehacer la venta entera:
     // revalidar precios y stock, recalcular costo y ganancia, y mover el
@@ -405,6 +440,7 @@ export const updateSale = async (req, res) => {
       ventaExistente.total                 = total;
       ventaExistente.montoPagado           = montoPagado;
       ventaExistente.vuelto                = vuelto;
+      if (metodoPagoEditado !== undefined) ventaExistente.metodoPago = metodoPagoEditado;
       ventaExistente.totalCosto            = totalCosto;
       ventaExistente.ganancia              = total - totalCosto;
       ventaExistente.descuentosInventario  = aDescuentosInventario(decrementMap);
@@ -441,6 +477,10 @@ export const updateSale = async (req, res) => {
       _id, __v, createdAt, updatedAt,
       ...camposEditables
     } = req.body;
+
+    // Se pisa con el valor ya normalizado (minúscula, sin espacios) para que
+    // "Efectivo" o " sinpe " no entren crudos a la base.
+    if (metodoPagoEditado !== undefined) camposEditables.metodoPago = metodoPagoEditado;
 
     const ventaActualizada = await Sale.findByIdAndUpdate(req.params.id, camposEditables, { new: true, runValidators: true });
     res.json({ message: "Venta actualizada exitosamente", venta: ventaActualizada });

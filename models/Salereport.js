@@ -47,6 +47,17 @@ const diaResumenSchema = new mongoose.Schema(
 );
 
 // ─────────────────────────────────────────────
+// Sub-schema: resumen de un método de pago (efectivo / SINPE)
+// ─────────────────────────────────────────────
+const metodoPagoResumenSchema = new mongoose.Schema(
+  {
+    cantidadVentas: { type: Number, default: 0 },
+    totalRecaudado: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+// ─────────────────────────────────────────────
 // Schema principal del reporte mensual de ventas
 // ─────────────────────────────────────────────
 const saleReportSchema = new mongoose.Schema(
@@ -72,6 +83,15 @@ const saleReportSchema = new mongoose.Schema(
     totalCosto:             { type: Number, default: 0 },  // suma de costos
     gananciaTotal:          { type: Number, default: 0 },  // recaudado - costo
     margenPromedio:         { type: Number, default: 0 },  // ganancia / recaudado × 100
+
+    // ── Efectivo vs SINPE ──────────────────────────
+    // Cuánto entró por caja física y cuánto por transferencia. Los reportes
+    // generados antes de este campo no lo traen; se llena al regenerarlos.
+    // Las ventas sin `metodoPago` cuentan como efectivo (ver config/metodosPago.js).
+    porMetodoPago: {
+      efectivo: { type: metodoPagoResumenSchema, default: () => ({}) },
+      sinpe:    { type: metodoPagoResumenSchema, default: () => ({}) },
+    },
 
     // ── Desgloses ─────────────────────────────────
     porEmpleado:           [empleadoResumenSchema],
