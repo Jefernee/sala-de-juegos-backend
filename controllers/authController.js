@@ -601,6 +601,42 @@ const PRIVILEGIOS_DEL_DUENO = [
 ];
 
 // ─────────────────────────────────────────────────────────────────
+// Cómo funciona la sesión. Nota para el panel del dueño.
+//
+// Son reglas que no se ven por ningún lado y es fácil olvidarlas: por qué la
+// app ya no pide login, y qué pasa (o no pasa) al cambiarle el rol o la
+// contraseña a alguien. Vive acá por el mismo motivo que la lista de arriba:
+// es el backend el que las hace cumplir, así que la nota no se puede
+// desincronizar de la realidad.
+// ─────────────────────────────────────────────────────────────────
+const COMO_FUNCIONA_LA_SESION = [
+  {
+    clave: 'no_pide_login',
+    titulo: 'La app no vuelve a pedir login',
+    detalle:
+      'Se entra una vez en cada celular y queda adentro. Antes pedía login todos los días.',
+  },
+  {
+    clave: 'cerrar_sesiones',
+    titulo: 'La única forma de sacar a alguien es el botón',
+    detalle:
+      'Como la sesión ya no se cae sola, "Cerrar sesiones" es el único freno. Es lo que hay que usar si se pierde un celular con la app abierta.',
+  },
+  {
+    clave: 'rol_al_instante',
+    titulo: 'Cambiar un rol aplica de una',
+    detalle:
+      'No hace falta que esa persona salga y vuelva a entrar: el permiso nuevo le vale al instante, y sigue trabajando sin interrupción.',
+  },
+  {
+    clave: 'clave_saca',
+    titulo: 'Cambiarle la contraseña a alguien sí lo saca',
+    detalle:
+      'Esa persona vuelve a la pantalla de login y entra con la clave nueva. Si cambiás la tuya, a vos no te saca.',
+  },
+];
+
+// ─────────────────────────────────────────────────────────────────
 // GET /api/auth/acceso-dueno   (authMiddleware + soloDueño)
 // La nota del panel de Usuarios + el estado actual de las sesiones.
 // ─────────────────────────────────────────────────────────────────
@@ -620,6 +656,7 @@ export const accesoDueno = async (req, res) => {
       ok: true,
       cuenta: req.user.email,
       soloVos: PRIVILEGIOS_DEL_DUENO,
+      comoFuncionaLaSesion: COMO_FUNCIONA_LA_SESION,
       sesiones: {
         cerradasTodasDesde: cortes.global,
         usuariosConSesionCerrada: cortes.usuariosConCorte.map((u) => ({
