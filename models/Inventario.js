@@ -1,5 +1,6 @@
 //models/Inventario.js
 import mongoose from "mongoose";
+import { CATEGORIAS_PRODUCTO, CATEGORIA_POR_DEFECTO } from "../config/categoriasProducto.js";
 
 const Schema = mongoose.Schema;
 
@@ -57,6 +58,22 @@ const inventarioSchema = new Schema({
     default: 'producto',
   },
 
+  // ─────────────────────────────────────────────────────────────────
+  // Categoría con la que la pantalla de ventas agrupa el catálogo.
+  // Aplica igual a productos simples y a recetas (una receta suele ser
+  // 'preparados', pero un helado armado puede ser 'helados').
+  //
+  // No es obligatorio: los productos creados antes de este campo no lo tienen
+  // y caen en "otros" (el default), sin migración. Se van corrigiendo desde el
+  // formulario. Mientras tanto el frontend adivina por el nombre, que es
+  // exactamente lo que este campo viene a reemplazar.
+  // ─────────────────────────────────────────────────────────────────
+  categoria: {
+    type: String,
+    enum: CATEGORIAS_PRODUCTO,
+    default: CATEGORIA_POR_DEFECTO,
+  },
+
   // Para ingredientes a granel (helado, sirope, etc.)
   // unidad: qué representa cada número (ej. "bolas", "ml", "gr", "unidades")
   // cantidadPorEnvase: cuántas unidades trae 1 compra (ej. 500 para botella de 500ml)
@@ -111,5 +128,6 @@ inventarioSchema.index({ createdBy: 1, createdAt: -1 });
 inventarioSchema.index({ nombre: 1 });
 inventarioSchema.index({ seVende: 1 });
 inventarioSchema.index({ tipo: 1 }); // índice para filtrar por tipo
+inventarioSchema.index({ categoria: 1 }); // agrupación por categoría en el POS
 
 export default mongoose.model("Inventario", inventarioSchema);

@@ -7,6 +7,7 @@ import { eliminarImagenCloudinary } from "../utils/cloudinaryUtils.js";
 import { mongoose } from "../db.js";
 import Sale from "../models/sale.js";
 import { ROL_VENDEDOR } from "../config/roles.js";
+import { CATEGORIA_POR_DEFECTO, CATEGORIAS_PRODUCTO, validarCategoria } from "../config/categoriasProducto.js";
 // Helper: fecha actual en zona horaria de Costa Rica
 // medianoche Costa Rica (UTC-6) = 06:00 UTC
 const getFechaCostaRica = () => {
@@ -111,6 +112,32 @@ const validarDeLista = (valor, lista, etiqueta) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
+// La categoría al CREAR es obligatoria y la elige el dueño en el formulario.
+//
+// Antes se deducía del nombre cuando no venía. Se sacó porque con las marcas
+// falla y no hay forma de que no falle: "Crunchy" y "Chokies" son helados pero
+// el nombre suena a galleta, y "Chao" o "Yummix" no dicen nada. Cada error de
+// esos manda el producto a la pestaña equivocada del POS y hay que corregirlo
+// a mano igual, así que es más barato elegirla de entrada.
+//
+// Devuelve { valor } o { error } con el cuerpo del 400 listo.
+// ─────────────────────────────────────────────────────────────────
+const exigirCategoria = (valor) => {
+  if (valor === undefined || valor === null || valor === '') {
+    return {
+      error: {
+        error: `Falta la categoría del producto. Elegí una: ${CATEGORIAS_PRODUCTO.join(', ')}.`,
+        code: 'CATEGORIA_REQUERIDA',
+        opciones: CATEGORIAS_PRODUCTO,
+      },
+    };
+  }
+  const categoria = validarCategoria(valor);
+  if (!categoria.ok) return { error: { error: categoria.error, code: 'CATEGORIA_INVALIDA', opciones: CATEGORIAS_PRODUCTO } };
+  return { valor: categoria.valor };
+};
+
+// ─────────────────────────────────────────────────────────────────
 // Quita del ítem toda información de costos. Se usa con el rol vendedor:
 // necesita el catálogo para cobrar, pero no tiene por qué ver los márgenes.
 // ─────────────────────────────────────────────────────────────────
@@ -141,14 +168,21 @@ const sinCostos = (item) => {
 const prepararItem = (item) => {
   if (!item) return item;
 
+  // Los productos viejos no tienen `categoria` y estas consultas usan .lean(),
+  // donde Mongoose NO aplica el default del schema: sin esto el campo llegaría
+  // ausente y el frontend volvería a adivinar por el nombre. Se rellena acá,
+  // en un solo lugar, para todas las pantallas que pasan por prepararItem.
+  const categoria = item.categoria || CATEGORIA_POR_DEFECTO;
+
   if (item.tipo !== 'receta') {
-    return { ...item, agotado: (item.cantidad ?? 0) <= 0 };
+    return { ...item, categoria, agotado: (item.cantidad ?? 0) <= 0 };
   }
 
   const { stock, costo, limitante, motivo } = calcularStockReceta(item);
 
   return {
     ...item,
+    categoria,
     cantidad: stock,          // stock calculado desde los ingredientes
     precioCompra: costo,      // costo real de preparar una unidad
     stockCalculado: stock,
@@ -274,6 +308,11 @@ export const addProducto = async (req, res) => {
         });
       }
 
+      // La categoría se ELIGE, no se adivina (ver el bloque en la rama de
+      // producto simple). También obligatoria para las recetas.
+      const categoriaReceta = exigirCategoria(body.categoria);
+      if (categoriaReceta.error) return res.status(400).json(categoriaReceta.error);
+
       const nuevaReceta = new Inventario({
         nombre: body.nombre,
         cantidad: 0,           // Las recetas no tienen stock propio
@@ -283,6 +322,7 @@ export const addProducto = async (req, res) => {
         imagen: req.cloudinaryUrl || null,
         seVende: body.seVende === 'false' || body.seVende === false ? false : true,
         tipo: 'receta',
+        categoria: categoriaReceta.valor,
         receta: recetaValidada,
         createdBy: userId,
       });
@@ -347,6 +387,11 @@ export const addProducto = async (req, res) => {
     const envase = validarDeLista(body.nombreEnvase, ENVASES_VALIDOS, 'El envase');
     if (!envase.ok) return res.status(400).json({ error: envase.error, code: 'ENVASE_INVALIDO' });
 
+    // Categoría con la que el POS agrupa el producto: OBLIGATORIA y elegida a
+    // mano en el formulario (ver exigirCategoria).
+    const categoria = exigirCategoria(body.categoria);
+    if (categoria.error) return res.status(400).json(categoria.error);
+
     const producto = new Inventario({
       nombre: body.nombre,
       cantidad: Number(body.cantidad),
@@ -356,6 +401,7 @@ export const addProducto = async (req, res) => {
       imagen: req.cloudinaryUrl,
       seVende: body.seVende === "true" || body.seVende === true,
       tipo: 'producto',
+      categoria: categoria.valor,
       unidad: unidad.valor || 'unidades',
       cantidadPorEnvase: body.cantidadPorEnvase ? Number(body.cantidadPorEnvase) : null,
       nombreEnvase: envase.valor,
@@ -488,6 +534,26 @@ export const updateProducto = async (req, res) => {
     // vivo desde los ingredientes, así que se mantiene en 0.
     if (req.body.precioCompra !== undefined && !esRecetaFinal) {
       $set.precioCompra = Number(req.body.precioCompra) || 0;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // Categoría.
+    //
+    // REGLA DE ORO: si el payload la trae, se respeta tal cual y no se
+    // recalcula nunca. Es la corrección manual del dueño desde el formulario.
+    //
+    // Si NO la trae, el producto conserva la que ya tenía. El backend NO la
+    // recalcula nunca a partir del nombre: adivinar por el nombre falla con las
+    // marcas (un "Crunchy" es helado y suena a galleta), y una edición de
+    // precio o de stock no tiene por qué mover la categoría.
+    //
+    // A diferencia del POST, acá NO es obligatoria: el PUT es parcial y se usa
+    // para reponer stock o cambiar el precio sin mandar el producto entero.
+    // ─────────────────────────────────────────────────────────────────
+    if (req.body.categoria !== undefined && req.body.categoria !== null && req.body.categoria !== '') {
+      const categoria = validarCategoria(req.body.categoria);
+      if (!categoria.ok) return res.status(400).json({ error: categoria.error, code: 'CATEGORIA_INVALIDA' });
+      $set.categoria = categoria.valor;
     }
 
     if (req.body.cantidadPorEnvase !== undefined) $set.cantidadPorEnvase = req.body.cantidadPorEnvase ? Number(req.body.cantidadPorEnvase) : null;
@@ -755,7 +821,7 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select(
-        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo receta unidad cantidadPorEnvase nombreEnvase createdBy createdAt updatedAt"
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo categoria receta unidad cantidadPorEnvase nombreEnvase createdBy createdAt updatedAt"
       )
       .populate("createdBy", "nombre email")
       .populate("receta.ingredienteId", POPULATE_INGREDIENTES)
@@ -809,6 +875,9 @@ export const getProductosPaginados = async (req, res) => {
 // siempre con cantidad 0 (no entendía el tipo 'receta') y pedía campos
 // inexistentes (imagenOptimizada / imagenOriginal). Todo eso quedó corregido.
 //
+// `categoria` SÍ sale: es cómo se agrupa el menú y no dice nada del costo ni
+// del stock interno.
+//
 // SOBRE LOS CAMPOS QUE NO ESTÁN ACÁ: este endpoint no lleva `receta`,
 // `precioCompra` ni `ingredienteLimitante` a propósito. Es la única ruta sin
 // token, y esos campos revelarían el costo de cada ingrediente y el stock
@@ -830,11 +899,12 @@ export const getProductosPublicos = async (req, res) => {
       ...(incluirAgotados ? {} : { cantidad: { $gt: 0 } }),
       ...searchFiltro,
     })
-      .select("nombre imagen precioVenta cantidad tipo createdAt")
+      .select("nombre imagen precioVenta cantidad tipo categoria createdAt")
       .lean())
       .map((p) => ({
         ...p,
         tipo: p.tipo || "producto",
+        categoria: p.categoria || CATEGORIA_POR_DEFECTO,
         agotado: (p.cantidad ?? 0) <= 0,
         motivoAgotado: (p.cantidad ?? 0) <= 0 ? "Temporalmente agotado" : null,
       }));
@@ -845,7 +915,7 @@ export const getProductosPublicos = async (req, res) => {
       tipo: "receta",
       ...searchFiltro,
     })
-      .select("nombre imagen precioVenta receta createdAt")
+      .select("nombre imagen precioVenta receta categoria createdAt")
       .populate("receta.ingredienteId", POPULATE_INGREDIENTES)
       .lean();
 
@@ -864,6 +934,7 @@ export const getProductosPublicos = async (req, res) => {
         precioVenta: receta.precioVenta,
         cantidad: calc.stock, // stock calculado a partir de los ingredientes
         tipo: "receta",
+        categoria: receta.categoria || CATEGORIA_POR_DEFECTO,
         agotado: calc.stock <= 0,
         motivoAgotado: calc.stock <= 0 ? "Temporalmente agotado" : null,
         createdAt: receta.createdAt,
@@ -1033,6 +1104,95 @@ export const getProductosParaVenta = async (req, res) => {
     console.error("Mensaje:", error.message);
     console.error("Stack:", error.stack);
     res.status(500).json({ error: "Error al obtener productos", message: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/products/mas-vendidos?limite=10
+//
+// El "Top" de la pantalla de ventas, calculado con las ventas del NEGOCIO.
+// Antes cada dispositivo aprendía su propio top en localStorage, así que el
+// celular del vendedor y la compu del dueño mostraban pestañas distintas.
+//
+// Vive acá, en /api/products, y NO en /api/ventas-reports a propósito: los
+// reportes están cerrados al rol vendedor y ese 403 lo saca de la pantalla de
+// ventas (el interceptor del frontend trata el 403 como sesión inválida). El
+// guard global deja pasar cualquier GET a /api/products, así que los tres
+// roles pueden pedir este endpoint. Tampoco devuelve plata: solo el nombre y
+// las unidades, nada de recaudado, costo ni margen, que es lo que un vendedor
+// no debe ver.
+//
+// COSTO: se cachea en memoria por unos minutos. Esto se pide en CADA apertura
+// de la pantalla de ventas y el ranking no cambia de forma perceptible entre
+// una venta y la siguiente; recalcularlo cada vez sería recorrer todas las
+// ventas del mes por gusto. El caché es por proceso: si Koyeb reinicia o
+// escala, simplemente se recalcula.
+// ─────────────────────────────────────────────────────────────────
+const MAS_VENDIDOS_DIAS = 30;          // ventana que se mira hacia atrás
+const MAS_VENDIDOS_TTL_MS = 5 * 60 * 1000;
+const MAS_VENDIDOS_LIMITE_MAX = 50;
+
+// clave: límite pedido | valor: { expira, productos }
+const cacheMasVendidos = new Map();
+
+export const getProductosMasVendidos = async (req, res) => {
+  try {
+    const pedido = parseInt(req.query.limite, 10);
+    const limite = Math.min(
+      Math.max(Number.isFinite(pedido) ? pedido : 10, 1),
+      MAS_VENDIDOS_LIMITE_MAX
+    );
+
+    const enCache = cacheMasVendidos.get(limite);
+    if (enCache && enCache.expira > Date.now()) {
+      return res.json(enCache.productos);
+    }
+
+    const desde = new Date(Date.now() - MAS_VENDIDOS_DIAS * 24 * 60 * 60 * 1000);
+
+    // Se piden más de los necesarios porque abajo se descartan los que ya no
+    // están en inventario o se apagaron: sin ese margen, un top 10 con 3
+    // productos descontinuados devolvería 7.
+    const ranking = await Sale.aggregate([
+      { $match: { fecha: { $gte: desde } } },
+      { $unwind: '$productos' },
+      {
+        $group: {
+          _id: '$productos.productoId',
+          unidadesVendidas: { $sum: '$productos.cantidad' },
+        },
+      },
+      { $sort: { unidadesVendidas: -1 } },
+      { $limit: limite * 3 },
+    ]);
+
+    const ids = ranking.map((r) => r._id).filter(Boolean);
+
+    // Solo lo que todavía se puede vender. Un producto borrado o apagado en el
+    // Top es una pestaña que no lleva a ninguna parte. NO se filtra por stock:
+    // un agotado de hoy sigue siendo de los más vendidos y el POS ya lo marca.
+    // El nombre sale del inventario (el actual), no de la venta, que guarda una
+    // copia del nombre al momento de venderse y puede estar desactualizada.
+    const vigentes = ids.length
+      ? await Inventario.find({ _id: { $in: ids }, seVende: true }).select('nombre').lean()
+      : [];
+    const nombrePorId = new Map(vigentes.map((p) => [p._id.toString(), p.nombre]));
+
+    const productos = ranking
+      .filter((r) => r._id && nombrePorId.has(r._id.toString()))
+      .slice(0, limite)
+      .map((r) => ({
+        productoId: r._id,
+        nombre: nombrePorId.get(r._id.toString()),
+        unidadesVendidas: r.unidadesVendidas,
+      }));
+
+    cacheMasVendidos.set(limite, { expira: Date.now() + MAS_VENDIDOS_TTL_MS, productos });
+
+    res.json(productos);
+  } catch (error) {
+    console.error('Error al obtener los más vendidos:', error);
+    res.status(500).json({ error: 'Error al obtener los más vendidos', mensaje: error.message });
   }
 };
 

@@ -10,6 +10,7 @@ import {
   getProductosPaginados,
   getProductosPublicos,
   getProductosParaVenta,
+  getProductosMasVendidos,
   getIngredientes,
   getProductoById,
 } from "../controllers/inventarioController.js";
@@ -30,6 +31,16 @@ router.get("/public", getProductosPublicos);
 // administrador y los colaboradores los ven).
 // ─────────────────────────────────────────────────────────────────
 router.get("/para-venta", authMiddleware, getProductosParaVenta);
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/products/mas-vendidos?limite=10 — pestaña "Top" del POS.
+// Abierta a los TRES roles: el vendedor la necesita al abrir la pantalla de
+// ventas y un 403 acá lo expulsaría de ella. Por eso vive en /api/products
+// (que el guard global deja leer a cualquier rol) y no en /api/ventas-reports.
+// Solo devuelve nombre y unidades vendidas: ninguna cifra de dinero.
+// Va ANTES de /:id para que Express no lea "mas-vendidos" como un ID.
+// ─────────────────────────────────────────────────────────────────
+router.get("/mas-vendidos", authMiddleware, getProductosMasVendidos);
 
 // ─────────────────────────────────────────────────────────────────
 // GET /api/products/ingredientes
@@ -59,7 +70,8 @@ router.get("/list", authMiddleware, getProductosPaginados);
 router.get("/", authMiddleware, getInventario);
 
 // GET /api/products/:id — va al final para no
-// interceptar rutas estáticas como /list, /ingredientes, /para-venta, /public
+// interceptar rutas estáticas como /list, /ingredientes, /para-venta,
+// /mas-vendidos y /public
 router.get("/:id", authMiddleware, getProductoById);
 
 router.delete("/:id", authMiddleware, deleteProducto);
