@@ -57,10 +57,16 @@ const resumenPersonalMesSchema = new mongoose.Schema(
     totalIngresos: { type: Number, default: 0 }, // ingresos propios del mes
     totalGastos: { type: Number, default: 0 },   // egresos SIN ahorro (consumo)
     totalAhorro: { type: Number, default: 0 },   // apartado en el mes (BRUTO)
-    totalEgresos: { type: Number, default: 0 },  // gastos + ahorro
+    totalEgresos: { type: Number, default: 0 },  // gastos + ahorro (sin lo pagado con ahorro)
     // Plata sacada DEL ahorro en el mes (tipo 'retiro_ahorro'). No es ingreso ni
     // egreso: sube el saldo a mano y baja el ahorro acumulado.
     totalRetiroAhorro: { type: Number, default: 0 },
+    // Gasto pagado DIRECTO con el ahorro (egresos con fondo='ahorro'). Va APARTE
+    // de totalGastos/totalEgresos a propósito: esa plata nunca pasó por el
+    // bolsillo del mes, así que no puede mover el saldo final ni "Puedo gastar
+    // hasta". Lo único que hace es bajar el ahorro acumulado (y el patrimonio,
+    // que es lo correcto: la plata se consumió).
+    totalGastoDesdeAhorro: { type: Number, default: 0 },
     // Flujo propio del mes: ingresos − egresos. NO incluye los retiros (un retiro
     // no es plata que el mes generó). El movimiento del saldo a mano es
     // balanceMes + totalRetiroAhorro.
@@ -73,6 +79,12 @@ const resumenPersonalMesSchema = new mongoose.Schema(
     // fueran egresos, la dona de gastos contaría como consumo plata que solo
     // cambió de bolsillo.
     desgloseRetiro: { type: [filaCategoriaSchema], default: [] },
+    // Gasto pagado con ahorro, visto de dos formas: EN QUÉ se fue (categoría de
+    // egreso: Compras personales, Salud…) y DE CUÁL bolsa salió (Ahorro MEP…).
+    // Aparte de desgloseEgreso para no mezclarlo con el gasto del mes, pero
+    // guardado igual para que se vea en qué se gastó el ahorro.
+    desgloseGastoAhorro: { type: [filaCategoriaSchema], default: [] },
+    desgloseGastoAhorroPorBolsa: { type: [filaCategoriaSchema], default: [] },
 
     // Conteo de movimientos del mes (informativo y para saber si el mes está vacío).
     movimientos: { type: Number, default: 0 },

@@ -1,11 +1,12 @@
-# Finanzas Personales — Saldo de apertura, Reporte anual y Retiros de ahorro
+# Finanzas Personales — Saldo de apertura, Reporte anual, Retiros y gastos pagados con el ahorro
 
 Módulo `/api/finanzas-personales` (**solo administrador**: todas las rutas exigen
 Bearer token + rol admin). Es un módulo **aparte de la sala de juegos**: no se
 cruza con ventas, plays, ganancias ni con el Estado de Resultados del negocio.
 
 Este documento cubre lo que se agregó: **cómo se guardan los reportes**, el
-**saldo de apertura** (la plata que se traía de antes) y el **reporte anual**.
+**saldo de apertura** (la plata que se traía de antes), el **reporte anual**, los
+**retiros de ahorro** (§5) y los **gastos pagados directo con el ahorro** (§6).
 
 ---
 
@@ -122,7 +123,9 @@ antes y agrega:
 | `patrimonio`      | `saldoFinal + ahorroAcumulado` → lo que hay a mano **más** lo apartado |
 | `apertura`        | `{ montoDisponible, montoAhorro, mesCorte, anioCorte, vigente }` o `null` |
 | `totalRetiroAhorro` | Plata sacada del ahorro en el mes (ver §5)                |
-| `ahorroNetoMes`   | `totalAhorro − totalRetiroAhorro` (puede ser negativo)     |
+| `totalGastoDesdeAhorro` | Consumo pagado **directo** con el ahorro (ver §6)     |
+| `gastoTotalConAhorro` | `totalGastos + totalGastoDesdeAhorro` → todo el consumo del mes, venga del bolsillo o del ahorro |
+| `ahorroNetoMes`   | `totalAhorro − totalRetiroAhorro − totalGastoDesdeAhorro` (puede ser negativo) |
 | `balanceMes`      | `ingresos − egresos`: lo que el mes generó por sí solo, **sin** retiros |
 | `variacionSaldo`  | `balanceMes + totalRetiroAhorro` = `saldoFinal − saldoInicial` |
 | `tasaAhorro`      | % sobre el ahorro **neto** (la que vale)                   |
@@ -271,8 +274,13 @@ nueva ni un gasto:
 Que no entre en `totalIngresos` es lo que evita que se rompan los porcentajes del
 mes y la comparación contra el mes anterior (si contara como ingreso, el mes
 siguiente avisaría «tus ingresos bajaron 80%»). Y que no infle `libreParaGastar`
-es lo que evita que la tarjeta «Puedo gastar hasta» premie sacar del ahorro. Si
-después esa plata se gasta, eso se registra aparte como el egreso que sea.
+es lo que evita que la tarjeta «Puedo gastar hasta» premie sacar del ahorro.
+
+> ⚠️ Si la plata se saca **para gastarla de una vez**, un `retiro_ahorro` NO es
+> lo que hay que usar: dejaría el saldo final inflado hasta que se anote el gasto,
+> y al anotarlo bajaría «Puedo gastar hasta» aunque el mes no haya puesto un
+> colón. Para eso está el **gasto pagado con el ahorro** de §6. El
+> `retiro_ahorro` es para cuando la plata queda efectivamente a mano.
 
 ### Alta, edición y borrado
 
@@ -428,3 +436,129 @@ al cerrar junio, ahora 300.000 + 845.000 = 1.145.000 en julio, más el flujo del
 `mesMasRetiro` es `null` si el año no tuvo retiros. En `comparativo` se agregaron
 `totalRetiroAhorro` y `ahorroNeto`, y `variacion.ahorro` compara **neto contra
 neto**.
+
+---
+
+## 6. Gasto pagado con el ahorro (`fondo: "ahorro"`)
+
+Cuando la plata sale del ahorro **y se consume en el acto** (el teléfono pagado
+con el Ahorro MEP, por ejemplo), se anota como un **egreso normal marcado como
+pagado con el ahorro**. Un solo movimiento.
+
+### Por qué existe
+
+Antes había que anotarlo en dos: un `retiro_ahorro` y después el egreso. Ninguna
+de las dos mitades sola daba bien, y las dos juntas tampoco:
+
+| Cómo se anotaba | Saldo final | «Puedo gastar hasta» |
+| --- | --- | --- |
+| Solo el retiro | **inflado** por el monto ❌ | correcto |
+| Retiro + egreso | correcto | **bajaba** por el monto ❌ |
+
+El problema es que el egreso restaba de `libreParaGastar` (`ingresos − egresos`)
+pero el retiro no sumaba ahí. Con `fondo: "ahorro"` las dos mitades viajan juntas
+y ninguna toca el mes.
+
+### Efecto
+
+| | Efecto |
+| --- | --- |
+| Ahorro acumulado | **−** monto |
+| Patrimonio (a mano + apartado) | **−** monto (la plata se consumió) |
+| Saldo a mano (`saldoFinal`) | **no lo toca** |
+| `disponible` | **no lo toca** |
+| `totalGastos` / `totalEgresos` | **no lo tocan** |
+| `libreParaGastar` («Puedo gastar hasta») | **no lo toca** |
+| `balanceMes` / `variacionSaldo` | **no lo tocan** |
+| `totalGastoDesdeAhorro` | **+** monto |
+| `gastoTotalConAhorro` | **+** monto |
+
+Esa plata nunca pasó por el bolsillo del mes, así que no puede mover el saldo ni
+los mensajes de flujo. Lo único que baja es el colchón, que es lo correcto.
+
+### Cómo se registra
+
+`POST /` y `PUT /:id` aceptan dos campos nuevos:
+
+```json
+{ "tipo": "egreso", "categoria": "Compras personales", "monto": 291200,
+  "fondo": "ahorro", "bolsaAhorro": "Ahorro MEP",
+  "mes": 8, "anio": 2026, "descripcion": "Teléfono nuevo" }
+```
+
+| Campo | Qué es |
+| --- | --- |
+| `fondo` | `"mes"` (default, lo de siempre) o `"ahorro"`. Si no se manda, es `"mes"`: nada cambia para el resto del frontend. |
+| `bolsaAhorro` | Obligatorio si `fondo: "ahorro"`. De cuál bolsa salió: `Ahorro`, `Ahorro CreAI` o `Ahorro MEP`. |
+
+Reglas:
+
+- Solo un **egreso** admite `fondo: "ahorro"`. Un ingreso o un `retiro_ahorro` lo
+  rechazan con 400.
+- Un egreso de **categoría de ahorro** (`Ahorro`, `Ahorro CreAI`, `Ahorro MEP`)
+  tampoco: apartar ahorro pagándolo con ahorro no significa nada. Para mover plata
+  entre bolsas: un retiro y después el ahorro nuevo.
+- Al **editar**, si el movimiento pasa a ingreso, a retiro o a categoría de
+  ahorro, hay que mandar `fondo: "mes"` explícitamente o devuelve 400.
+- `GET /categorias` ahora trae `fondos`, `bolsasAhorro` y
+  `categoriasSinFondoAhorro` para armar el formulario.
+
+### Validación
+
+Igual que un retiro: no se puede pagar con ahorro que no existe. Recorre todos
+los meses y devuelve 400 con `message` ya redactado, `disponible` (el tope de ese
+movimiento) y `acumulado`. Un retiro y un gasto pagado con ahorro **drenan el
+acumulado igual**, así que la validación los suma juntos mes a mes.
+
+### Formulario sugerido
+
+En el formulario de egreso, un check: **«Lo pagué con el ahorro»**. Al marcarlo
+aparece un select con las tres bolsas. Texto de ayuda:
+
+> *«Esta plata sale del ahorro, no del dinero del mes: no cambia tu saldo ni
+> "Puedo gastar hasta", solo baja tu ahorro acumulado.»*
+
+El check se **oculta** si la categoría elegida es de ahorro.
+
+### En el resumen y el reporte anual
+
+- Resumen mensual: `desglose.gastoAhorro` (en qué se fue) y
+  `desglose.gastoAhorroPorBolsa` (de cuál bolsa salió), los dos con `porcentaje`.
+  Van **aparte** de `desglose.egreso` para que la dona de gastos del mes no cuente
+  plata que no salió del mes.
+- Reporte anual: `totales.totalGastoDesdeAhorro`, `totales.gastoTotalConAhorro`,
+  `desglose.gastoAhorro`, `desglose.gastoAhorroPorBolsa`,
+  `destacados.mesMasGastoDesdeAhorro` y, por mes, `totalGastoDesdeAhorro` /
+  `gastoTotalConAhorro` / `ahorroNetoMes`.
+- Mensaje inteligente nuevo 🏦 que lo explica sin repetir las tarjetas.
+- El colchón 🛟 ahora promedia el consumo **total** (bolsillo + ahorro): para
+  saber cuánto aguanta el colchón importa cuánto se consume, no de cuál bolsillo
+  salió.
+
+### Ejemplo real: agosto 2026
+
+Teléfono ₡291.200 pagado con el Ahorro MEP, sobre un mes con ingresos ₡835.131,
+gastos ₡318.231 y ahorro apartado ₡400.400 (saldo inicial ₡94.115):
+
+| | Anotado como retiro (antes) | Como gasto pagado con ahorro |
+| --- | --- | --- |
+| `disponible` | ₡1.220.446 ❌ | ₡929.246 ✅ |
+| `saldoFinal` | ₡501.815 ❌ | ₡210.615 ✅ |
+| `libreParaGastar` | ₡116.500 | ₡116.500 |
+| `ahorroAcumulado` | ₡2.570.855 | ₡2.570.855 |
+| `patrimonio` | ₡3.072.670 ❌ | ₡2.781.470 ✅ |
+
+---
+
+## 7. Bug corregido: apertura duplicada en enero
+
+En el reporte anual, si el **mes de corte de la apertura era enero**, el monto se
+sumaba dos veces: una en `saldoInicialAnio` / `ahorroInicioAnio` (porque
+`calcularAcumulados(1, anio)` ya la considera vigente) y otra en el recorrido mes
+a mes. Todo el año quedaba inflado. Ahora `aperturaEnElAnio` exige `mesCorte > 1`.
+
+Con corte en enero, `apertura` y `recorridoSaldo.aperturaDisponible` vienen en
+`null` / `0`: no hace falta la línea aparte, porque ya está dentro del saldo
+inicial del año. La identidad
+`saldoInicialAnio + aperturaDisponible + balance + retiroAhorro = saldoFinalAnio`
+se sigue cumpliendo.
