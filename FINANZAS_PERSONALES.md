@@ -124,6 +124,7 @@ antes y agrega:
 | `apertura`        | `{ montoDisponible, montoAhorro, mesCorte, anioCorte, vigente }` o `null` |
 | `totalRetiroAhorro` | Plata sacada del ahorro en el mes (ver §5)                |
 | `totalGastoDesdeAhorro` | Consumo pagado **directo** con el ahorro (ver §6)     |
+| `ahorroInicial`   | Cuánto había ahorrado al **empezar** el mes (el equivalente de `saldoInicial`, pero del bolsillo del ahorro) |
 | `gastoTotalConAhorro` | `totalGastos + totalGastoDesdeAhorro` → todo el consumo del mes, venga del bolsillo o del ahorro |
 | `ahorroNetoMes`   | `totalAhorro − totalRetiroAhorro − totalGastoDesdeAhorro` (puede ser negativo) |
 | `balanceMes`      | `ingresos − egresos`: lo que el mes generó por sí solo, **sin** retiros |
@@ -562,3 +563,29 @@ Con corte en enero, `apertura` y `recorridoSaldo.aperturaDisponible` vienen en
 inicial del año. La identidad
 `saldoInicialAnio + aperturaDisponible + balance + retiroAhorro = saldoFinalAnio`
 se sigue cumpliendo.
+
+---
+
+## 8. `retiro_ahorro` sale de la interfaz
+
+`GET /categorias` ya **no** devuelve `retiro_ahorro` en `tipos`. El backend lo
+sigue aceptando en `POST` y `PUT` para no romper lo ya guardado, pero el frontend
+no debe ofrecerlo: lo reemplaza el gasto pagado con el ahorro (§6).
+
+Por qué se va: sacar plata del ahorro para gastarla no tenía forma de anotarse
+bien. Con solo el retiro, el saldo final quedaba inflado; anotando además el
+gasto, «Puedo gastar hasta» bajaba aunque el mes no hubiera puesto un colón.
+
+Junto con eso, el resumen mensual expone `ahorroInicial`, para que el ahorro se
+pueda dibujar como una escalera que cierra sola:
+
+```
+ahorroInicial + totalAhorro − totalGastoDesdeAhorro − totalRetiroAhorro
+  = ahorroAcumulado
+```
+
+Y los mensajes inteligentes del mes pasaron de 4 a **5**: con 4, el aviso del
+colchón de emergencia (🛟) se caía casi siempre detrás de las comparaciones
+contra el mes anterior.
+
+El rediseño completo de la pantalla está en `PROMPT_FRONTEND_FINANZAS.md`.

@@ -184,11 +184,17 @@ const normalizarMonto = ({ moneda, monto, montoOriginal, tipoCambio }) => {
 // ============================================
 export const getCategorias = async (_req, res) => {
   res.status(200).json({
-    tipos: TIPOS_MOVIMIENTO,
+    // `retiro_ahorro` YA NO SE OFRECE. Enredaba más de lo que servía: sacar
+    // plata del ahorro para gastarla dejaba el saldo inflado hasta anotar el
+    // gasto, y al anotarlo bajaba "Puedo gastar hasta" aunque el mes no hubiera
+    // puesto un colón. Eso ahora se anota como un egreso con fondo='ahorro'.
+    // El backend lo sigue ACEPTANDO (POST/PUT) para no romper lo ya guardado,
+    // pero el frontend no debe mostrarlo como opción.
+    tipos: TIPOS_MOVIMIENTO.filter((t) => t !== 'retiro_ahorro'),
     categorias: {
       ingreso: CATEGORIAS_INGRESO,
       egreso: CATEGORIAS_EGRESO,
-      // Un retiro se clasifica con la bolsa de ahorro de la que salió la plata.
+      // Se mantiene por si hay movimientos viejos que haya que editar.
       retiro_ahorro: CATEGORIAS_AHORRO,
     },
     // Al registrar un EGRESO se puede indicar de qué bolsillo salió. Si es
@@ -983,6 +989,12 @@ export const getResumenMensual = async (req, res) => {
       mes,
       anio,
       ...componerFinanzasMes(comoResumen(snap), acum.saldoInicial, acum.ahorroAcumulado),
+      // Cuánto había ahorrado al EMPEZAR el mes. Con esto el frontend puede
+      // dibujar el ahorro como una escalera que cierra sola:
+      //   ahorroInicial + totalAhorro − totalRetiroAhorro − totalGastoDesdeAhorro
+      //   = ahorroAcumulado
+      // (el equivalente de saldoInicial, pero para el bolsillo del ahorro).
+      ahorroInicial: acum.ahorroPrevio,
       apertura: acum.apertura
         ? {
             montoDisponible: acum.apertura.montoDisponible || 0,
@@ -1041,9 +1053,11 @@ const listarFilas = (filas) =>
 // Orden en que se muestran los mensajes: primero lo que hay que atender.
 const PRIORIDAD_NIVEL = { critico: 0, advertencia: 1, consejo: 2, bien: 3, info: 4 };
 
-// Pocos mensajes y que valgan: solo los 4 más importantes del mes. Se generan
+// Pocos mensajes y que valgan: solo los 5 más importantes del mes. Se generan
 // todos los avisos posibles, se ordenan por urgencia y se muestran los primeros.
-const MAX_RECOMENDACIONES = 4;
+// Eran 4, pero con eso el aviso del colchón de emergencia (🛟) —de los más
+// útiles— se caía casi siempre detrás de las comparaciones contra el mes anterior.
+const MAX_RECOMENDACIONES = 5;
 
 // El reporte anual se abre a propósito (no es la pantalla de todos los días), así
 // que aguanta un par de mensajes más que la vista del mes.
