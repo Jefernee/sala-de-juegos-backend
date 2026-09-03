@@ -8,8 +8,9 @@
 //   1. Consulta el tipo de cambio del dólar del día.
 //   2. Manda UN WhatsApp con la compra y la venta al número personal del
 //      administrador (NO al grupo de la sala: esto no le interesa al resto).
-//   3. Guarda el valor del día para poder decir en el mensaje siguiente si el
-//      dólar subió o bajó respecto a la última vez.
+//   3. Guarda los valores del día para poder decir en el mensaje siguiente
+//      cuánto subió o bajó CADA UNO (compra y venta van por separado: no se
+//      mueven igual, y con un solo número no se veía lo que hacía la otra).
 //
 // POR QUÉ EN ATLAS Y NO EN EL BACKEND:
 //   Koyeb (plan gratis) duerme el contenedor cuando no hay tráfico, y a las 7 AM
@@ -29,7 +30,7 @@
 //
 // SOBRE LA BASE DE DATOS: solo se usa para el "subió/bajó desde ayer", que es un
 // extra. Si el data source no aparece con ninguno de los nombres conocidos, el
-// mensaje se manda IGUAL, sin esa línea. Nunca dejamos de avisar el tipo de
+// mensaje se manda IGUAL, sin esas líneas. Nunca dejamos de avisar el tipo de
 // cambio por un problema de configuración de la base.
 
 // ── Configuración ──────────────────────────────────────────────────────────
@@ -61,6 +62,11 @@ const NOMBRE_DB = "salaDeJuegos";
 // ───────────────────────────────────────────────────────────────────────────
 
 exports = async function () {
+  // Marca de versión: sirve para saber en los logs QUÉ código corrió realmente.
+  // Si en el log no aparece esta línea, Atlas está ejecutando una versión vieja
+  // (casi siempre: se guardó el borrador pero no se le dio Deploy).
+  console.log("versión del trigger: compra/venta comparadas por separado (v2)");
+
   // Buscar el cluster probando los nombres conocidos. Devuelve null si ninguno
   // existe: en ese caso seguimos sin historial en vez de reventar.
   const buscarHistorial = () => {
@@ -208,9 +214,14 @@ exports = async function () {
   }
 
   // ── Comparar con el último dato guardado ─────────────────────────────────
-  // Solo para poder decir "subió ₡1.50 desde ayer". Si no hay historial (primer
-  // día) o falla la consulta, el mensaje sale igual, sin la comparación.
-  let comparacion = "";
+  // La compra y la venta NO se mueven igual (cada una lleva su propio margen),
+  // así que se compara CADA UNA por separado y cada una va en su línea. Antes
+  // salía un solo "subió ₡2.55" calculado con la venta, y eso escondía lo que
+  // había hecho la compra — que podía incluso haber bajado ese mismo día.
+  //
+  // Si no hay historial (primer día) o falla la consulta, el mensaje sale igual,
+  // sin la comparación.
+  let lineasComparacion = [];
   if (tc && historial) {
     try {
       const previos = await historial.find({ dia: { $ne: diaCR } })
@@ -218,16 +229,40 @@ exports = async function () {
         .limit(1)
         .toArray();
       const previo = previos[0];
-      if (previo && isFinite(Number(previo.venta))) {
-        const dif = tc.venta - Number(previo.venta);
-        const redondeada = Math.round(dif * 100) / 100;
+      if (previo) {
         const cuando = diaLegible(previo.dia);
-        if (redondeada > 0) {
-          comparacion = "📈 Subió " + colones(redondeada) + " desde " + cuando + ".";
-        } else if (redondeada < 0) {
-          comparacion = "📉 Bajó " + colones(Math.abs(redondeada)) + " desde " + cuando + ".";
-        } else {
-          comparacion = "➖ Sin cambios desde " + cuando + ".";
+
+        // Diferencia redondeada a céntimos, o null si el día anterior no tiene
+        // ese valor guardado (registros viejos o a medias): en ese caso esa
+        // línea no se muestra, en vez de inventar un "subió ₡NaN".
+        const diferencia = (actual, anterior) => {
+          const ant = Number(anterior);
+          if (!isFinite(ant)) return null;
+          return Math.round((actual - ant) * 100) / 100;
+        };
+
+        const difCompra = diferencia(tc.compra, previo.compra);
+        const difVenta = diferencia(tc.venta, previo.venta);
+
+        // "📈 Compra: subió ₡2.20" / "📉 Venta: bajó ₡0.35"
+        const lineaDif = (etiqueta, dif) => {
+          if (dif > 0) return "📈 " + etiqueta + ": subió " + colones(dif);
+          if (dif < 0) return "📉 " + etiqueta + ": bajó " + colones(Math.abs(dif));
+          return "➖ " + etiqueta + ": sin cambios";
+        };
+
+        const hayConQueComparar = difCompra !== null || difVenta !== null;
+        const ningunaSeMovio =
+          (difCompra === null || difCompra === 0) &&
+          (difVenta === null || difVenta === 0);
+
+        if (hayConQueComparar && ningunaSeMovio) {
+          // Quietas las dos: una sola línea se lee mejor que dos diciendo lo mismo.
+          lineasComparacion = ["➖ Sin cambios desde " + cuando + "."];
+        } else if (hayConQueComparar) {
+          lineasComparacion = ["📊 *Comparado con " + cuando + ":*"];
+          if (difCompra !== null) lineasComparacion.push(lineaDif("Compra", difCompra));
+          if (difVenta !== null) lineasComparacion.push(lineaDif("Venta", difVenta));
         }
       }
     } catch (e) {
@@ -245,9 +280,11 @@ exports = async function () {
       "🟢 Compra: " + colones(tc.compra),
       "🔴 Venta: " + colones(tc.venta),
     ];
-    if (comparacion) {
+    if (lineasComparacion.length) {
       lineas.push("");
-      lineas.push(comparacion);
+      for (let i = 0; i < lineasComparacion.length; i++) {
+        lineas.push(lineasComparacion[i]);
+      }
     }
     lineas.push("");
     lineas.push("_Compra: lo que te dan por cada $1._");

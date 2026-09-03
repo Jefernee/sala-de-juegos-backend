@@ -12,7 +12,9 @@ Ejemplo del mensaje:
 🟢 Compra: ₡449.94
 🔴 Venta: ₡454.55
 
-📈 Subió ₡2.55 desde ayer.
+📊 *Comparado con ayer:*
+📈 Compra: subió ₡2.20
+📈 Venta: subió ₡2.55
 
 _Compra: lo que te dan por cada $1._
 _Venta: lo que te cuesta cada $1._
@@ -50,6 +52,11 @@ esperando un mensaje que nunca llega.
 
 **La comparación con ayer** sale del historial que el propio trigger va
 guardando. El primer día no aparece (todavía no hay con qué comparar).
+
+**Compra y venta se comparan por separado**, cada una en su línea. No se mueven
+igual (cada una lleva su propio margen), así que un solo "subió ₡2.55" escondía
+lo que había hecho la otra — que podía incluso haber bajado ese mismo día. Si
+ninguna de las dos se movió, sale una sola línea: `➖ Sin cambios desde ayer.`
 
 ---
 
