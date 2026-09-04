@@ -8,6 +8,13 @@ import { mongoose } from "../db.js";
 import Sale from "../models/sale.js";
 import { ROL_VENDEDOR } from "../config/roles.js";
 import { CATEGORIA_POR_DEFECTO, CATEGORIAS_PRODUCTO, validarCategoria } from "../config/categoriasProducto.js";
+import { validarTipoProducto } from "../config/tiposProducto.js";
+import {
+  UNIDADES_VALIDAS,
+  ENVASES_VALIDOS,
+  normalizarUnidad,
+  normalizarEnvase,
+} from "../config/unidadesEnvases.js";
 // Helper: fecha actual en zona horaria de Costa Rica
 // medianoche Costa Rica (UTC-6) = 06:00 UTC
 const getFechaCostaRica = () => {
@@ -90,17 +97,23 @@ const POPULATE_INGREDIENTES = 'nombre cantidad precioCompra unidad';
 // Listas cerradas de unidades y envases.
 // Antes eran texto libre y en la base quedaron valores mezclados ("Gramos" y
 // "gramos", "Paquete" y "paquete"), que ensucian los filtros y los reportes.
-// Se normaliza a minúscula y se valida contra estas listas; el frontend usa
-// desplegables con exactamente estos valores.
+//
+// Ahora viven en config/unidadesEnvases.js, que es el espejo del vocabulario del
+// formulario: estaban escritas también acá y las dos copias se habían separado.
+// Se re-exportan porque es de donde las venía pidiendo el resto del proyecto.
+// `npm test` avisa si se vuelven a separar.
 // ─────────────────────────────────────────────────────────────────
-export const UNIDADES_VALIDAS = ['unidades', 'gramos', 'kilos', 'mililitros', 'litros', 'onzas'];
-export const ENVASES_VALIDOS = ['paquete', 'balde', 'botella', 'caja', 'bolsa', 'saco', 'tarro', 'sobre', 'bandeja'];
+export { UNIDADES_VALIDAS, ENVASES_VALIDOS };
 
-const normalizar = (valor) => (typeof valor === 'string' ? valor.trim().toLowerCase() : valor);
-
-// Devuelve { ok: true, valor } o { ok: false, error }
-const validarDeLista = (valor, lista, etiqueta) => {
-  const limpio = normalizar(valor);
+// Devuelve { ok: true, valor } o { ok: false, error }.
+//
+// `normalizador` no es un detalle: además de bajar a minúscula, traduce los
+// sinónimos ("kg" y "Kilos" → "kilogramos", "latas" → "lata"). Sin eso, un
+// producto guardado con un nombre viejo se vuelve imposible de editar — el
+// formulario lo lee, lo manda de vuelta igual, y se come un 400 por un dato que
+// él nunca escribió.
+const validarDeLista = (valor, lista, etiqueta, normalizador) => {
+  const limpio = normalizador(valor);
   if (!limpio) return { ok: true, valor: null };
   if (!lista.includes(limpio)) {
     return {
@@ -110,6 +123,9 @@ const validarDeLista = (valor, lista, etiqueta) => {
   }
   return { ok: true, valor: limpio };
 };
+
+const validarUnidad = (valor) => validarDeLista(valor, UNIDADES_VALIDAS, 'La unidad', normalizarUnidad);
+const validarEnvase = (valor) => validarDeLista(valor, ENVASES_VALIDOS, 'El envase', normalizarEnvase);
 
 // ─────────────────────────────────────────────────────────────────
 // La categoría al CREAR es obligatoria y la elige el dueño en el formulario.
@@ -381,16 +397,25 @@ export const addProducto = async (req, res) => {
     const inicioCreacion = Date.now();
 
     // Unidad y envase salen de listas cerradas y se guardan en minúscula.
-    const unidad = validarDeLista(body.unidad, UNIDADES_VALIDAS, 'La unidad');
+    const unidad = validarUnidad(body.unidad);
     if (!unidad.ok) return res.status(400).json({ error: unidad.error, code: 'UNIDAD_INVALIDA' });
 
-    const envase = validarDeLista(body.nombreEnvase, ENVASES_VALIDOS, 'El envase');
+    const envase = validarEnvase(body.nombreEnvase);
     if (!envase.ok) return res.status(400).json({ error: envase.error, code: 'ENVASE_INVALIDO' });
 
     // Categoría con la que el POS agrupa el producto: OBLIGATORIA y elegida a
     // mano en el formulario (ver exigirCategoria).
     const categoria = exigirCategoria(body.categoria);
     if (categoria.error) return res.status(400).json(categoria.error);
+
+    // Qué ES la cosa (bebida, golosina, helado a granel…). De acá salió la
+    // `unidad` que el formulario mandó, así que se guarda junto con ella: sin
+    // esto el dato se perdía y al reabrir el producto había que adivinarlo
+    // desde la unidad, cosa que no se puede porque varios tipos comparten la
+    // misma. No es obligatorio para no romper a otros clientes del endpoint;
+    // el formulario sí lo exige antes de enviar.
+    const tipoProducto = validarTipoProducto(body.tipoProducto);
+    if (!tipoProducto.ok) return res.status(400).json({ error: tipoProducto.error, code: 'TIPO_PRODUCTO_INVALIDO' });
 
     const producto = new Inventario({
       nombre: body.nombre,
@@ -402,6 +427,7 @@ export const addProducto = async (req, res) => {
       seVende: body.seVende === "true" || body.seVende === true,
       tipo: 'producto',
       categoria: categoria.valor,
+      tipoProducto: tipoProducto.valor,
       unidad: unidad.valor || 'unidades',
       cantidadPorEnvase: body.cantidadPorEnvase ? Number(body.cantidadPorEnvase) : null,
       nombreEnvase: envase.valor,
@@ -556,10 +582,29 @@ export const updateProducto = async (req, res) => {
       $set.categoria = categoria.valor;
     }
 
+    // ─────────────────────────────────────────────────────────────────
+    // Qué ES la cosa. Misma regla que la categoría: si el payload lo trae se
+    // respeta tal cual, y si no lo trae el producto conserva el que tenía. NO
+    // se deduce de la unidad: cuatro tipos se cuentan en 'unidades' y dos en
+    // 'gramos', así que deducirlo devolvía siempre el primero de la lista y el
+    // formulario mostraba "Bebida" por más que el dueño hubiera elegido
+    // "Golosina o snack".
+    //
+    // Ojo con el orden: esto va ANTES del bloque de `unidad`, que puede cortar
+    // la petición con un 400 si el producto se usa en recetas. Que el tipo se
+    // valide primero no cambia nada porque nada se escribe hasta el
+    // findByIdAndUpdate del final.
+    // ─────────────────────────────────────────────────────────────────
+    if (req.body.tipoProducto !== undefined && req.body.tipoProducto !== null && req.body.tipoProducto !== '') {
+      const tipoProducto = validarTipoProducto(req.body.tipoProducto);
+      if (!tipoProducto.ok) return res.status(400).json({ error: tipoProducto.error, code: 'TIPO_PRODUCTO_INVALIDO' });
+      $set.tipoProducto = tipoProducto.valor;
+    }
+
     if (req.body.cantidadPorEnvase !== undefined) $set.cantidadPorEnvase = req.body.cantidadPorEnvase ? Number(req.body.cantidadPorEnvase) : null;
 
     if (req.body.nombreEnvase !== undefined) {
-      const envase = validarDeLista(req.body.nombreEnvase, ENVASES_VALIDOS, 'El envase');
+      const envase = validarEnvase(req.body.nombreEnvase);
       if (!envase.ok) return res.status(400).json({ error: envase.error, code: 'ENVASE_INVALIDO' });
       $set.nombreEnvase = envase.valor;
     }
@@ -575,11 +620,14 @@ export const updateProducto = async (req, res) => {
     // Se rechaza con un mensaje que dice exactamente qué recetas lo usan.
     // ─────────────────────────────────────────────────────────────────
     if (req.body.unidad !== undefined) {
-      const unidad = validarDeLista(req.body.unidad, UNIDADES_VALIDAS, 'La unidad');
+      const unidad = validarUnidad(req.body.unidad);
       if (!unidad.ok) return res.status(400).json({ error: unidad.error, code: 'UNIDAD_INVALIDA' });
 
       const unidadNueva = unidad.valor || 'unidades';
-      const unidadActual = normalizar(productoActual.unidad) || 'unidades';
+      // Con el mismo normalizador de los sinónimos: un producto guardado como
+      // 'kilos' y uno que llega como 'kilogramos' son la MISMA unidad, y tratarlos
+      // como un cambio bloquearía una edición que no cambia nada.
+      const unidadActual = normalizarUnidad(productoActual.unidad) || 'unidades';
 
       if (unidadNueva !== unidadActual) {
         const recetasQueLoUsan = await Inventario.find({ 'receta.ingredienteId': req.params.id })
@@ -821,7 +869,7 @@ export const getProductosPaginados = async (req, res) => {
 
     const productos = await Inventario.find(query)
       .select(
-        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo categoria receta unidad cantidadPorEnvase nombreEnvase createdBy createdAt updatedAt"
+        "nombre cantidad precioCompra precioVenta fechaCompra imagen seVende tipo categoria tipoProducto receta unidad cantidadPorEnvase nombreEnvase createdBy createdAt updatedAt"
       )
       .populate("createdBy", "nombre email")
       .populate("receta.ingredienteId", POPULATE_INGREDIENTES)

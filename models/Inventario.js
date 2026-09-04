@@ -1,6 +1,7 @@
 //models/Inventario.js
 import mongoose from "mongoose";
 import { CATEGORIAS_PRODUCTO, CATEGORIA_POR_DEFECTO } from "../config/categoriasProducto.js";
+import { TIPOS_PRODUCTO } from "../config/tiposProducto.js";
 
 const Schema = mongoose.Schema;
 
@@ -72,6 +73,28 @@ const inventarioSchema = new Schema({
     type: String,
     enum: CATEGORIAS_PRODUCTO,
     default: CATEGORIA_POR_DEFECTO,
+  },
+
+  // ─────────────────────────────────────────────────────────────────
+  // Qué ES la cosa: bebida, golosina, helado a granel, polvo, líquido,
+  // desechable. Es la pregunta "¿Qué es?" del formulario, y es de donde sale
+  // la `unidad` con la que se cuenta el producto.
+  //
+  // No es lo mismo que `tipo` (producto/receta) ni que `categoria` (la pestaña
+  // del POS): un helado a granel es tipo 'producto', categoria 'helados' y
+  // tipoProducto 'helado'.
+  //
+  // Arranca en null a propósito: null significa "todavía nadie lo eligió", que
+  // es el estado real de todo lo creado antes de este campo. El formulario los
+  // muestra con la opción sin marcar y pide elegirla; no se migra ni se deduce
+  // desde la unidad, porque esa deducción es justo lo que estaba roto (cuatro
+  // tipos comparten 'unidades' y dos comparten 'gramos', así que la vuelta
+  // siempre caía en el primero de la lista).
+  // ─────────────────────────────────────────────────────────────────
+  tipoProducto: {
+    type: String,
+    enum: TIPOS_PRODUCTO,
+    default: null,
   },
 
   // Para ingredientes a granel (helado, sirope, etc.)
