@@ -133,10 +133,13 @@ exports = async function () {
 
     // Controles usados en la partida: SIEMPRE se muestra. Fallback para plays
     // viejos sin totalControles: derivar de controlAdicional (2 gratis + cobrados).
+    // Ping Pong no usa consola ni controles (se guarda totalControles = 0):
+    // no se muestra la línea ni se pide devolución.
+    const usaControles = play.lugarDeJuego !== "Ping Pong";
     const totalControles = Number(play.totalControles) >= 1
       ? Number(play.totalControles)
       : (Number(play.controlAdicional) > 0 ? Number(play.controlAdicional) + 2 : 2);
-    lineas.push("🎮 Controles: " + totalControles);
+    if (usaControles) lineas.push("🎮 Controles: " + totalControles);
 
     const total = formatearColones(play.total);
     if (total) lineas.push("💰 Total: " + total);
@@ -144,10 +147,12 @@ exports = async function () {
     if (play.estadoPago) lineas.push("💳 Estado del pago: " + play.estadoPago);
 
     // Recordatorio de devolución de controles (acción para el encargado).
-    lineas.push("");
-    lineas.push(totalControles === 1
-      ? "⚠️ Debe estar 1 control. Revisá que todo esté bien."
-      : "⚠️ Deben estar " + totalControles + " controles. Revisá que todo esté bien.");
+    if (usaControles) {
+      lineas.push("");
+      lineas.push(totalControles === 1
+        ? "⚠️ Debe estar 1 control. Revisá que todo esté bien."
+        : "⚠️ Deben estar " + totalControles + " controles. Revisá que todo esté bien.");
+    }
 
     return lineas.join("\n");
   };

@@ -47,7 +47,10 @@ const determinarTipoPlay = (lugarDeJuego) => {
 // max(0, totalControles - 2), así el cobro y el mensaje nunca quedan
 // inconsistentes. Acepta bodies viejos que solo manden controlAdicional, y
 // cae en 2 controles / 0 cobrados si no llega ninguno.
-const normalizarControles = ({ totalControles, controlAdicional } = {}) => {
+// Ping Pong no tiene consola: siempre 0 controles, sin importar qué mande el
+// body (así un registro viejo también se corrige al editarlo).
+const normalizarControles = ({ totalControles, controlAdicional } = {}, lugarDeJuego) => {
+  if (lugarDeJuego === 'Ping Pong') return { totalControles: 0, controlAdicional: 0 };
   let total = Number(totalControles);
   const adic = Number(controlAdicional);
   if (Number.isFinite(total) && total >= 1) {
@@ -353,7 +356,7 @@ export const createPlay = async (req, res) => {
     console.log('📝 Datos recibidos para crear play:', req.body);
 
     const tipoPlay = determinarTipoPlay(req.body.lugarDeJuego);
-    const { totalControles, controlAdicional } = normalizarControles(req.body);
+    const { totalControles, controlAdicional } = normalizarControles(req.body, req.body.lugarDeJuego);
     const costos   = calcularCostos(req.body.lugarDeJuego, req.body.tiempoPagado, controlAdicional, req.body.montoPagado);
 
     const fechaPlay = getUTCDateRanges().hoy.inicio;
@@ -443,7 +446,7 @@ export const updatePlay = async (req, res) => {
     const controles = normalizarControles({
       totalControles:   req.body.totalControles   !== undefined ? req.body.totalControles   : play.totalControles,
       controlAdicional: req.body.controlAdicional !== undefined ? req.body.controlAdicional : play.controlAdicional,
-    });
+    }, play.lugarDeJuego);
     play.totalControles  = controles.totalControles;
     play.controlAdicional = controles.controlAdicional;
 
