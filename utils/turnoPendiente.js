@@ -85,10 +85,20 @@ export const validarInicioTurno = (play, minutos) => {
  * Cuando se AGREGA tiempo a una sesion cuyo fin anterior ya paso, el tiempo
  * nuevo empieza a correr ahora: el fin se ancla al reloj.
  *
+ * EL OTRO LADO: si el fin nuevo YA PASO, el aviso no solo no se re-arma: hay
+ * que CANCELARLO. Es el caso de guardar tiempo pendiente porque el cliente se
+ * fue antes (se le baja el tiempo pagado y el fin nuevo cae en el pasado). No
+ * hay partida que anunciar -el encargado esta ahi mismo editando-, pero el
+ * aviso seguia pendiente y la ventana de catch-up del despachador lo mandaba
+ * igual, un rato despues de que el chico ya se habia ido.
+ *
+ * Con esto updatePlay queda igual que createPlay, que ya hacia exactamente
+ * esto: `notificacionFinEnviada: !finEnFuturo`.
+ *
  * Vive aca y no dentro del controlador para poder probarlo de verdad
  * (ver scripts/probarTurnoPendiente.js).
  *
- * @returns {{ fin: Date, reArmaAviso: boolean, anclado: boolean }}
+ * @returns {{ fin: Date, reArmaAviso: boolean, cancelaAviso: boolean, anclado: boolean }}
  */
 export const resolverFinTrasEditar = ({
   finCalculado, finAnterior, tiempoPagadoNuevo, tiempoPagadoViejo, ahora = new Date(),
@@ -107,9 +117,16 @@ export const resolverFinTrasEditar = ({
     return {
       fin: new Date(base.getTime() + agregados * MIN_MS),
       reArmaAviso: true,
+      cancelaAviso: false,
       anclado: true,
     };
   }
 
-  return { fin: finCalculado, reArmaAviso: finEnFuturo, anclado: false };
+  return {
+    fin: finCalculado,
+    reArmaAviso: finEnFuturo,
+    // El fin nuevo ya paso: no hay nada que anunciar.
+    cancelaAviso: !finEnFuturo,
+    anclado: false,
+  };
 };

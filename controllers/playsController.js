@@ -631,7 +631,7 @@ export const updatePlay = async (req, res) => {
       // La decision de si el fin se respeta o se ancla al reloj vive en
       // utils/turnoPendiente.js (resolverFinTrasEditar), aparte para poder
       // probarla: ver scripts/probarTurnoPendiente.js.
-      const { fin: nuevoFin, reArmaAviso: nuevoFinEnFuturo, anclado } = resolverFinTrasEditar({
+      const { fin: nuevoFin, reArmaAviso: nuevoFinEnFuturo, cancelaAviso, anclado } = resolverFinTrasEditar({
         finCalculado,
         finAnterior: finProgramadoOriginal,
         tiempoPagadoNuevo: req.body.tiempoPagado !== undefined ? req.body.tiempoPagado : play.tiempoPagado,
@@ -661,6 +661,20 @@ export const updatePlay = async (req, res) => {
         play.markModified('notificacionFinEnviada');
         // Aviso nuevo → contador de intentos fallidos desde cero.
         play.intentosNotificacion = 0;
+      } else if (cancelaAviso && play.notificacionFinEnviada !== true) {
+        // El fin nuevo YA PASÓ y el aviso todavía no había salido: se cancela.
+        //
+        // Es el caso de guardar tiempo pendiente porque el cliente se fue antes
+        // de tiempo: se le baja el tiempo pagado, el fin nuevo cae en el pasado
+        // y no hay ninguna partida que anunciar — el encargado está ahí mismo
+        // editando. Sin esto el aviso quedaba pendiente y la ventana de
+        // catch-up del despachador (2 h hacia atrás) lo mandaba igual, un rato
+        // después de que el chico ya se había ido.
+        //
+        // Es la misma regla que createPlay ya aplicaba al crear
+        // (`notificacionFinEnviada: !finEnFuturo`); acá faltaba.
+        play.notificacionFinEnviada = true;
+        play.markModified('notificacionFinEnviada');
       }
     }
 

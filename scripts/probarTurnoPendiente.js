@@ -161,6 +161,53 @@ test('corregir hacia ABAJO una sesión vieja no re-arma el aviso', () => {
   assert.equal(r.reArmaAviso, false, 'no se avisa de algo que terminó ayer');
 });
 
+// ─── Guardar tiempo pendiente NO puede disparar el aviso ─────────────────────
+// El cliente se va antes: se le baja el tiempo pagado y el resto queda como
+// pendiente. El fin nuevo cae en el pasado y no hay partida que anunciar — pero
+// el aviso seguía pendiente y la ventana de catch-up lo mandaba igual, un rato
+// después de que el chico ya se había ido.
+
+test('cortar la sesión para guardar tiempo pendiente cancela el aviso', () => {
+  // Arrancó 3:00 con 2h (fin 5:00). A las 4:00 se va y se le guarda 1h.
+  const ahora = new Date('2026-09-14T16:00:00Z');
+  const finAnterior = new Date('2026-09-14T17:00:00Z');   // las 5:00, todavía no llegaba
+  const finCalculado = new Date('2026-09-14T16:00:00Z');  // 3:00 + 60 = 4:00, ya pasó
+
+  const r = resolverFinTrasEditar({
+    finCalculado, finAnterior, tiempoPagadoNuevo: 60, tiempoPagadoViejo: 120, ahora,
+  });
+
+  assert.equal(r.reArmaAviso, false, 'no se arma un aviso nuevo');
+  assert.equal(r.cancelaAviso, true, 'y el que estaba pendiente se cancela');
+});
+
+test('una sesión que SÍ está corriendo con tiempo pendiente guardado igual avisa', () => {
+  // El caso que no hay que romper: el chico paga 2h, juega 1h ahora y guarda 1h
+  // para después. Esa hora que está jugando termina y la consola queda libre:
+  // el aviso tiene que salir aunque haya tiempo pendiente guardado.
+  const ahora = new Date('2026-09-14T15:10:00Z');
+  const finAnterior = new Date('2026-09-14T15:30:00Z');
+  const finCalculado = new Date('2026-09-14T16:00:00Z'); // en el futuro
+
+  const r = resolverFinTrasEditar({
+    finCalculado, finAnterior, tiempoPagadoNuevo: 60, tiempoPagadoViejo: 30, ahora,
+  });
+
+  assert.equal(r.reArmaAviso, true, 'tener pendiente guardado no calla el aviso');
+  assert.equal(r.cancelaAviso, false);
+});
+
+test('extender no cancela nada', () => {
+  const ahora = new Date('2026-09-14T16:10:00Z');
+  const r = resolverFinTrasEditar({
+    finCalculado: new Date('2026-09-14T16:00:00Z'),
+    finAnterior: new Date('2026-09-14T15:30:00Z'),
+    tiempoPagadoNuevo: 60, tiempoPagadoViejo: 30, ahora,
+  });
+  assert.equal(r.anclado, true);
+  assert.equal(r.cancelaAviso, false, 'anclar al reloj no puede cancelar el aviso');
+});
+
 // ─── Mongoose escribe la bandera cuando se fuerza ────────────────────────────
 // Asignarle `false` a un campo que ya venía en `false` NO se manda a Mongo, y
 // eso hacía que un reclamo de un despachador sobreviviera a la edición y el fin
