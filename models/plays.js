@@ -151,6 +151,39 @@ const playSchema = new mongoose.Schema({
     default: 0
   },
   // ─────────────────────────────────────────────────────────────
+  // TURNO DE TIEMPO PENDIENTE EN CURSO
+  //
+  // El tiempo pendiente es tiempo YA PAGADO que el cliente no usó. Cuando vuelve
+  // a jugarlo se pone a correr un "turno": no es una sesión nueva ni cobra nada,
+  // así que NO se crea otro play (uno nuevo sumaría una sesión al reporte
+  // mensual y ensuciaría el ranking de clientes). Vive acá, en el mismo registro.
+  //
+  // El aviso de WhatsApp reusa finProgramado / notificacionFinEnviada: al
+  // arrancar el turno se pisa finProgramado con el fin del turno y la bandera
+  // vuelve a false. Así los dos despachadores (el scheduler de Koyeb y el
+  // trigger de Atlas) mandan el aviso sin enterarse de que esto existe — y no
+  // hay que volver a pegar a mano el trigger en el panel de Atlas.
+  //
+  // REGLA CLAVE: `tiempoPendiente` NO baja al arrancar el turno. Baja al
+  // CERRARLO, y con lo que realmente se jugó. Si se cerrara al arrancar, parar
+  // antes de tiempo obligaría a alguien a calcular a mano cuánto devolver; con
+  // el turno guardado, esa resta la hace el sistema (sabe la hora de inicio).
+  //   · llegó al final → se descuenta `minutos` completo (lo cierra el backend
+  //     solo, en la siguiente lectura de la lista).
+  //   · se detuvo antes → se descuenta lo jugado, que el encargado confirma.
+  // null = no hay turno corriendo.
+  // ─────────────────────────────────────────────────────────────
+  pendienteEnCurso: {
+    type: new mongoose.Schema({
+      // Minutos del pendiente que se pusieron a correr (no necesariamente todos).
+      minutos: { type: Number, required: true, min: 1 },
+      inicio:  { type: Date,   required: true },
+      // inicio + minutos. Es el mismo instante que se copia a finProgramado.
+      fin:     { type: Date,   required: true },
+    }, { _id: false }),
+    default: null,
+  },
+  // ─────────────────────────────────────────────────────────────
   // Origen del registro. Los plays normales quedan en null (creados por el
   // sistema). Los cierres mensuales importados del Excel histórico llevan
   // 'excel_historico': son agregados (uno por rubro/mes), no sesiones reales.

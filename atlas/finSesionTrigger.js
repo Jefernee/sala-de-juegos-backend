@@ -114,18 +114,34 @@ exports = async function () {
 
   // Arma el mensaje detallado con toda la info del play (omite campos vacíos).
   const construirMensaje = (play) => {
-    const lineas = ["✅ Terminó la partida", ""];
+    // ¿Lo que terminó fue un TURNO DE TIEMPO PENDIENTE? Es tiempo ya pagado que
+    // el cliente no había usado y volvió a jugar: no es la sesión original. Si no
+    // se distinguiera, el mensaje diría la duración de la sesión vieja y
+    // seguiría listando como pendientes justo los minutos recién agotados.
+    const turno = play.pendienteEnCurso || null;
+
+    const lineas = [turno ? "✅ Terminó el tiempo pendiente" : "✅ Terminó la partida", ""];
     lineas.push("🎮 Consola: " + (play.lugarDeJuego || "Estación desconocida"));
     if (play.cliente) lineas.push("👤 Cliente: " + play.cliente);
     if (play.atendio) lineas.push("🧑‍💼 Atendió: " + play.atendio);
-    if (play.horaInicio) lineas.push("🕐 Inicio: " + formatearHora12(play.horaInicio));
-    lineas.push("🏁 Fin: " + horaCR(play.finProgramado));
 
-    const duracion = formatearDuracion(play.tiempoPagado);
-    if (duracion) lineas.push("⏱️ Duración: " + duracion);
+    if (turno) {
+      lineas.push("🕐 Inicio: " + horaCR(turno.inicio));
+      lineas.push("🏁 Fin: " + horaCR(play.finProgramado));
+      const dur = formatearDuracion(turno.minutos);
+      if (dur) lineas.push("⏳ Tiempo pendiente jugado: " + dur);
+      const restante = Math.max(0, (Number(play.tiempoPendiente) || 0) - (Number(turno.minutos) || 0));
+      if (restante > 0) lineas.push("⏳ Le queda pendiente: " + formatearDuracion(restante));
+    } else {
+      if (play.horaInicio) lineas.push("🕐 Inicio: " + formatearHora12(play.horaInicio));
+      lineas.push("🏁 Fin: " + horaCR(play.finProgramado));
 
-    if (Number(play.tiempoPendiente) > 0) {
-      lineas.push("⏳ Tiempo pendiente: " + formatearDuracion(play.tiempoPendiente));
+      const duracion = formatearDuracion(play.tiempoPagado);
+      if (duracion) lineas.push("⏱️ Duración: " + duracion);
+
+      if (Number(play.tiempoPendiente) > 0) {
+        lineas.push("⏳ Tiempo pendiente: " + formatearDuracion(play.tiempoPendiente));
+      }
     }
 
     const juegos = Array.isArray(play.juegosJugados) ? play.juegosJugados.filter(Boolean) : [];

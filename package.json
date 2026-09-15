@@ -4,7 +4,8 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/verificarVocabulario.js",
+    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js",
+    "probar-turno": "node --test scripts/probarTurnoPendiente.js",
     "verificar-vocabulario": "node scripts/verificarVocabulario.js",
     "dev": "cross-env NODE_ENV=development node server.js",
     "start": "NODE_ENV=production node server.js"

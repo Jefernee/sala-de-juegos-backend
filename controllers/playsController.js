@@ -1,5 +1,9 @@
 // controllers/playsController.js
 import Play from '../models/plays.js';
+import {
+  calcularFinTurno, minutosJugados, pendienteTrasCerrar,
+  turnoVencido, validarInicioTurno, resolverFinTrasEditar,
+} from '../utils/turnoPendiente.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
 import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
 import { getUTCDateRanges } from '../utils/dateUtils.js';
@@ -316,6 +320,10 @@ export const getAllPlays = async (req, res) => {
 
     const total      = await Play.countDocuments(filtro);
     const plays      = await Play.find(filtro).sort({ fecha: -1, createdAt: -1 }).skip(skip).limit(limit);
+    // Los turnos de tiempo pendiente que ya llegaron a su fin se cierran aca, al
+    // leer (patron perezoso: sin un tercer reloj que ademas habria que duplicar
+    // en Atlas). El WhatsApp ya lo mando el despachador por su cuenta.
+    await cerrarTurnosVencidos(plays);
     const totalPages = Math.ceil(total / limit);
 
     res.status(200).json({
@@ -329,6 +337,146 @@ export const getAllPlays = async (req, res) => {
   } catch (error) {
     console.error('❌ Error en getAllPlays:', error);
     res.status(500).json({ success: false, message: 'Error al obtener los plays', error: error.message });
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// TURNO DE TIEMPO PENDIENTE
+//
+// Poner a correr tiempo que el cliente ya pago y no uso. No cobra nada y no
+// crea una sesion: vive en el mismo registro (ver `pendienteEnCurso` en
+// models/plays.js) y por eso los reportes no cambian ni una linea.
+//
+// El aviso de WhatsApp reusa finProgramado / notificacionFinEnviada, asi que
+// los dos despachadores lo mandan sin enterarse de que esto existe -- y no hay
+// que volver a pegar a mano el trigger en el panel de Atlas.
+// ─────────────────────────────────────────────────────────────────
+
+/**
+ * Cierra los turnos que ya llegaron a su fin. Se llama al LEER la lista: es el
+ * mismo patron perezoso que usa Finanzas para sus snapshots, y evita agregar un
+ * tercer reloj al sistema (que ademas habria que duplicar en Atlas).
+ *
+ * El aviso de WhatsApp ya lo mando el despachador por su cuenta; esto solo pone
+ * al dia el pendiente. Si el turno llego al final se descuenta COMPLETO: es la
+ * decision de que un turno que nadie detuvo se jugo entero. Si el cliente se
+ * hubiera ido antes, el encargado tenia el boton de detener; y si igual se
+ * escapo, el tiempo pendiente se puede corregir a mano en el formulario de
+ * siempre.
+ *
+ * Nunca lanza: si esto falla, la lista se tiene que ver igual.
+ */
+const cerrarTurnosVencidos = async (plays) => {
+  const vencidos = plays.filter((p) => p.pendienteEnCurso && turnoVencido(p.pendienteEnCurso));
+  if (!vencidos.length) return;
+
+  await Promise.all(vencidos.map(async (play) => {
+    try {
+      const usados = Number(play.pendienteEnCurso.minutos) || 0;
+      const queda = pendienteTrasCerrar(play.tiempoPendiente, usados);
+      // Condicionado a que el turno siga abierto: si dos lecturas llegan a la
+      // vez, solo una descuenta.
+      const r = await Play.updateOne(
+        { _id: play._id, pendienteEnCurso: { $ne: null } },
+        { $set: { tiempoPendiente: queda, pendienteEnCurso: null } }
+      );
+      if (r.modifiedCount > 0) {
+        // El documento ya leido tambien, para que la respuesta salga al dia.
+        play.tiempoPendiente = queda;
+        play.pendienteEnCurso = null;
+        console.log(`⏳ Play ${play._id}: turno de ${usados} min cerrado. Pendiente: ${queda} min.`);
+      }
+    } catch (err) {
+      console.error(`⚠️ No se pudo cerrar el turno del play ${play._id}:`, err.message);
+    }
+  }));
+};
+
+/**
+ * POST /:id/pendiente/iniciar  { minutos }
+ * Arranca el turno. El pendiente NO baja aca: baja al cerrarlo.
+ */
+export const iniciarTiempoPendiente = async (req, res) => {
+  try {
+    const play = await Play.findById(req.params.id);
+    if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
+
+    const minutos = Number(req.body.minutos);
+    const error = validarInicioTurno(play, minutos);
+    if (error) return res.status(400).json({ success: false, message: error });
+
+    // El turno arranca AHORA, con los segundos en cero para que la hora de fin
+    // que se muestra y la que dispara el aviso sean exactamente la misma.
+    const inicio = new Date();
+    inicio.setSeconds(0, 0);
+    const fin = calcularFinTurno(inicio, minutos);
+
+    play.pendienteEnCurso = { minutos, inicio, fin };
+    // El reloj del registro pasa a ser el del turno: de aca sale el WhatsApp.
+    play.finProgramado = fin;
+    play.notificacionFinEnviada = false;
+    play.markModified('notificacionFinEnviada'); // ver la nota en updatePlay
+    play.intentosNotificacion = 0;
+
+    const actualizado = await play.save();
+    console.log(`▶️ Play ${play._id}: turno de ${minutos} min de tiempo pendiente.`);
+
+    // Los reportes NO se regeneran: un turno no mueve plata ni sesiones.
+    res.status(200).json({ success: true, message: 'Tiempo pendiente en curso', data: actualizado });
+  } catch (error) {
+    console.error('❌ Error en iniciarTiempoPendiente:', error);
+    res.status(500).json({ success: false, message: 'Error al iniciar el tiempo pendiente', error: error.message });
+  }
+};
+
+/**
+ * POST /:id/pendiente/detener  { minutosJugados? }
+ * Corta el turno antes de tiempo. Si no se manda `minutosJugados`, se usa lo
+ * que marca el reloj desde que arranco -- que es lo normal: el encargado toca
+ * detener cuando el cliente se va. El campo existe para el caso de tocarlo
+ * tarde ("se fue a las 4:30 y me di cuenta a las 4:40").
+ */
+export const detenerTiempoPendiente = async (req, res) => {
+  try {
+    const play = await Play.findById(req.params.id);
+    if (!play) return res.status(404).json({ success: false, message: 'Play no encontrado' });
+    if (!play.pendienteEnCurso) {
+      return res.status(400).json({ success: false, message: 'Este registro no tiene tiempo pendiente corriendo.' });
+    }
+
+    const delReloj = minutosJugados(play.pendienteEnCurso);
+    const pedido = req.body.minutosJugados;
+    let usados = delReloj;
+
+    if (pedido !== undefined) {
+      const n = Number(pedido);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ success: false, message: 'Los minutos jugados no son validos.' });
+      }
+      // Tope: los minutos que se pusieron a correr. Cobrar mas que eso seria
+      // descontar tiempo que el cliente nunca puso en juego.
+      usados = Math.min(n, Number(play.pendienteEnCurso.minutos) || 0);
+    }
+
+    play.tiempoPendiente = pendienteTrasCerrar(play.tiempoPendiente, usados);
+    play.pendienteEnCurso = null;
+    // El turno se corto: el aviso de su hora de fin ya no corresponde. Se marca
+    // como enviado para que ningun despachador lo tome (mismo recurso que usa
+    // deletePlay para no avisar de algo que se esta borrando).
+    play.notificacionFinEnviada = true;
+    play.markModified('notificacionFinEnviada');
+
+    const actualizado = await play.save();
+    console.log(`⏹️ Play ${play._id}: turno detenido a los ${usados} min.`);
+
+    res.status(200).json({
+      success: true,
+      message: `Se jugaron ${usados} min. Quedan ${actualizado.tiempoPendiente} min pendientes.`,
+      data: actualizado,
+    });
+  } catch (error) {
+    console.error('❌ Error en detenerTiempoPendiente:', error);
+    res.status(500).json({ success: false, message: 'Error al detener el tiempo pendiente', error: error.message });
   }
 };
 
@@ -429,6 +577,7 @@ export const updatePlay = async (req, res) => {
     const tiempoPagadoOriginal = play.tiempoPagado;
     const horaInicioOriginal   = play.horaInicio;
     const horaFinalOriginal    = play.horaFinal;
+    const finProgramadoOriginal = play.finProgramado;
 
     if (req.body.cliente          !== undefined) play.cliente          = req.body.cliente;
     if (req.body.atendio          !== undefined) play.atendio          = req.body.atendio;
@@ -470,17 +619,46 @@ export const updatePlay = async (req, res) => {
       (req.body.horaInicio   !== undefined && req.body.horaInicio !== horaInicioOriginal) ||
       (req.body.horaFinal    !== undefined && req.body.horaFinal  !== horaFinalOriginal);
 
-    if (cambioTiempo) {
+    // Mientras corre un turno de tiempo pendiente, el reloj del registro le
+    // PERTENECE al turno: finProgramado apunta al fin del turno. Recalcularlo
+    // desde horaInicio + tiempoPagado le pisaría el cronómetro y mataría su
+    // aviso, así que cualquier otra edición (el cliente, el estado del pago)
+    // deja el reloj en paz.
+    if (cambioTiempo && !play.pendienteEnCurso) {
       const refMs = play.createdAt ? play.createdAt.getTime() : Date.now();
-      const nuevoFin = calcularFinProgramado(play.horaInicio, play.horaFinal, play.tiempoPagado, refMs);
+      const finCalculado = calcularFinProgramado(play.horaInicio, play.horaFinal, play.tiempoPagado, refMs);
+
+      // La decision de si el fin se respeta o se ancla al reloj vive en
+      // utils/turnoPendiente.js (resolverFinTrasEditar), aparte para poder
+      // probarla: ver scripts/probarTurnoPendiente.js.
+      const { fin: nuevoFin, reArmaAviso: nuevoFinEnFuturo, anclado } = resolverFinTrasEditar({
+        finCalculado,
+        finAnterior: finProgramadoOriginal,
+        tiempoPagadoNuevo: req.body.tiempoPagado !== undefined ? req.body.tiempoPagado : play.tiempoPagado,
+        tiempoPagadoViejo: tiempoPagadoOriginal,
+      });
+
+      if (anclado) {
+        console.log(
+          `⏱️ Play ${play._id}: extension tardia. El fin se ancla a la hora ` +
+          'actual en vez de a horaInicio + tiempoPagado, o esos minutos nuevos no avisaban.'
+        );
+      }
+
       play.finProgramado = nuevoFin;
       // Re-armamos el aviso SOLO si el nuevo fin está en el FUTURO (extensión de
       // tiempo real). Si el nuevo fin ya pasó (p.ej. editar una sesión que ya
       // terminó y de la que ya se avisó), NO reseteamos la bandera → así no sale
       // un segundo WhatsApp casi idéntico.
-      const nuevoFinEnFuturo = nuevoFin instanceof Date && nuevoFin.getTime() > Date.now();
       if (nuevoFinEnFuturo) {
+        // OJO: se escribe con markModified. Si la bandera ya venía en false,
+        // asignarle false no es un cambio para Mongoose y no se manda a Mongo
+        // (getChanges() da {}) — y entonces, si un despachador reclamó el play
+        // entre el findById y el save, el reclamo queda en pie y el fin nuevo se
+        // queda sin aviso para siempre. Forzando la escritura, el último en
+        // guardar es este, que es el que sabe que el tiempo se extendió.
         play.notificacionFinEnviada = false;
+        play.markModified('notificacionFinEnviada');
         // Aviso nuevo → contador de intentos fallidos desde cero.
         play.intentosNotificacion = 0;
       }
