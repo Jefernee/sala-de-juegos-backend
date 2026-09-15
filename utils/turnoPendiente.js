@@ -130,3 +130,29 @@ export const resolverFinTrasEditar = ({
     anclado: false,
   };
 };
+
+/**
+ * GUARDAR TIEMPO PENDIENTE = EL CLIENTE DEJO DE JUGAR.
+ *
+ * Si a una sesion que todavia no aviso le aparece (o le crece) el tiempo
+ * pendiente, es porque el cliente se fue antes y se le esta guardando lo que no
+ * uso. Esa consola ya quedo libre, asi que el aviso de "termino la partida"
+ * programado para la hora original no tiene a quien avisarle: hay que
+ * cancelarlo.
+ *
+ * OJO con la version amplia de esta regla -"si hay tiempo pendiente, no
+ * avisar"-, que rompe el caso legitimo: un cliente paga 2 h, juega 1 h ahora y
+ * guarda 1 h para despues. Esa hora que ESTA jugando tiene que avisar cuando
+ * termine, y ahi el pendiente ya existia desde antes. Por eso lo que importa no
+ * es que el pendiente EXISTA, sino que haya APARECIDO o CRECIDO en esta edicion.
+ *
+ * Tampoco alcanzaba con mirar el tiempo pagado: no se puede bajar para guardar
+ * pendiente, porque es el que calcula la plata de la venta. El encargado anota
+ * el pendiente y deja el pagado como estaba.
+ *
+ * @param {number} pendienteViejo - antes de la edicion
+ * @param {number} pendienteNuevo - despues
+ * @returns {boolean} true si hay que cancelar el aviso pendiente
+ */
+export const guardarPendienteCancelaAviso = (pendienteViejo, pendienteNuevo) =>
+  (Number(pendienteNuevo) || 0) > (Number(pendienteViejo) || 0);

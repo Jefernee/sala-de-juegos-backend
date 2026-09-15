@@ -3,6 +3,7 @@ import Play from '../models/plays.js';
 import {
   calcularFinTurno, minutosJugados, pendienteTrasCerrar,
   turnoVencido, validarInicioTurno, resolverFinTrasEditar,
+  guardarPendienteCancelaAviso,
 } from '../utils/turnoPendiente.js';
 import MonthlyReport from '../models/Monthlyplaysreport.js';
 import { regenerarEstadoDeFecha } from './estadoResultadosController.js';
@@ -578,6 +579,7 @@ export const updatePlay = async (req, res) => {
     const horaInicioOriginal   = play.horaInicio;
     const horaFinalOriginal    = play.horaFinal;
     const finProgramadoOriginal = play.finProgramado;
+    const tiempoPendienteOriginal = play.tiempoPendiente;
 
     if (req.body.cliente          !== undefined) play.cliente          = req.body.cliente;
     if (req.body.atendio          !== undefined) play.atendio          = req.body.atendio;
@@ -676,6 +678,36 @@ export const updatePlay = async (req, res) => {
         play.notificacionFinEnviada = true;
         play.markModified('notificacionFinEnviada');
       }
+    }
+
+    // GUARDAR TIEMPO PENDIENTE = EL CLIENTE DEJO DE JUGAR.
+    //
+    // Si a una sesion que todavia no aviso le APARECE (o le crece) el tiempo
+    // pendiente, es porque se fue antes y se le esta guardando lo que no uso.
+    // Esa consola ya quedo libre: el aviso programado para la hora original no
+    // tiene a quien avisarle.
+    //
+    // Va FUERA del bloque de cambioTiempo a proposito. Ese bloque solo mira
+    // tiempoPagado / horaInicio / horaFinal, y para guardar pendiente NINGUNO
+    // de los tres cambia: el tiempo pagado no se puede bajar porque es el que
+    // calcula la plata de la venta (ver calcularCostos mas arriba), asi que el
+    // encargado anota el pendiente y deja el pagado como estaba. Por eso el
+    // aviso seguia saliendo.
+    //
+    // Se mira que el pendiente HAYA CRECIDO, no que exista: un play que ya
+    // nacio con pendiente guardado (pago 2 h, juega 1 h ahora y guarda 1 h)
+    // tiene que avisar igual cuando termine la hora que esta jugando.
+    const aparecioPendiente =
+      req.body.tiempoPendiente !== undefined &&
+      guardarPendienteCancelaAviso(tiempoPendienteOriginal, play.tiempoPendiente);
+
+    if (aparecioPendiente && play.notificacionFinEnviada !== true && !play.pendienteEnCurso) {
+      play.notificacionFinEnviada = true;
+      play.markModified('notificacionFinEnviada');
+      console.log(
+        `⏳ Play ${play._id}: se guardo tiempo pendiente (${tiempoPendienteOriginal} → ` +
+        `${play.tiempoPendiente} min). Se cancela el aviso: el cliente ya no esta jugando.`
+      );
     }
 
     const playActualizado = await play.save();

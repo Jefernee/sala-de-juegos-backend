@@ -19,6 +19,7 @@ import {
   turnoVencido,
   validarInicioTurno,
   resolverFinTrasEditar,
+  guardarPendienteCancelaAviso,
 } from '../utils/turnoPendiente.js';
 
 const MIN = 60 * 1000;
@@ -293,4 +294,33 @@ test('sin turno, el aviso de siempre no cambia', async () => {
   assert.match(msg, /Duración: 2h/);
   assert.match(msg, /Tiempo pendiente: 45min/);
   assert.doesNotMatch(msg, /jugado/);
+});
+
+// ─── Anotar tiempo pendiente cancela el aviso ────────────────────────────────
+// El caso que de verdad pasa en el local, y el que se me habia escapado: NO se
+// baja el tiempo pagado (es el que calcula la plata de la venta), solo se anota
+// el pendiente. Como cambioTiempo solo mira tiempoPagado/horaInicio/horaFinal,
+// ninguno cambia y el aviso seguia programado para la hora original.
+
+test('anotar tiempo pendiente en una sesión que no avisó cancela el aviso', () => {
+  assert.equal(guardarPendienteCancelaAviso(0, 60), true, 'aparecio pendiente');
+  assert.equal(guardarPendienteCancelaAviso(30, 60), true, 'crecio el pendiente');
+});
+
+test('un pendiente que ya estaba y no cambió NO calla el aviso', () => {
+  // El caso que no hay que romper: pago 2h, juega 1h ahora y guarda 1h para
+  // despues. Al editar cualquier otra cosa el pendiente sigue igual, y la hora
+  // que esta jugando tiene que avisar cuando termine.
+  assert.equal(guardarPendienteCancelaAviso(60, 60), false);
+});
+
+test('devolver tiempo pendiente tampoco calla el aviso', () => {
+  // Si BAJA es porque se lo jugo o se corrigio: nada que cancelar.
+  assert.equal(guardarPendienteCancelaAviso(60, 0), false);
+  assert.equal(guardarPendienteCancelaAviso(60, 30), false);
+});
+
+test('valores raros no cancelan nada por accidente', () => {
+  assert.equal(guardarPendienteCancelaAviso(undefined, undefined), false);
+  assert.equal(guardarPendienteCancelaAviso(null, 0), false);
 });
