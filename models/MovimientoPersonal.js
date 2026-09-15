@@ -75,6 +75,10 @@ export const CATEGORIAS_EGRESO = [
   'Suscripciones',
   'Mascotas',
   // Ocasiones
+  // Un plan completo en una sola línea: la entrada de la expo + la comida + la
+  // gasolina de ese día, o el viaje entero. No se desglosa en Comida/Transporte
+  // a propósito: lo que interesa saber es cuánto costó el plan, no sus partes.
+  'Salidas y viajes',
   'Regalos',
   'Cumpleaños',
   'Rifas',
