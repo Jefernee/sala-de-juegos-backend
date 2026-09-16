@@ -18,7 +18,15 @@
 #                     (Una sesión atascada en STARTING para siempre es un caso
 #                     real que vimos en prod: parece que está trabajando y no.)
 #     SCAN_QR_CODE  → necesita que un HUMANO escanee el QR; reiniciar no ayuda.
-#     FAILED/STOPPED/sin respuesta → reinicia la sesión.
+#     FAILED/STOPPED/sin respuesta → reinicia la sesión. PERO si sigue en FAILED
+#                     después de REINICIOS_ANTES_DE_LOGOUT reinicios, las
+#                     credenciales están muertas (alguien desvinculó el
+#                     dispositivo) y reiniciar no lo va a arreglar nunca: hace
+#                     logout para forzar el QR y avisa que hay que ir con el
+#                     teléfono. Ver el bloque "Credenciales muertas" más abajo.
+#                     Y si el log del contenedor ya dice 'device_removed', no
+#                     espera esos reinicios: escala en el primer chequeo, porque
+#                     no hay nada que confirmar. Ver "¿Nos desvincularon?".
 #
 #   Además AVISA POR CORREO (vía Resend) cuando pasa algo que hay que saber:
 #   que reinició la sesión, que hace falta escanear el QR, o que lleva varios
@@ -70,6 +78,16 @@ MAX_REINTENTOS=4      # tras 4 reinicios seguidos sin éxito → modo espaciado
 BACKOFF_SEG=3600      # en modo espaciado, 1 reinicio por hora
 STARTING_MAX_SEG=420  # 7 min en STARTING = atascada (lo normal son segundos)
 CURL_TIMEOUT=15
+# Reinicios en FAILED tras los cuales damos las credenciales por muertas y
+# hacemos logout para forzar el QR (ver el bloque "Credenciales muertas").
+# 2 y no 1: un FAILED suelto puede ser un corte de red, y ese lo arregla un
+# reinicio. Si DOS reinicios no lo levantan, ya no es la red.
+REINICIOS_ANTES_DE_LOGOUT=2
+
+# Atajo: cuando el log de WAHA dice 'device_removed' no hay NADA que esperar,
+# así que escalamos en el primer chequeo en vez de gastar 20 min reiniciando.
+WAHA_CONTENEDOR="${WAHA_CONTENEDOR:-waha}"
+LOG_VENTANA="${WATCHDOG_LOG_VENTANA:-20m}"   # cuánto log hacia atrás miramos
 
 # Alertas por correo (Resend). Si no hay RESEND_API_KEY, el watchdog funciona
 # igual pero en silencio.
@@ -167,6 +185,35 @@ fi
 
 AHORA=$(date +%s)
 
+# ── ¿Nos desvincularon el dispositivo? ───────────────────────────────────────
+# El estado de la sesión dice QUÉ pasa (FAILED) pero no POR QUÉ. El porqué está
+# en el log del contenedor, y hay un motivo que no admite ninguna duda:
+#
+#   stream:error 401 → conflict: device_removed
+#
+# Eso es "te sacaron de Dispositivos vinculados" (a mano, o solo, al registrar
+# WhatsApp en un teléfono nuevo). Las credenciales quedaron muertas y reiniciar
+# NO las revive nunca. Esperar dos reinicios para confirmarlo es tiempo tirado:
+# son 20 min de sala sin avisos para llegar a una conclusión que ya está escrita
+# en el log. Si lo vemos, escalamos en el primer chequeo.
+#
+# Si no podemos leer el log (sin docker, otro nombre de contenedor), la función
+# devuelve vacío, DESVINCULADO queda en "no" y todo sigue por el camino lento
+# de siempre. Nunca escala de más por no poder mirar.
+leer_log_waha() {
+  if [ -n "${WATCHDOG_LOG_CMD:-}" ]; then
+    eval "$WATCHDOG_LOG_CMD" 2>/dev/null        # gancho para las pruebas
+  elif command -v docker >/dev/null 2>&1; then
+    docker logs --since "$LOG_VENTANA" "$WAHA_CONTENEDOR" 2>&1
+  fi
+}
+
+DESVINCULADO=no
+if [ "$ESTADO" = "FAILED" ] && leer_log_waha | grep -q 'device_removed'; then
+  DESVINCULADO=si
+  log "El log de WAHA dice 'device_removed': nos sacaron de Dispositivos vinculados."
+fi
+
 # ── Caso feliz ───────────────────────────────────────────────────────────────
 if [ "$ESTADO" = "WORKING" ]; then
   # Solo dejamos rastro si venía de fallar, para no llenar el log de ruido.
@@ -238,9 +285,87 @@ else
   MODO="normal"
 fi
 
-if [ "$DESDE_ULTIMO" -lt "$ESPERA" ]; then
+# El enfriamiento existe para no golpear a WhatsApp con reinicios seguidos. Si
+# nos desvincularon, lo que viene no es un reinicio sino un logout, que no
+# golpea nada: es local y sirve para dejar el QR listo. Esperar ahí sería
+# quedarse de brazos cruzados sabiendo ya cuál es el problema.
+if [ "$DESDE_ULTIMO" -lt "$ESPERA" ] && [ "$DESVINCULADO" != "si" ]; then
   log "Sesión en $ESTADO, pero el último reinicio fue hace ${DESDE_ULTIMO}s y en modo $MODO hay que esperar ${ESPERA}s. Se salta."
   guardar_estado "$ULTIMO_REINICIO" "$FALLOS" "$PRIMER_STARTING"
+  exit 0
+fi
+
+# ── Credenciales muertas: reiniciar no sirve, hay que forzar el QR ───────────
+# Si tras REINICIOS_ANTES_DE_LOGOUT reinicios la sesión SIGUE en FAILED, esto ya
+# no es un corte de red: son las credenciales guardadas que WhatsApp ya no
+# acepta. El caso típico es que alguien sacó el dispositivo desde el teléfono
+# (WhatsApp lo manda como 'stream:error 401 → conflict: device_removed').
+#
+# Ahí WAHA queda en un lazo infinito: conecta, manda 'logging in...' con las
+# credenciales viejas, WhatsApp lo rebota con 'Connection Failure', vuelve a
+# FAILED. Para siempre. Reiniciar no lo arregla NUNCA, por diseño.
+#
+# Pasó el 15/09/2026: la sesión se cayó a las 19:18 y el watchdog se quedó
+# reiniciando y mandando el correo naranja de "lo estoy reiniciando, esperá"
+# —que invita a no hacer nada— cuando lo que hacía falta era ir con el teléfono
+# a escanear. El correo rojo, el único útil acá, no salía nunca: sólo lo dispara
+# el estado SCAN_QR_CODE, y a SCAN_QR_CODE no se llega sola.
+#
+# logout borra las credenciales muertas. Recién ahí WAHA vuelve a ofrecer el QR
+# y la sesión pasa a SCAN_QR_CODE: sale el correo correcto Y el QR queda
+# esperando en el dashboard, así llegás y sólo escaneás.
+if [ "$ESTADO" = "FAILED" ] && { [ "$DESVINCULADO" = "si" ] || [ "$FALLOS" -ge "$REINICIOS_ANTES_DE_LOGOUT" ]; }; then
+  if [ "$DESVINCULADO" = "si" ]; then
+    log "Desvinculados (device_removed): no se reintenta nada, logout directo para forzar el QR."
+  else
+    log "FAILED tras $FALLOS reinicio(s): las credenciales ya no sirven. logout para forzar el QR."
+  fi
+
+  COD_LOGOUT=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
+    -H "X-Api-Key: $WAHA_API_KEY" \
+    "$WAHA_URL/api/sessions/$WAHA_SESSION/logout" 2>/dev/null) || COD_LOGOUT="000"
+
+  sleep 3   # WAHA necesita un momento para soltar la sesión vieja
+
+  COD_START=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
+    -H "X-Api-Key: $WAHA_API_KEY" \
+    "$WAHA_URL/api/sessions/$WAHA_SESSION/start" 2>/dev/null) || COD_START="000"
+
+  log "logout HTTP $COD_LOGOUT, start HTTP $COD_START. La sesión debería quedar en SCAN_QR_CODE."
+
+  # Contadores a cero: se abre un ciclo nuevo que ya no pasa por reiniciar. Si
+  # el QR vence sin que nadie lo escanee, la sesión vuelve a FAILED y el ciclo
+  # (reinicio → reinicio → logout) arranca de nuevo, que es justo lo que
+  # queremos: el QR se renueva solo hasta que alguien llegue con el teléfono.
+  guardar_estado "$AHORA" 0 0
+
+  # Mismo tipo 'qr' que el bloque de SCAN_QR_CODE a propósito: comparten el
+  # enfriamiento, así no te llegan dos correos distintos por la misma caída.
+  # El motivo cambia según cómo llegamos acá, y conviene que el correo lo diga:
+  # no es lo mismo "lo confirmé a fuerza de reintentos" que "WhatsApp me lo dijo".
+  if [ "$DESVINCULADO" = "si" ]; then
+    MOTIVO="WhatsApp avisó que sacaron el dispositivo vinculado (device_removed).
+Pasa cuando alguien lo cierra desde el teléfono, y también solo, cuando se
+registra WhatsApp en un teléfono nuevo."
+  else
+    MOTIVO="La sesión lleva $FALLOS reinicio(s) sin levantar, así que las
+credenciales ya no sirven."
+  fi
+
+  avisar_por_correo "qr" \
+    "🔴 WhatsApp de la sala desconectado: hay que escanear el QR" \
+    "$MOTIVO
+
+Reiniciar NO lo arregla: hace falta el teléfono.
+
+Ya le hice logout a la sesión, así que el QR está listo y esperando:
+1. Entrá al dashboard de WAHA: http://157.151.183.29:3000/dashboard
+2. Abrí la sesión '$WAHA_SESSION' y mostrá el QR.
+3. En el teléfono de la sala: WhatsApp > Dispositivos vinculados > Vincular.
+
+OJO: tiene que ser el teléfono de la sala (50662010642), no uno personal.
+
+MIENTRAS TANTO no sale ningún aviso de fin de sesión."
   exit 0
 fi
 
