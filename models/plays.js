@@ -108,6 +108,22 @@ const playSchema = new mongoose.Schema({
     default: 0,
     min: [0, 'El monto no puede ser negativo']
   },
+  // Cómo se registró el play: 'tiempo' (se escribió el tiempo y el monto salió
+  // del precio por hora) o 'monto' (se escribió el monto y el tiempo se derivó).
+  //
+  // No es decorativo: al EDITAR hay que reabrir el formulario en el mismo modo.
+  // Si un play cobrado por monto se reabre en modo tiempo, el monto se recalcula
+  // desde el tiempo y cambia solo — y no cuadra, porque al derivarlo el tiempo se
+  // redondeó a múltiplos de 5 min. Ej.: ₡700 en Play 5 → 40 min → al editar se
+  // recalculaba a ₡667. Se perdían hasta ₡33 por edición, en el 80% de los montos.
+  //
+  // null = registros anteriores a este campo. Para esos, el frontend adivina
+  // comparando montoPagado contra el recálculo por tiempo (ver `fueRegistradoPorMonto`).
+  modoRegistro: {
+    type: String,
+    enum: ['tiempo', 'monto'],
+    default: null
+  },
   // Totales separados para reportes
   totalPlay4: {
     type: Number,

@@ -536,6 +536,10 @@ export const createPlay = async (req, res) => {
       costoControles:  costos.costoControles,
       total:           costos.total,
       montoPagado:     costos.total,
+      // Se guarda para poder reabrir la edición en el mismo modo (ver el campo
+      // en models/plays.js). Si el frontend no lo manda, queda null y el
+      // formulario cae a la heurística de comparar el monto con el recálculo.
+      modoRegistro:    ['tiempo', 'monto'].includes(req.body.modoRegistro) ? req.body.modoRegistro : null,
       // Solo el ingreso por TIEMPO va al bucket del tipo de play; los controles
       // van aparte (costoControles → totalCostosControles en el reporte).
       totalPlay4:      tipoPlay === 'Play 4'    ? costos.subtotal : 0,
@@ -589,6 +593,9 @@ export const updatePlay = async (req, res) => {
     if (req.body.horaFinal        !== undefined) play.horaFinal        = req.body.horaFinal;
     if (req.body.lugarDeJuego     !== undefined) play.lugarDeJuego     = req.body.lugarDeJuego;
     if (req.body.juegosJugados    !== undefined) play.juegosJugados    = req.body.juegosJugados;
+    // Se acepta solo un valor válido: un body con basura no debe borrar la marca
+    // que ya tenía el registro (perderla lo devuelve a la heurística).
+    if (['tiempo', 'monto'].includes(req.body.modoRegistro)) play.modoRegistro = req.body.modoRegistro;
     if (req.body.estadoPago       !== undefined) play.estadoPago       = req.body.estadoPago;
 
     // Controles: totalControles manda; controlAdicional se re-deriva. Si el body
