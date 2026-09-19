@@ -49,7 +49,7 @@ try {
   console.error(err.message);
   process.exit(1);
 }
-const { JUEGOS_BASE, fusionarJuegos, normalizarJuego, ordenarPorPopularidad } = catalogo;
+const { JUEGOS_BASE, fusionarJuegos, normalizarJuego, ordenarPorPopularidad, filtrarJuegos } = catalogo;
 
 // Los controladores loguean cada error; acá no aporta.
 console.error = () => {};
@@ -338,6 +338,45 @@ test('el juego de un play viejo no desaparece de su propia edición', () => {
   assert.deepEqual(fusionados, ['Crash Team Racing', 'Crash']);
 });
 
+// ─── EL BUSCADOR DEL SELECTOR ────────────────────────────────────────────────
+
+test('buscar recorta la lista a lo que coincide', () => {
+  const lista = ['FIFA 26', 'FIFA 25', 'GTA V', 'Call of Duty 3'];
+  assert.deepEqual(filtrarJuegos(lista, 'fifa'), ['FIFA 26', 'FIFA 25']);
+  assert.deepEqual(filtrarJuegos(lista, 'duty'), ['Call of Duty 3'], 'busca en cualquier parte del nombre');
+});
+
+test('buscar no distingue tildes ni mayúsculas', () => {
+  const lista = ['God of War Ragnarök', 'Kimetsu no Yaiba'];
+  assert.deepEqual(filtrarJuegos(lista, 'ragnarok'), ['God of War Ragnarök']);
+  assert.deepEqual(filtrarJuegos(lista, 'KIMETSU'), ['Kimetsu no Yaiba']);
+});
+
+test('sin texto, la lista queda completa', () => {
+  const lista = ['FIFA 26', 'GTA V'];
+  assert.deepEqual(filtrarJuegos(lista, ''), lista);
+  assert.deepEqual(filtrarJuegos(lista, '   '), lista, 'espacios no son una búsqueda');
+  assert.deepEqual(filtrarJuegos(lista), lista);
+});
+
+test('lo ya elegido no desaparece aunque no coincida con la búsqueda', () => {
+  // Si se fuera de la lista, el selector se vería sin nada marcado y no
+  // habría cómo desmarcarlo sin borrar lo escrito.
+  const lista = ['FIFA 26', 'GTA V', 'Crash Team Racing'];
+  const filtrados = filtrarJuegos(lista, 'fifa', ['GTA V']);
+  assert.deepEqual(filtrados, ['FIFA 26', 'GTA V']);
+});
+
+test('filtrar no toca la lista original', () => {
+  const lista = ['FIFA 26', 'GTA V'];
+  filtrarJuegos(lista, 'fifa');
+  assert.deepEqual(lista, ['FIFA 26', 'GTA V']);
+});
+
+test('una búsqueda sin resultados devuelve vacío, no la lista entera', () => {
+  assert.deepEqual(filtrarJuegos(['FIFA 26', 'GTA V'], 'tekken'), []);
+});
+
 // ─── QUE LA PÁGINA SIGA USANDO ESTO ──────────────────────────────────────────
 
 test('la página de plays arma el selector con la fusión, sin lista propia', () => {
@@ -369,4 +408,14 @@ test('la página de plays arma el selector con la fusión, sin lista propia', ()
     /ordenarPorPopularidad\(/,
     'el selector tiene que ordenarse por lo que más se juega'
   );
+  // El buscador: la lupa no puede ocupar su propio renglón y lo elegido tiene
+  // que viajar al filtro, o se perdería de vista al escribir.
+  assert.match(fuente, /filtrarJuegos\(juegosDisponibles, buscarJuego, formData\.juegosJugados\)/,
+    'el filtro tiene que recibir lo ya elegido para no esconderlo');
+  assert.match(fuente, /juegos-etiqueta/, 'la lupa va en la línea de la etiqueta, sin sumar altura');
+  assert.match(fuente, /juegosAlaVista\.map/, 'el selector pinta la lista ya filtrada');
+  // El buscador vive DENTRO del <form> del play: si Enter no se frena, en vez
+  // de buscar registra el play a medio llenar.
+  assert.match(fuente, /if \(e\.key === "Enter"\) e\.preventDefault\(\)/,
+    'Enter en el buscador no puede enviar el formulario');
 });
