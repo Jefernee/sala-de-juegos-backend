@@ -177,11 +177,10 @@ test('tildes, mayúsculas y espacios no cuelan el mismo juego dos veces', () => 
   assert.deepEqual(fusionados, base, 'todos eran el mismo juego escrito distinto');
 });
 
-test('el nombre que gana es el de la lista de siempre, no el del activo', () => {
-  // El activo se llama distinto (así lo anotaron en Activos), pero el selector
-  // tiene que seguir diciendo lo que siempre dijo.
-  const fusionados = fusionarJuegos(['Minecraft'], ['minecraft']);
-  assert.deepEqual(fusionados, ['Minecraft']);
+test('al fusionar gana el nombre de la primera lista', () => {
+  // Es la regla de la función. Por eso el formulario le pasa el CATÁLOGO de
+  // primero: el nombre que manda tiene que ser el que se ve en el módulo.
+  assert.deepEqual(fusionarJuegos(['Minecraft'], ['minecraft']), ['Minecraft']);
 });
 
 test('nombres vacíos o en blanco no llegan al selector', () => {
@@ -318,6 +317,27 @@ test('ordenar no modifica la lista original', () => {
   assert.deepEqual(juegos, ['Crash', 'FIFA 26'], 'JUEGOS_BASE no se puede reordenar solo');
 });
 
+test('un juego renombrado en el módulo no puede seguir saliendo con el nombre viejo', () => {
+  // El caso real: "Crash" se renombró a "Crash Team Racing" en el módulo. Si
+  // el formulario mezclara la lista del código, saldrían los dos.
+  const catalogo = ['Crash Team Racing', 'Resident Evil Village'];
+  const viejos = ['Crash', 'Resident Evil'];
+
+  const mezclado = fusionarJuegos(viejos, catalogo);
+  assert.equal(mezclado.length, 4, 'mezclar deja los cuatro: los viejos y los nuevos');
+
+  // Lo que hace el formulario ahora: el catálogo y nada más.
+  const soloCatalogo = fusionarJuegos(catalogo, []);
+  assert.deepEqual(soloCatalogo, catalogo, 'solo salen los nombres de hoy');
+});
+
+test('el juego de un play viejo no desaparece de su propia edición', () => {
+  // Ese play guardó "Crash", que ya no existe en el catálogo. Al editarlo,
+  // tiene que seguir viéndose su juego.
+  const fusionados = fusionarJuegos(['Crash Team Racing'], ['Crash']);
+  assert.deepEqual(fusionados, ['Crash Team Racing', 'Crash']);
+});
+
 // ─── QUE LA PÁGINA SIGA USANDO ESTO ──────────────────────────────────────────
 
 test('la página de plays arma el selector con la fusión, sin lista propia', () => {
@@ -327,10 +347,17 @@ test('la página de plays arma el selector con la fusión, sin lista propia', ()
     !/const\s+JUEGOS_DISPONIBLES\s*=\s*\[/.test(fuente),
     'PlaysManagement.jsx volvió a tener su propia lista de juegos: el agregado automático deja de pasar por el catálogo'
   );
+  // El catálogo NO se puede mezclar con JUEGOS_BASE: si se mezclan, esta lista
+  // va primero y un juego renombrado en el módulo sigue saliendo con el nombre
+  // viejo, al lado del nuevo. JUEGOS_BASE solo entra si el catálogo vino vacío.
+  assert.ok(
+    !/fusionarJuegos\(JUEGOS_BASE/.test(fuente),
+    'JUEGOS_BASE no puede ir mezclado con el catálogo: los renombrados no se verían'
+  );
   assert.match(
     fuente,
-    /fusionarJuegos\(JUEGOS_BASE/,
-    'el selector tiene que armarse con fusionarJuegos(JUEGOS_BASE, ...)'
+    /juegosDelCatalogo\.length \? juegosDelCatalogo : JUEGOS_BASE/,
+    'JUEGOS_BASE tiene que ser el respaldo de cuando el catálogo no llega'
   );
   assert.match(
     fuente,
