@@ -307,6 +307,21 @@ export const uploadActivoImagesToCloudinary = procesarImagenesBase64([
   },
 ]);
 
+// Módulo de JUEGOS: la portada del juego (la que ve el cliente en la página).
+// Va aparte de la foto del activo a propósito: esa es del inventario (la caja,
+// el recibo) y esta es la de vitrina.
+//   portadaBase64 → req.cloudinaryPortadaUrl / ...PublicId
+export const uploadPortadaJuegoToCloudinary = procesarImagenesBase64([
+  {
+    bodyBase64: "portadaBase64",
+    bodyNombre: "portadaNombre",
+    bodyMime: "portadaMimeType",
+    reqUrl: "cloudinaryPortadaUrl",
+    reqPublicId: "cloudinaryPortadaPublicId",
+    etiqueta: "portada del juego",
+  },
+]);
+
 // Crear/editar REPARACIÓN: una sola factura de la reparación.
 //   facturaBase64 → req.cloudinaryReparacionFacturaUrl / ...PublicId
 export const uploadReparacionFacturaToCloudinary = procesarImagenesBase64([

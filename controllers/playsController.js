@@ -12,7 +12,7 @@ import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
 import { alertarAvisoWhatsAppFallido } from '../utils/alertasEmail.js';
 import { regexBusquedaFlexible } from '../utils/textoBusqueda.js';
 import { construirTopClientes } from '../utils/rankingClientes.js';
-import ActivoSala, { CATEGORIAS_JUEGO } from '../models/ActivoSala.js';
+import Juego from '../models/Juego.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers de costo y tipo
@@ -293,10 +293,13 @@ export const regenerarReporteDeFecha = async (fechaPlay) => {
 // ─────────────────────────────────────────────────────────────────
 // GET /api/plays/juegos — Lo que el selector "Juegos Jugados" necesita saber.
 //
-// Devuelve el nombre de cada activo con categoría "Juegos digitales" o
-// "Juegos físicos" para que el formulario del play los sume a su lista fija
-// de "Juegos Jugados". Así, comprar un juego y anotarlo en Activos basta
-// para que aparezca en el selector: no hay que tocar código ni publicar.
+// Devuelve los juegos del CATÁLOGO (módulo de Juegos) que se están ofreciendo.
+// Antes esta lista salía de dos lados —una lista escrita a mano en el frontend
+// y los activos de categoría juego—; ahora hay una sola fuente, así que agregar
+// un juego (comprado o de PS Plus) basta para que aparezca acá, sin publicar.
+//
+// Los complementos NO salen: nadie juega "mapas", se juega el Call of Duty.
+// Los que se dejaron de ofrecer tampoco, aunque su compra siga en los reportes.
 //
 // Vive en /api/plays y no en /api/activos-sala a propósito: un vendedor tiene
 // acceso a Control de plays pero NO al módulo de Activos, y pedirlo por allá
@@ -332,13 +335,14 @@ const rankingJuegosJugados = async () => {
 
 export const getJuegosDeActivos = async (req, res) => {
   try {
-    const nombres = await ActivoSala.distinct('nombre', { categoria: { $in: CATEGORIAS_JUEGO } });
+    const fichas = await Juego.find({ padre: null, noSeOfrece: false })
+      .select('nombre')
+      .lean();
 
-    // distinct no repite, pero los nombres vienen como los escribió la persona:
-    // se recortan los espacios y se ordenan para que el selector no cambie de
-    // orden entre una carga y otra.
-    const juegos = nombres
-      .map((n) => (n || '').trim())
+    // Se ordenan por nombre para que el selector no cambie de orden entre una
+    // carga y otra; el orden que ve el usuario lo decide el ranking de abajo.
+    const juegos = fichas
+      .map((f) => (f.nombre || '').trim())
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b, 'es'));
 

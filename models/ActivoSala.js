@@ -114,6 +114,16 @@ const activoSalaSchema = new mongoose.Schema(
       },
       default: null,
     },
+    // Enlace al catálogo de Juegos. Solo lo llevan los activos que SON un juego
+    // o un complemento: dice de qué juego es esta compra. Null en el resto
+    // (consolas, controles, pantallas). Los reportes no lo miran: siguen
+    // leyendo costo y fechaCompra como siempre.
+    juegoId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Juego',
+      default: null,
+      index: true,
+    },
     descripcion: { type: String, default: null, trim: true },
     numeroFactura: { type: String, default: null, trim: true },
     notas: { type: String, default: null, trim: true },

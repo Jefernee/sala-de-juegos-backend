@@ -27,7 +27,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
-import ActivoSala, { CATEGORIAS_ACTIVO, CATEGORIAS_JUEGO } from '../models/ActivoSala.js';
+import { CATEGORIAS_ACTIVO, CATEGORIAS_JUEGO } from '../models/ActivoSala.js';
+import Juego from '../models/Juego.js';
 import Play from '../models/plays.js';
 import { getJuegosDeActivos } from '../controllers/playsController.js';
 import rutasPlays from '../routes/plays.js';
@@ -66,17 +67,22 @@ const fakeRes = () => {
   return res;
 };
 
-// Reemplaza SOLO la consulta a Mongo. `distinct` recibe el filtro de verdad que
-// arma el controlador, así que se puede revisar por qué categorías preguntó.
-const conActivos = async (nombres, fn, filasRanking = []) => {
-  const original = ActivoSala.distinct;
+// Reemplaza las dos consultas que hace el endpoint: el catálogo de juegos y
+// el ranking de los plays. El controlador corre de verdad.
+const conCatalogo = async (fichas, fn, filasRanking = []) => {
+  const originalFind = Juego.find;
   const originalAgg = Play.aggregate;
   const llamada = {};
-  ActivoSala.distinct = async (campo, filtro) => {
-    llamada.campo = campo;
+  Juego.find = (filtro) => {
     llamada.filtro = filtro;
-    if (nombres instanceof Error) throw nombres;
-    return nombres;
+    return {
+      select: () => ({
+        lean: async () => {
+          if (fichas instanceof Error) throw fichas;
+          return fichas;
+        },
+      }),
+    };
   };
   Play.aggregate = async (etapas) => {
     llamada.etapas = etapas;
@@ -87,7 +93,7 @@ const conActivos = async (nombres, fn, filasRanking = []) => {
     await fn();
     return llamada;
   } finally {
-    ActivoSala.distinct = original;
+    Juego.find = originalFind;
     Play.aggregate = originalAgg;
   }
 };
@@ -102,18 +108,22 @@ test('las categorías de juego son categorías de activo de verdad', () => {
 
 // ─── EL ENDPOINT QUE LOS ENTREGA ─────────────────────────────────────────────
 
-test('el endpoint pregunta por las dos categorías de juego, y solo por esas', async () => {
+test('el endpoint pide los juegos que se están ofreciendo, y solo esos', async () => {
   const res = fakeRes();
-  const llamada = await conActivos(['GTA V'], () => getJuegosDeActivos({}, res));
+  const llamada = await conCatalogo([{ nombre: 'GTA V' }], () => getJuegosDeActivos({}, res));
 
-  assert.equal(llamada.campo, 'nombre');
-  assert.deepEqual(llamada.filtro, { categoria: { $in: CATEGORIAS_JUEGO } });
+  assert.deepEqual(
+    llamada.filtro,
+    { padre: null, noSeOfrece: false },
+    'padre:null deja fuera los complementos; noSeOfrece:false, los que se retiraron'
+  );
 });
 
 test('el endpoint devuelve los juegos ordenados y limpios', async () => {
   const res = fakeRes();
-  await conActivos(['  Tekken 8 ', 'EA FC 27', '', null, 'Assetto Corsa'], () =>
-    getJuegosDeActivos({}, res)
+  await conCatalogo(
+    [{ nombre: '  Tekken 8 ' }, { nombre: 'EA FC 27' }, { nombre: '' }, { nombre: null }, { nombre: 'Assetto Corsa' }],
+    () => getJuegosDeActivos({}, res)
   );
 
   assert.equal(res.statusCode, 200);
@@ -124,9 +134,9 @@ test('el endpoint devuelve los juegos ordenados y limpios', async () => {
   );
 });
 
-test('si la consulta falla, el endpoint avisa pero no rompe el formulario', async () => {
+test('si el catálogo falla, el endpoint avisa pero no rompe el formulario', async () => {
   const res = fakeRes();
-  await conActivos(new Error('Mongo caído'), () => getJuegosDeActivos({}, res));
+  await conCatalogo(new Error('Mongo caído'), () => getJuegosDeActivos({}, res));
 
   assert.equal(res.statusCode, 500);
   assert.deepEqual(res.body.data, [], 'devuelve lista vacía: el front cae en JUEGOS_BASE');
@@ -200,7 +210,7 @@ test('normalizarJuego reconoce el mismo nombre escrito de otra forma', () => {
 
 test('el endpoint cuenta los juegos de los plays recientes, no los de siempre', async () => {
   const res = fakeRes();
-  const llamada = await conActivos([], () => getJuegosDeActivos({}, res), []);
+  const llamada = await conCatalogo([], () => getJuegosDeActivos({}, res), []);
 
   const [match, unwind, group] = llamada.etapas;
   assert.ok(match.$match.fecha.$gte instanceof Date, 'tiene que mirar solo una ventana de tiempo');
@@ -214,7 +224,7 @@ test('el endpoint cuenta los juegos de los plays recientes, no los de siempre', 
 
 test('el ranking llega con el nombre limpio y las veces que se jugó', async () => {
   const res = fakeRes();
-  await conActivos([], () => getJuegosDeActivos({}, res), [
+  await conCatalogo([], () => getJuegosDeActivos({}, res), [
     { _id: ' FIFA 26 ', veces: 88 },
     { _id: 'GTA V', veces: 10 },
     { _id: '', veces: 5 },
@@ -230,7 +240,7 @@ test('el ranking llega con el nombre limpio y las veces que se jugó', async () 
 
 test('si el ranking falla, el endpoint no se lleva puesto el formulario', async () => {
   const res = fakeRes();
-  await conActivos(['Tekken 8'], () => getJuegosDeActivos({}, res), new Error('Mongo caído'));
+  await conCatalogo([{ nombre: 'Tekken 8' }], () => getJuegosDeActivos({}, res), new Error('Mongo caído'));
 
   assert.equal(res.statusCode, 500);
   assert.deepEqual(res.body.ranking, [], 'el front cae en el orden de siempre');

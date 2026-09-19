@@ -19,6 +19,8 @@ import ahorroRoutes from './routes/ahorroRoutes.js';
 import gananciasRoutes from './routes/ganancias.js';
 import pagosServiciosRoutes from './routes/pagosServicios.js';
 import activosSalaRoutes from './routes/activosSala.js';
+import juegosRoutes from './routes/juegos.js';
+import { getVitrina } from './controllers/juegosController.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import estadoResultadosRoutes from './routes/estadoResultados.js';
 import torneosRoutes from './routes/torneos.js';
@@ -29,6 +31,7 @@ import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
 import { migrarCategoriaActivos } from './utils/migrarCategoriaActivos.js';
 import { migrarCategoriaCallOfDuty2 } from './utils/migrarCategoriaCallOfDuty2.js';
+import { migrarJuegos } from './utils/migrarJuegos.js';
 import { migrarRolesUsuarios } from './utils/migrarRolesUsuarios.js';
 import { restringirVendedor } from './middlewares/roles.js';
 import { migrarReparacionesActivos } from './utils/migrarReparacionesActivos.js';
@@ -289,6 +292,17 @@ const tareasDeArranque = async () => {
   }
 
   try {
+    const r = await migrarJuegos();
+    if (r.creados.length) console.log(`🎮 Catálogo de juegos: ${r.creados.length} ficha(s) creada(s).`);
+    if (r.enlazados.length || r.complementos.length)
+      console.log(`🔗 Compras enlazadas a su juego: ${r.enlazados.length + r.complementos.length}.`);
+    if (r.sinCatalogo.length)
+      console.log(`⚠️ Se juegan y no están en el catálogo: ${r.sinCatalogo.join(', ')}`);
+  } catch (e) {
+    console.error('⚠️ Migración catálogo de juegos (no crítico):', e.message);
+  }
+
+  try {
     const { modificados } = await migrarCategoriaCallOfDuty2();
     if (modificados > 0) console.log(`🎮 "Call of Duty 2" reclasificado (${modificados}).`);
   } catch (e) {
@@ -399,6 +413,9 @@ app.use((req, res, next) => {
 // ============================================
 // Rutas públicas
 app.use("/api/auth", authRoutes);
+// Los juegos que muestra la página principal: cualquiera que entre al sitio
+// los ve, así que esta va sin token y antes del guard de roles.
+app.get('/api/juegos/vitrina', getVitrina);
 
 // Guard de rol: un vendedor solo puede usar Ventas y Control de plays (más
 // leer productos para el POS). admin/colaborador pasan sin restricción.
@@ -419,6 +436,7 @@ app.use('/api/ventas-reports', saleReportRoutes);
 app.use('/api/ganancias', gananciasRoutes);
 app.use('/api/pagos-servicios', pagosServiciosRoutes);
 app.use('/api/activos-sala', activosSalaRoutes);
+app.use('/api/juegos', juegosRoutes);
 app.use('/api/activos-reports', activosReportRoutes);
 app.use('/api/estado-resultados', estadoResultadosRoutes);
 app.use('/api/torneos', torneosRoutes);

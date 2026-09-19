@@ -65,6 +65,51 @@ const limpiarImagenesSubidas = async (req) => {
 //   req.cloudinaryUrl        → imagen del artículo
 //   req.cloudinaryFacturaUrl → imagen de la factura de compra
 // ============================================
+// ============================================
+// Guardar un activo nuevo. ES EL ÚNICO CAMINO por el que nace una compra, lo
+// use el formulario de Activos o el módulo de Juegos: así los dos asignan la
+// placa igual, sobreviven igual a una colisión y disparan los mismos reportes.
+// Si algún día hubiera dos caminos, tarde o temprano uno dejaría de regenerar
+// el estado de resultados y un mes quedaría mal sin que nadie se entere.
+//
+// Recibe los datos ya validados y devuelve el activo guardado.
+// ============================================
+export const registrarActivo = async (datos) => {
+  const numeroPlaca = datos.numeroPlaca ?? (await siguienteSecuencia(CONTADOR_PLACA));
+  const activo = new ActivoSala({
+    ...datos,
+    numeroPlaca,
+    // Sin reparaciones aún → estado derivado (respeta override si vino).
+    estado: derivarEstado([], datos.estadoOverride ?? null),
+    reparaciones: [],
+  });
+
+  let savedActivo;
+  try {
+    savedActivo = await activo.save();
+  } catch (err) {
+    // Si por una carrera (o un contador desincronizado) la placa choca,
+    // resincronizamos el contador al máximo existente y reintentamos una vez.
+    if (err?.code === 11000 && err?.keyPattern?.numeroPlaca) {
+      const ultimo = await ActivoSala.findOne({ numeroPlaca: { $ne: null } })
+        .sort({ numeroPlaca: -1 })
+        .select('numeroPlaca')
+        .lean();
+      await fijarSecuenciaMinima(CONTADOR_PLACA, ultimo?.numeroPlaca || 0);
+      activo.numeroPlaca = await siguienteSecuencia(CONTADOR_PLACA);
+      savedActivo = await activo.save();
+    } else {
+      throw err;
+    }
+  }
+
+  console.log(`✅ Activo "${savedActivo.nombre}" registrado — placa #${savedActivo.numeroPlaca}`);
+  // Reportes en background: snapshot de activos + estado del mes de compra.
+  regenerarReporteActivos();
+  regenerarEstadoDeFecha(savedActivo.fechaCompra);
+  return savedActivo;
+};
+
 export const addActivo = async (req, res) => {
   try {
     const { nombre, costo, descripcion, numeroFactura, notas, categoria } = req.body;
@@ -106,50 +151,19 @@ export const addActivo = async (req, res) => {
       return res.status(400).json({ message: 'fechaCompra debe tener formato YYYY-MM-DD' });
     }
 
-    // Número de placa consecutivo y único, asignado automáticamente.
-    // Es inmutable: identifica el activo de forma estable de por vida.
-    const numeroPlaca = await siguienteSecuencia(CONTADOR_PLACA);
-
-    const activo = new ActivoSala({
-      numeroPlaca,
-      nombre: nombre.trim(),
-      categoria: categoria || 'Otros',
-      costo: costoNum,
-      estadoOverride,
-      // Sin reparaciones aún → estado derivado (respeta override si vino).
-      estado: derivarEstado([], estadoOverride),
-      descripcion: descripcion?.trim() || null,
-      numeroFactura: numeroFactura?.trim() || null,
-      notas: notas?.trim() || null,
-      fechaCompra,
-      reparaciones: [],
-      imagenUrl: req.cloudinaryUrl || null,
-      imagenFacturaUrl: req.cloudinaryFacturaUrl || null,
-    });
-
     try {
-      let savedActivo;
-      try {
-        savedActivo = await activo.save();
-      } catch (err) {
-        // Si por una carrera (o un contador desincronizado) la placa choca,
-        // resincronizamos el contador al máximo existente y reintentamos una vez.
-        if (err?.code === 11000 && err?.keyPattern?.numeroPlaca) {
-          const ultimo = await ActivoSala.findOne({ numeroPlaca: { $ne: null } })
-            .sort({ numeroPlaca: -1 })
-            .select('numeroPlaca')
-            .lean();
-          await fijarSecuenciaMinima(CONTADOR_PLACA, ultimo?.numeroPlaca || 0);
-          activo.numeroPlaca = await siguienteSecuencia(CONTADOR_PLACA);
-          savedActivo = await activo.save();
-        } else {
-          throw err;
-        }
-      }
-      console.log(`✅ Activo "${savedActivo.nombre}" registrado — placa #${savedActivo.numeroPlaca}`);
-      // Reportes en background: snapshot de activos + estado del mes de compra.
-      regenerarReporteActivos();
-      regenerarEstadoDeFecha(savedActivo.fechaCompra);
+      const savedActivo = await registrarActivo({
+        nombre: nombre.trim(),
+        categoria: categoria || 'Otros',
+        costo: costoNum,
+        estadoOverride,
+        descripcion: descripcion?.trim() || null,
+        numeroFactura: numeroFactura?.trim() || null,
+        notas: notas?.trim() || null,
+        fechaCompra,
+        imagenUrl: req.cloudinaryUrl || null,
+        imagenFacturaUrl: req.cloudinaryFacturaUrl || null,
+      });
       return res.status(201).json({ message: 'Activo registrado', data: savedActivo });
     } catch (mongoError) {
       // Rollback: si falla MongoDB, no dejar imágenes huérfanas en Cloudinary
