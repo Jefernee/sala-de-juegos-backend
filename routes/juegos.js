@@ -15,6 +15,8 @@ import {
   crearJuego,
   actualizarJuego,
   borrarJuego,
+  agregarCompra,
+  editarCompra,
   borrarCompra,
 } from '../controllers/juegosController.js';
 
@@ -36,8 +38,12 @@ router.put('/:id',
 
 router.delete('/:id', authMiddleware, borrarJuego);
 
-// Dar de baja una compra. Va ANTES de '/:id' no haría falta (la ruta es más
-// larga), pero se deja junto a su hermana para que se lean seguidas.
+// Las compras de un juego. Registrar una es el camino de "estaba como gratis y
+// resulta que se compró"; darla de baja es el de vuelta. Las tres tocan los
+// reportes del mes de la compra, por eso viven juntas y no dentro del PUT del
+// juego, que no toca plata.
+router.post('/:id/compra', authMiddleware, agregarCompra);
+router.put('/:id/compra/:placa', authMiddleware, editarCompra);
 router.delete('/:id/compra/:placa', authMiddleware, borrarCompra);
 
 export default router;

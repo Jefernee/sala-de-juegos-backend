@@ -60,6 +60,36 @@ const rankingPorClave = async () => {
   return mapa;
 };
 
+// Valida una compra y la deja lista para registrarActivo. Devuelve { error }
+// si algo no sirve, o { datos } si está todo bien. Lo comparten los tres
+// caminos por los que puede nacer una compra, para que las reglas sean una.
+const validarCompra = (compra, { nombre, esComplemento }) => {
+  const costo = Number(compra?.costo);
+  if (!Number.isFinite(costo) || costo <= 0) {
+    return { error: 'El costo de la compra debe ser mayor a 0' };
+  }
+  const fechaCompra = parseFecha(compra?.fechaCompra);
+  if (fechaCompra === undefined) {
+    return { error: 'La fecha de compra debe tener formato YYYY-MM-DD' };
+  }
+  if (!fechaCompra) {
+    // Sin fecha, el gasto no cae en ningún mes del estado de resultados:
+    // quedaría invisible en el reporte que más se mira.
+    return { error: 'La fecha de compra es obligatoria' };
+  }
+  const categoria =
+    CATEGORIA_POR_TIPO[compra.tipo] || (esComplemento ? 'Complementos' : 'Juegos digitales');
+  return {
+    datos: {
+      nombre: String(compra.nombreInventario || nombre).trim(),
+      categoria,
+      costo,
+      fechaCompra,
+      numeroFactura: compra.numeroFactura?.trim() || null,
+    },
+  };
+};
+
 // ============================================
 // GET /api/juegos — Todo lo que el módulo necesita para pintarse.
 //
@@ -177,27 +207,9 @@ export const crearJuego = async (req, res) => {
     // una ficha suelta si el costo viene mal.
     let datosCompra = null;
     if (compra) {
-      const costo = Number(compra.costo);
-      if (!Number.isFinite(costo) || costo <= 0) {
-        return res.status(400).json({ message: 'El costo de la compra debe ser mayor a 0' });
-      }
-      const categoria = CATEGORIA_POR_TIPO[compra.tipo] || (padre ? 'Complementos' : 'Juegos digitales');
-      const fechaCompra = parseFecha(compra.fechaCompra);
-      if (fechaCompra === undefined) {
-        return res.status(400).json({ message: 'La fecha de compra debe tener formato YYYY-MM-DD' });
-      }
-      if (!fechaCompra) {
-        // Sin fecha, el gasto no cae en ningún mes del estado de resultados:
-        // quedaría invisible en el reporte que más se mira.
-        return res.status(400).json({ message: 'La fecha de compra es obligatoria' });
-      }
-      datosCompra = {
-        nombre: String(compra.nombreInventario || limpio).trim(),
-        categoria,
-        costo,
-        fechaCompra,
-        numeroFactura: compra.numeroFactura?.trim() || null,
-      };
+      const { error, datos } = validarCompra(compra, { nombre: limpio, esComplemento: !!padre });
+      if (error) return res.status(400).json({ message: error });
+      datosCompra = datos;
     }
 
     const portadaUrl = req.cloudinaryPortadaUrl || null;
@@ -335,6 +347,94 @@ export const borrarJuego = async (req, res) => {
   } catch (error) {
     console.error('❌ Error al borrar el juego:', error.message);
     return res.status(500).json({ message: 'No se pudo borrar el juego', error: error.message });
+  }
+};
+
+// ============================================
+// POST /api/juegos/:id/compra — Registrar la compra de un juego que ya existe.
+//
+// Es el camino de "estaba como gratis y resulta que se compró". Crea el activo
+// por el mismo lugar de siempre, así que desde ese momento cuenta en el
+// reporte del mes de la compra.
+//
+// Un juego puede tener más de una: el mismo título comprado para dos consolas
+// son dos compras, y las dos son plata.
+// ============================================
+export const agregarCompra = async (req, res) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ message: 'Juego inválido' });
+    }
+    const ficha = await Juego.findById(req.params.id).lean();
+    if (!ficha) return res.status(404).json({ message: 'No encontré ese juego' });
+
+    const { error, datos } = validarCompra(req.body, {
+      nombre: ficha.nombre,
+      esComplemento: !!ficha.padre,
+    });
+    if (error) return res.status(400).json({ message: error });
+
+    const activo = await registrarActivo({ ...datos, juegoId: ficha._id });
+    const mes = activo.fechaCompra.toISOString().slice(0, 7);
+    return res.status(201).json({
+      message: `Compra registrada · placa #${activo.numeroPlaca} · cuenta en ${mes}`,
+      data: activo,
+    });
+  } catch (err) {
+    console.error('❌ Error al registrar la compra:', err.message);
+    return res.status(500).json({ message: 'No se pudo registrar la compra', error: err.message });
+  }
+};
+
+// ============================================
+// PUT /api/juegos/:id/compra/:placa — Corregir el monto, la fecha o la factura.
+//
+// Toca reportes, así que regenera el mes viejo Y el nuevo: si la compra se
+// mueve de mes, uno baja y el otro sube. Es el mismo cuidado que tiene el
+// formulario de Activos al editar.
+// ============================================
+export const editarCompra = async (req, res) => {
+  try {
+    const placa = Number(req.params.placa);
+    const activo = await ActivoSala.findOne({ numeroPlaca: placa });
+    if (!activo) return res.status(404).json({ message: 'No encontré esa compra' });
+    if (!activo.juegoId) {
+      return res.status(400).json({ message: 'Esa placa no es de un juego: se edita desde Activos' });
+    }
+
+    const fechaVieja = activo.fechaCompra;
+
+    if (req.body.costo !== undefined) {
+      const costo = Number(req.body.costo);
+      if (!Number.isFinite(costo) || costo <= 0) {
+        return res.status(400).json({ message: 'El costo debe ser mayor a 0' });
+      }
+      activo.costo = costo;
+    }
+    if (req.body.fechaCompra !== undefined) {
+      const fecha = parseFecha(req.body.fechaCompra);
+      if (fecha === undefined) return res.status(400).json({ message: 'La fecha debe tener formato YYYY-MM-DD' });
+      if (!fecha) return res.status(400).json({ message: 'La fecha de compra es obligatoria' });
+      activo.fechaCompra = fecha;
+    }
+    if (req.body.numeroFactura !== undefined) {
+      activo.numeroFactura = req.body.numeroFactura?.trim() || null;
+    }
+    if (req.body.nombreInventario !== undefined) {
+      const n = String(req.body.nombreInventario).trim();
+      if (n) activo.nombre = n;
+    }
+
+    await activo.save();
+
+    // Los dos meses: del que sale y al que entra.
+    regenerarReporteActivos();
+    regenerarEstadoDeFecha(fechaVieja, activo.fechaCompra);
+
+    return res.status(200).json({ message: 'Compra actualizada. Los reportes se rehicieron.', data: activo });
+  } catch (err) {
+    console.error('❌ Error al editar la compra:', err.message);
+    return res.status(500).json({ message: 'No se pudo editar la compra', error: err.message });
   }
 };
 

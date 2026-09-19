@@ -22,6 +22,7 @@ import ActivoSala from '../models/ActivoSala.js';
 import Play from '../models/plays.js';
 import {
   getJuegos, getVitrina, crearJuego, actualizarJuego, borrarJuego,
+  agregarCompra, editarCompra,
 } from '../controllers/juegosController.js';
 
 console.log = () => {};
@@ -297,4 +298,104 @@ test('cada juego llega con sus complementos y lo gastado sumado', async () => {
   assert.equal(juego.gastado, 13530, 'el juego más su complemento');
   assert.equal(juego.compras.length, 1, 'y se ve de dónde sale cada monto');
   assert.equal(res.body.data.length, 1, 'los complementos no se listan como juegos');
+});
+
+// ─── DE GRATIS A COMPRADO, Y DE VUELTA ───────────────────────────────────────
+
+// Deja lista la creación de activos sin tocar Mongo, y devuelve lo que se creó.
+const conRegistroDeActivos = async (fn, placa = 90) => {
+  const { default: Counter } = await import('../models/Counter.js');
+  const originalSave = ActivoSala.prototype.save;
+  const originalCounter = Counter.findByIdAndUpdate;
+  let creado = null;
+  ActivoSala.prototype.save = async function () { creado = this; return this; };
+  Counter.findByIdAndUpdate = async () => ({ seq: placa });
+  try {
+    await fn();
+    return creado;
+  } finally {
+    ActivoSala.prototype.save = originalSave;
+    Counter.findByIdAndUpdate = originalCounter;
+  }
+};
+
+test('un juego que estaba gratis puede pasar a comprado', async () => {
+  const j = ficha('Dragon Ball Sparking Zero');
+  armarBase({ fichas: [j] });
+  const res = fakeRes();
+
+  const activo = await conRegistroDeActivos(() =>
+    agregarCompra(
+      { params: { id: String(j._id) }, body: { tipo: 'fisico', costo: '32500', fechaCompra: '2026-09-19' } },
+      res
+    )
+  );
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(activo.costo, 32500);
+  assert.equal(activo.categoria, 'Juegos físicos');
+  assert.equal(String(activo.juegoId), String(j._id), 'la compra queda pegada a ese juego');
+  assert.equal(activo.numeroPlaca, 90);
+  assert.match(res.body.message, /2026-09/, 'dice en qué mes va a contar');
+});
+
+test('la compra que se agrega después también exige costo y fecha', async () => {
+  const j = ficha('Dragon Ball Sparking Zero');
+  armarBase({ fichas: [j] });
+
+  let res = fakeRes();
+  await agregarCompra({ params: { id: String(j._id) }, body: { costo: 0, fechaCompra: '2026-09-19' } }, res);
+  assert.equal(res.statusCode, 400, 'un costo en cero no es una compra');
+
+  res = fakeRes();
+  await agregarCompra({ params: { id: String(j._id) }, body: { costo: 5000 } }, res);
+  assert.equal(res.statusCode, 400, 'sin fecha quedaría fuera del estado de resultados');
+});
+
+test('no se le puede registrar una compra a un juego que no existe', async () => {
+  armarBase({ fichas: [] });
+  const res = fakeRes();
+  await agregarCompra({ params: { id: String(idFalso()) }, body: { costo: 100, fechaCompra: '2026-09-19' } }, res);
+  assert.equal(res.statusCode, 404);
+});
+
+test('corregir el monto de una compra ya registrada', async () => {
+  const j = ficha('Dragon Ball Sparking Zero');
+  const guardado = {
+    numeroPlaca: 90, costo: 32500, juegoId: j._id, nombre: 'Juego DBSZ',
+    fechaCompra: new Date('2026-09-19T06:00:00Z'),
+    save: async function () { return this; },
+  };
+  armarBase({ fichas: [j] });
+  ActivoSala.findOne = () => ({ then: (ok) => Promise.resolve(guardado).then(ok) });
+
+  const res = fakeRes();
+  await editarCompra({ params: { id: String(j._id), placa: '90' }, body: { costo: 29900 } }, res);
+
+  assert.equal(res.statusCode, 200);
+  assert.equal(guardado.costo, 29900, 'el monto nuevo queda en el activo');
+  assert.match(res.body.message, /reportes se rehicieron/i);
+});
+
+test('no se puede poner un costo inválido al corregir', async () => {
+  const j = ficha('X');
+  const guardado = { numeroPlaca: 90, costo: 100, juegoId: j._id, fechaCompra: new Date(), save: async function () { return this; } };
+  armarBase({ fichas: [j] });
+  ActivoSala.findOne = () => ({ then: (ok) => Promise.resolve(guardado).then(ok) });
+
+  const res = fakeRes();
+  await editarCompra({ params: { id: String(j._id), placa: '90' }, body: { costo: -1 } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.equal(guardado.costo, 100, 'no se pudo haber cambiado nada');
+});
+
+test('una placa que no es de un juego no se edita desde acá', async () => {
+  armarBase({ fichas: [] });
+  const suelto = { numeroPlaca: 12, costo: 350000, juegoId: null, save: async function () { return this; } };
+  ActivoSala.findOne = () => ({ then: (ok) => Promise.resolve(suelto).then(ok) });
+
+  const res = fakeRes();
+  await editarCompra({ params: { id: String(idFalso()), placa: '12' }, body: { costo: 1 } }, res);
+  assert.equal(res.statusCode, 400);
+  assert.match(res.body.message, /desde Activos/);
 });
