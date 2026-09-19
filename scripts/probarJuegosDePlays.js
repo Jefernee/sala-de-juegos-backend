@@ -1,8 +1,9 @@
 // scripts/probarJuegosDePlays.js
 //
-// Pruebas del selector "Juegos Jugados" del formulario de plays, que ahora se
-// arma con DOS fuentes: la lista fija del frontend (JUEGOS_BASE) y los activos
-// de la sala con categoría de juego, que llegan de GET /api/plays/juegos.
+// Pruebas del selector "Juegos Jugados" del formulario de plays, que se arma
+// con DOS fuentes — la lista fija del frontend (JUEGOS_BASE) y los activos de
+// la sala con categoría de juego — y se ORDENA por lo que más se está jugando.
+// Todo eso llega junto en GET /api/plays/juegos.
 //
 // POR QUÉ EXISTE
 // Tres cosas se pueden romper solas y ninguna se ve hasta que alguien está
@@ -13,6 +14,8 @@
 //      tomaría como un id y contestaría "play no encontrado".
 //   3. Que alguien vuelva a escribir la lista de juegos dentro de la página y
 //      el agregado automático deje de pasar por ahí.
+//   4. Que el orden deje de responder a los plays y el selector vuelva a
+//      abrir mostrando cualquier cosa en vez de lo que la gente pide.
 //
 // No necesita Mongo: se reemplaza la consulta y el resto corre de verdad.
 //
@@ -25,6 +28,7 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import ActivoSala, { CATEGORIAS_ACTIVO, CATEGORIAS_JUEGO } from '../models/ActivoSala.js';
+import Play from '../models/plays.js';
 import { getJuegosDeActivos } from '../controllers/playsController.js';
 import rutasPlays from '../routes/plays.js';
 
@@ -44,7 +48,7 @@ try {
   console.error(err.message);
   process.exit(1);
 }
-const { JUEGOS_BASE, fusionarJuegos, normalizarJuego } = catalogo;
+const { JUEGOS_BASE, fusionarJuegos, normalizarJuego, ordenarPorPopularidad } = catalogo;
 
 // Los controladores loguean cada error; acá no aporta.
 console.error = () => {};
@@ -64,8 +68,9 @@ const fakeRes = () => {
 
 // Reemplaza SOLO la consulta a Mongo. `distinct` recibe el filtro de verdad que
 // arma el controlador, así que se puede revisar por qué categorías preguntó.
-const conActivos = async (nombres, fn) => {
+const conActivos = async (nombres, fn, filasRanking = []) => {
   const original = ActivoSala.distinct;
+  const originalAgg = Play.aggregate;
   const llamada = {};
   ActivoSala.distinct = async (campo, filtro) => {
     llamada.campo = campo;
@@ -73,11 +78,17 @@ const conActivos = async (nombres, fn) => {
     if (nombres instanceof Error) throw nombres;
     return nombres;
   };
+  Play.aggregate = async (etapas) => {
+    llamada.etapas = etapas;
+    if (filasRanking instanceof Error) throw filasRanking;
+    return filasRanking;
+  };
   try {
     await fn();
     return llamada;
   } finally {
     ActivoSala.distinct = original;
+    Play.aggregate = originalAgg;
   }
 };
 
@@ -185,6 +196,118 @@ test('normalizarJuego reconoce el mismo nombre escrito de otra forma', () => {
   assert.notEqual(normalizarJuego('FIFA 25'), normalizarJuego('FIFA 26'));
 });
 
+// ─── EL ORDEN: ADELANTE LO QUE MÁS SE JUEGA ────────────────────────────
+
+test('el endpoint cuenta los juegos de los plays recientes, no los de siempre', async () => {
+  const res = fakeRes();
+  const llamada = await conActivos([], () => getJuegosDeActivos({}, res), []);
+
+  const [match, unwind, group] = llamada.etapas;
+  assert.ok(match.$match.fecha.$gte instanceof Date, 'tiene que mirar solo una ventana de tiempo');
+  const dias = Math.round((Date.now() - match.$match.fecha.$gte.getTime()) / 86400000);
+  assert.equal(dias, 90, 'la ventana del ranking son 90 días');
+  assert.equal(res.body.diasRanking, 90, 'y el endpoint dice cuál usó');
+
+  assert.equal(unwind.$unwind, '$juegosJugados', 'un play con 2 juegos cuenta para los dos');
+  assert.deepEqual(group.$group.veces, { $sum: 1 }, 'cuenta plays, no suma tiempos');
+});
+
+test('el ranking llega con el nombre limpio y las veces que se jugó', async () => {
+  const res = fakeRes();
+  await conActivos([], () => getJuegosDeActivos({}, res), [
+    { _id: ' FIFA 26 ', veces: 88 },
+    { _id: 'GTA V', veces: 10 },
+    { _id: '', veces: 5 },
+    { _id: null, veces: 3 },
+  ]);
+
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body.ranking, [
+    { juego: 'FIFA 26', veces: 88 },
+    { juego: 'GTA V', veces: 10 },
+  ]);
+});
+
+test('si el ranking falla, el endpoint no se lleva puesto el formulario', async () => {
+  const res = fakeRes();
+  await conActivos(['Tekken 8'], () => getJuegosDeActivos({}, res), new Error('Mongo caído'));
+
+  assert.equal(res.statusCode, 500);
+  assert.deepEqual(res.body.ranking, [], 'el front cae en el orden de siempre');
+});
+
+test('el más jugado queda de primero', () => {
+  const juegos = ['Crash', 'FIFA 26', 'GTA V'];
+  const ranking = [
+    { juego: 'FIFA 26', veces: 88 },
+    { juego: 'GTA V', veces: 10 },
+    { juego: 'Crash', veces: 3 },
+  ];
+  assert.deepEqual(ordenarPorPopularidad(juegos, ranking), ['FIFA 26', 'GTA V', 'Crash']);
+});
+
+test('los que nadie jugó quedan al final, en el orden en que venían', () => {
+  const juegos = ['Sackboy', 'Fall Guys', 'FIFA 26', 'Uncharted 4'];
+  const ordenados = ordenarPorPopularidad(juegos, [{ juego: 'FIFA 26', veces: 88 }]);
+  assert.deepEqual(ordenados, ['FIFA 26', 'Sackboy', 'Fall Guys', 'Uncharted 4']);
+});
+
+test('dos juegos con las mismas veces no se cambian de lugar entre cargas', () => {
+  const juegos = ['Crash', 'Fortnite', 'Minecraft'];
+  const ranking = [
+    { juego: 'Minecraft', veces: 4 },
+    { juego: 'Crash', veces: 4 },
+    { juego: 'Fortnite', veces: 4 },
+  ];
+  // Empatados: manda el orden con el que llegaron, no el del ranking.
+  assert.deepEqual(ordenarPorPopularidad(juegos, ranking), juegos);
+});
+
+test('el mismo juego guardado de dos formas suma, no se reparte', () => {
+  // En los plays viejos quedó escrito distinto; si no se sumara, GTA V
+  // aparecería abajo con 6 en vez de arriba con 12.
+  const juegos = ['Crash', 'GTA V'];
+  const ranking = [
+    { juego: 'Crash', veces: 9 },
+    { juego: 'GTA V', veces: 6 },
+    { juego: 'gta v', veces: 6 },
+  ];
+  assert.deepEqual(ordenarPorPopularidad(juegos, ranking), ['GTA V', 'Crash']);
+});
+
+test('un juego jugado que ya no está en el selector no lo altera', () => {
+  // Los plays viejos tienen nombres que ya no existen («EAFC25», «COD3»).
+  const juegos = ['Crash', 'FIFA 26'];
+  const ordenados = ordenarPorPopularidad(juegos, [
+    { juego: 'EAFC25', veces: 267 },
+    { juego: 'FIFA 26', veces: 88 },
+  ]);
+  assert.deepEqual(ordenados, ['FIFA 26', 'Crash'], 'no agrega ni corre nada de más');
+});
+
+test('ordenar no pierde ni repite ningún juego', () => {
+  const ranking = [
+    { juego: 'FIFA 26', veces: 88 },
+    { juego: 'GTA V', veces: 10 },
+    { juego: 'Minecraft', veces: 1 },
+  ];
+  const ordenados = ordenarPorPopularidad(JUEGOS_BASE, ranking);
+  assert.equal(ordenados.length, JUEGOS_BASE.length);
+  assert.deepEqual([...ordenados].sort(), [...JUEGOS_BASE].sort(), 'son exactamente los mismos');
+});
+
+test('sin ranking, el selector queda tal como venía', () => {
+  assert.deepEqual(ordenarPorPopularidad(JUEGOS_BASE, []), JUEGOS_BASE);
+  assert.deepEqual(ordenarPorPopularidad(JUEGOS_BASE), JUEGOS_BASE);
+  assert.deepEqual(ordenarPorPopularidad(JUEGOS_BASE, [{ juego: '', veces: 9 }]), JUEGOS_BASE);
+});
+
+test('ordenar no modifica la lista original', () => {
+  const juegos = ['Crash', 'FIFA 26'];
+  ordenarPorPopularidad(juegos, [{ juego: 'FIFA 26', veces: 88 }]);
+  assert.deepEqual(juegos, ['Crash', 'FIFA 26'], 'JUEGOS_BASE no se puede reordenar solo');
+});
+
 // ─── QUE LA PÁGINA SIGA USANDO ESTO ──────────────────────────────────────────
 
 test('la página de plays arma el selector con la fusión, sin lista propia', () => {
@@ -203,5 +326,10 @@ test('la página de plays arma el selector con la fusión, sin lista propia', ()
     fuente,
     /\/api\/plays\/juegos/,
     'la página tiene que pedirle los juegos de Activos al backend'
+  );
+  assert.match(
+    fuente,
+    /ordenarPorPopularidad\(/,
+    'el selector tiene que ordenarse por lo que más se juega'
   );
 });

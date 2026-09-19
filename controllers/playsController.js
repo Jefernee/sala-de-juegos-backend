@@ -291,7 +291,7 @@ export const regenerarReporteDeFecha = async (fechaPlay) => {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// GET /api/plays/juegos — Los juegos que la sala tiene como activo.
+// GET /api/plays/juegos — Lo que el selector "Juegos Jugados" necesita saber.
 //
 // Devuelve el nombre de cada activo con categoría "Juegos digitales" o
 // "Juegos físicos" para que el formulario del play los sume a su lista fija
@@ -301,7 +301,34 @@ export const regenerarReporteDeFecha = async (fechaPlay) => {
 // Vive en /api/plays y no en /api/activos-sala a propósito: un vendedor tiene
 // acceso a Control de plays pero NO al módulo de Activos, y pedirlo por allá
 // le devolvería un 403 (ver middlewares/roles.js).
+//
+// Además manda `ranking`: cuántas veces se jugó cada juego en los últimos
+// DIAS_RANKING_JUEGOS días, para que el formulario muestre arriba lo que la
+// gente está pidiendo hoy y no haya que buscarlo en una lista de 50.
 // ─────────────────────────────────────────────────────────────────
+
+// Ventana del ranking. 90 días es lo que mejor describe "lo que se está
+// jugando": el histórico completo arrastra nombres viejos que ya ni existen en
+// el selector ("EAFC25", "COD3") y un mes solo trae un puñado de juegos.
+const DIAS_RANKING_JUEGOS = 90;
+
+// Cuántas veces se jugó cada juego en la ventana. Un play puede tener 2 juegos
+// y cada uno cuenta una vez ($unwind). Los nombres salen tal como quedaron
+// guardados: emparejarlos con el catálogo es tarea del formulario, que sabe
+// comparar sin tildes ni mayúsculas.
+const rankingJuegosJugados = async () => {
+  const desde = new Date(Date.now() - DIAS_RANKING_JUEGOS * 24 * 60 * 60 * 1000);
+  const filas = await Play.aggregate([
+    { $match: { fecha: { $gte: desde } } },
+    { $unwind: '$juegosJugados' },
+    { $group: { _id: '$juegosJugados', veces: { $sum: 1 } } },
+    { $sort: { veces: -1, _id: 1 } },
+  ]);
+
+  return filas
+    .map((f) => ({ juego: (f._id || '').trim(), veces: f.veces }))
+    .filter((f) => f.juego);
+};
 
 export const getJuegosDeActivos = async (req, res) => {
   try {
@@ -315,12 +342,18 @@ export const getJuegosDeActivos = async (req, res) => {
       .filter(Boolean)
       .sort((a, b) => a.localeCompare(b, 'es'));
 
-    return res.status(200).json({ data: juegos });
+    const ranking = await rankingJuegosJugados();
+
+    return res.status(200).json({ data: juegos, ranking, diasRanking: DIAS_RANKING_JUEGOS });
   } catch (error) {
-    console.error('❌ Error al leer los juegos de activos:', error.message);
-    // El formulario tiene su lista fija de respaldo: que esto falle no puede
-    // dejar a nadie sin registrar un play.
-    return res.status(500).json({ message: 'No se pudieron leer los juegos de activos', data: [] });
+    console.error('❌ Error al armar el selector de juegos:', error.message);
+    // El formulario tiene su lista fija de respaldo, en su orden de siempre:
+    // que esto falle no puede dejar a nadie sin registrar un play.
+    return res.status(500).json({
+      message: 'No se pudieron leer los juegos',
+      data: [],
+      ranking: [],
+    });
   }
 };
 
