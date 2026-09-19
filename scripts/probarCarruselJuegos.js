@@ -10,10 +10,11 @@
 //   1. Las flechas. Si la cuenta de "¿queda algo hacia ese lado?" falla, queda
 //      un botón que no hace nada o —peor— una flecha apagada con juegos
 //      escondidos detrás que el cliente nunca ve.
-//   2. Las reglas de tamaño. Las portadas las suben desde el teléfono, unas
-//      verticales y otras acostadas: si alguien vuelve a poner `cover`, las
-//      corta, y si vuelve a poner un ancho fijo, en un monitor grande quedan
-//      diminutas y en un teléfono no entran.
+//   2. Las reglas de tamaño. Las 50 portadas vienen de todas las formas: 14
+//      verticales tipo carátula, 17 casi cuadradas y 19 apaisadas. Van como
+//      una tira de cine —mismo alto, ancho natural— porque obligarlas a un
+//      marco común dejaba a unas con franjas de relleno y a otras diminutas.
+//      Si alguien vuelve a fijarles un ancho o les pone `cover`, se rompe.
 //
 //   npm run probar-carrusel
 
@@ -137,24 +138,33 @@ test('la barrita nunca se sale de sus límites', () => {
 
 // ─── QUE SE VEA BIEN EN CUALQUIER PANTALLA ───────────────────────────────────
 
-test('el ancho de la tarjeta se adapta, no es fijo', () => {
-  assert.match(
-    css,
-    /--cj-ancho:\s*clamp\(/,
-    'con un ancho fijo, en un monitor grande quedan diminutas y en un teléfono no entran'
-  );
-  const [, min, max] = css.match(/--cj-ancho:\s*clamp\(\s*(\d+)px[^,]*,[^,]+,\s*(\d+)px/) || [];
-  assert.ok(Number(min) >= 120 && Number(min) <= 160, `el mínimo (${min}px) tiene que entrar en un teléfono`);
-  assert.ok(Number(max) >= 180 && Number(max) <= 260, `el máximo (${max}px) no puede ser gigante`);
+test('el alto se adapta a la pantalla, y en el teléfono no es diminuto', () => {
+  assert.match(css, /--cj-alto:\s*clamp\(/,
+    'con un alto fijo, en un monitor grande quedan chiquitas y en un teléfono no se ven');
+  const [, min, max] = css.match(/--cj-alto:\s*clamp\(\s*(\d+)px[^,]*,[^,]+,\s*(\d+)px/) || [];
+  assert.ok(Number(min) >= 170, `en el teléfono (${min}px) tiene que verse grande`);
+  // La portada más ancha de la sala es 1.85. A este alto mide min*1.85 de
+  // ancho, y eso tiene que entrar en un teléfono de 360px con sus márgenes.
+  assert.ok(Number(min) * 1.85 < 345,
+    `a ${min}px de alto, la foto más ancha (333px+) se sale de la pantalla del teléfono`);
+  assert.ok(Number(max) >= 200 && Number(max) <= 280, `el máximo (${max}px) no puede ser gigante`);
 });
 
-test('la portada se ve completa: nunca recortada', () => {
-  assert.match(css, /\.cj-img\s*{[^}]*object-fit:\s*contain/s,
-    'con cover se comen los bordes, y las fotos del teléfono son verticales');
-  assert.match(css, /\.cj-foto\s*{[^}]*aspect-ratio:\s*1\s*\/\s*1/s,
-    'el recuadro cuadrado es el que mejor trata una foto vertical');
-  assert.match(css, /\.cj-fondo\s*{[^}]*filter:\s*blur/s,
-    'el fondo borroso es lo que evita las franjas vacías');
+test('la portada se ve entera y a su forma: ni recortada ni rellenada', () => {
+  assert.match(css, /\.cj-img\s*{[^}]*height:\s*100%/s, 'el alto lo pone la fila');
+  assert.match(css, /\.cj-img\s*{[^}]*width:\s*auto/s, 'y el ancho lo pone la foto');
+  assert.ok(!/\.cj-img\s*{[^}]*object-fit:\s*cover/s.test(css), 'cover recorta');
+  assert.ok(!/\.cj-foto\s*{[^}]*aspect-ratio/s.test(css),
+    'forzar una proporción común es lo que dejaba franjas de relleno');
+  assert.ok(!componente.includes('cj-fondo'),
+    'con el ancho natural ya no hace falta el fondo borroso que rellenaba');
+});
+
+test('un nombre largo no ensancha la tarjeta más que su foto', () => {
+  assert.match(css, /\.cj-nombre\s*{[^}]*width:\s*0/s,
+    'el texto no puede contar para medir la tarjeta');
+  assert.match(css, /\.cj-nombre\s*{[^}]*min-width:\s*100%/s,
+    'pero después tiene que ocupar el ancho que definió la foto');
 });
 
 test('en el teléfono no se muestran las flechas: ahí se arrastra', () => {
@@ -194,10 +204,10 @@ test('el componente usa la lógica probada, no su propia cuenta', () => {
   assert.ok(!/scrollLeft\s*>\s*\d/.test(componente), 'no puede haber una cuenta suelta dentro del componente');
 });
 
-test('las fotos tienen texto alternativo y la de fondo no molesta al lector', () => {
-  assert.match(componente, /alt=\{juego\.nombre\}/, 'la portada dice de qué juego es');
-  assert.match(componente, /aria-hidden="true"\s+className="cj-fondo"/,
-    'la copia borrosa del fondo no se le lee a nadie dos veces');
+test('cada portada dice de qué juego es', () => {
+  assert.match(componente, /alt=\{juego\.nombre\}/, 'sin alt, un lector de pantalla no dice nada');
+  const imgs = (componente.match(/<img /g) || []).length;
+  assert.equal(imgs, 1, 'una sola imagen por tarjeta: la copia borrosa ya no hace falta');
 });
 
 test('las flechas se apagan y se explican solas', () => {
