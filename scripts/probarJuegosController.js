@@ -244,19 +244,22 @@ test('un juego sin compras se borra, y se lleva sus complementos gratis', async 
 
 // ─── LA PÁGINA PÚBLICA ───────────────────────────────────────────────────────
 
-test('la vitrina solo pide los marcados, con portada y que se ofrecen', async () => {
+test('la vitrina muestra todos los que se ofrecen y tienen foto', async () => {
   let filtro = null;
+  let orden = null;
   Juego.find = (f) => {
     filtro = f;
-    return { select: () => ({ sort: () => ({ lean: async () => [] }) }) };
+    return { select: () => ({ sort: (o) => { orden = o; return { lean: async () => [] }; } }) };
   };
   const res = fakeRes();
   await getVitrina({}, res);
 
   assert.equal(filtro.padre, null, 'un complemento no sale en la página');
-  assert.equal(filtro.enVitrina, true);
   assert.equal(filtro.noSeOfrece, false, 'lo retirado no se le muestra al cliente');
   assert.deepEqual(filtro.imagenUrl, { $ne: null }, 'nunca una tarjeta sin foto');
+  assert.equal(filtro.enVitrina, undefined, 'la estrella ya no decide quién entra, sino el orden');
+  assert.equal(orden.enVitrina, -1, 'los destacados abren el carrusel');
+  assert.equal(orden.nombre, 1, 'y el resto va alfabético');
 });
 
 test('para mostrarlo en la página primero hace falta la portada', async () => {

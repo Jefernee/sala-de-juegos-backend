@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js scripts/probarMigrarJuegos.js scripts/probarJuegosController.js",
+    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js scripts/probarMigrarJuegos.js scripts/probarJuegosController.js scripts/probarCarruselJuegos.js",
     "probar-turno": "node --test scripts/probarTurnoPendiente.js",
     "probar-categorias": "node --test scripts/probarCategoriasActivos.js",
     "probar-juegos": "node --test scripts/probarJuegosDePlays.js",
@@ -12,6 +12,7 @@
     "migrar-juegos": "node scripts/correrMigrarJuegos.js",
     "probar-migrar-juegos": "node --test scripts/probarMigrarJuegos.js",
     "probar-juegos-modulo": "node --test scripts/probarJuegosController.js",
+    "probar-carrusel": "node --test scripts/probarCarruselJuegos.js",
     "verificar-vocabulario": "node scripts/verificarVocabulario.js",
     "dev": "cross-env NODE_ENV=development node server.js",
     "start": "NODE_ENV=production node server.js"

@@ -148,13 +148,20 @@ export const getJuegos = async (req, res) => {
 
 // ============================================
 // GET /api/juegos/vitrina — PÚBLICO (sin token).
-// Lo que muestra la página principal: solo los marcados y con portada.
+//
+// Lo que muestra la página principal. Van TODOS los juegos que se ofrecen y
+// tienen portada: como el carrusel se desplaza, no hay razón para esconder
+// ninguno. La ⭐ decide el ORDEN, no quién entra: los destacados abren y el
+// resto sigue alfabético.
+//
+// Sin portada no sale nunca: una tarjeta vacía frente a un cliente es peor que
+// no mostrar el juego.
 // ============================================
 export const getVitrina = async (req, res) => {
   try {
-    const juegos = await Juego.find({ padre: null, enVitrina: true, noSeOfrece: false, imagenUrl: { $ne: null } })
-      .select('nombre imagenUrl link')
-      .sort({ nombre: 1 })
+    const juegos = await Juego.find({ padre: null, noSeOfrece: false, imagenUrl: { $ne: null } })
+      .select('nombre imagenUrl link enVitrina')
+      .sort({ enVitrina: -1, nombre: 1 })
       .lean();
     return res.status(200).json({ data: juegos });
   } catch (error) {
