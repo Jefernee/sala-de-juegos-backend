@@ -29,6 +29,7 @@ const FRONT = path.resolve(aquí, '../../sala-juegos-frontend-vite/src');
 const RUTA_LOGICA = path.join(FRONT, 'constants/carrusel.js');
 const RUTA_CSS = path.join(FRONT, 'styles/CarruselJuegos.css');
 const RUTA_COMPONENTE = path.join(FRONT, 'components/CarruselJuegos.jsx');
+const CARPETA_ESTILOS = path.join(FRONT, 'styles');
 
 let logica;
 try {
@@ -194,6 +195,36 @@ test('la barra de desplazamiento no se ve, pero se puede arrastrar', () => {
 
 test('quien pidió menos movimiento no recibe animaciones', () => {
   assert.match(css, /@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+});
+
+// ─── QUE NADIE LE GANE AL CARRUSEL ───────────────────────────────────────────
+
+test('ninguna otra regla puede recortar las portadas del carrusel', () => {
+  // Esto ya pasó una vez y costó encontrarlo: la grilla vieja de 4 juegos
+  // dejó `#games img { width:200px; height:200px; object-fit:cover }` en
+  // Home.css. Al llevar un ID, esa regla le GANA en especificidad a .cj-img
+  // aunque el carrusel esté bien escrito, y recorta TODAS las portadas a un
+  // cuadrado. Desde afuera parece que el carrusel está mal.
+  const archivos = fs.readdirSync(CARPETA_ESTILOS).filter((f) => f.endsWith('.css'));
+  const culpables = [];
+
+  for (const archivo of archivos) {
+    if (archivo === 'CarruselJuegos.css') continue;
+    const crudo = fs.readFileSync(path.join(CARPETA_ESTILOS, archivo), 'utf8');
+    // Los comentarios se quitan primero: el que explica este mismo bug nombra
+    // la regla culpable, y sin esto la prueba se acusaba a sí misma.
+    const texto = crudo.replace(/\/\*[\s\S]*?\*\//g, '');
+    // Se buscan reglas que apunten a imágenes DENTRO de la sección de juegos.
+    for (const regla of texto.match(/#games[^{}]*img[^{}]*{[^}]*}/g) || []) {
+      culpables.push(`${archivo}: ${regla.split('{')[0].trim()}`);
+    }
+  }
+
+  assert.deepEqual(
+    culpables,
+    [],
+    `Estas reglas le ganan al carrusel y le recortan las portadas: ${culpables.join(' | ')}`
+  );
 });
 
 // ─── EL COMPONENTE ───────────────────────────────────────────────────────────
