@@ -90,6 +90,20 @@ const validarCompra = (compra, { nombre, esComplemento }) => {
   };
 };
 
+// El ORDEN en que se muestran los juegos, y es el mismo en los tres lugares
+// donde aparecen: el selector del play, el módulo y la página pública. Manda
+// lo que más se juega —que es lo que la gente busca y lo que luce— y solo
+// cuando empatan deciden la estrella y el abecedario.
+//
+// Con esto, lo que se ve en el módulo es lo que ve el cliente en la página.
+const porMasJugado = (ranking) => (a, b) => {
+  const jugadasA = ranking.get(a.clave) || 0;
+  const jugadasB = ranking.get(b.clave) || 0;
+  if (jugadasA !== jugadasB) return jugadasB - jugadasA;
+  if (!!a.enVitrina !== !!b.enVitrina) return a.enVitrina ? -1 : 1;
+  return (a.nombre || '').localeCompare(b.nombre || '', 'es');
+};
+
 // ============================================
 // GET /api/juegos — Todo lo que el módulo necesita para pintarse.
 //
@@ -137,7 +151,8 @@ export const getJuegos = async (req, res) => {
           gastado: propio.gastado + hijos.reduce((t, h) => t + h.gastado, 0),
           plays: ranking.get(f.clave) || 0,
         };
-      });
+      })
+      .sort(porMasJugado(ranking));
 
     return res.status(200).json({ data: juegos, diasRanking: DIAS_RANKING });
   } catch (error) {
@@ -151,19 +166,25 @@ export const getJuegos = async (req, res) => {
 //
 // Lo que muestra la página principal. Van TODOS los juegos que se ofrecen y
 // tienen portada: como el carrusel se desplaza, no hay razón para esconder
-// ninguno. La ⭐ decide el ORDEN, no quién entra: los destacados abren y el
-// resto sigue alfabético.
+// ninguno.
+//
+// Abren los MÁS JUGADOS: es lo que el cliente reconoce y lo que mejor cuenta
+// de qué se trata la sala. La ⭐ solo desempata entre los que se jugaron lo
+// mismo. Es el mismo orden del módulo y del selector.
 //
 // Sin portada no sale nunca: una tarjeta vacía frente a un cliente es peor que
 // no mostrar el juego.
 // ============================================
 export const getVitrina = async (req, res) => {
   try {
-    const juegos = await Juego.find({ padre: null, noSeOfrece: false, imagenUrl: { $ne: null } })
-      .select('nombre imagenUrl link enVitrina')
-      .sort({ enVitrina: -1, nombre: 1 })
-      .lean();
-    return res.status(200).json({ data: juegos });
+    const [juegos, ranking] = await Promise.all([
+      Juego.find({ padre: null, noSeOfrece: false, imagenUrl: { $ne: null } })
+        .select('nombre imagenUrl link enVitrina clave')
+        .lean(),
+      rankingPorClave(),
+    ]);
+
+    return res.status(200).json({ data: juegos.sort(porMasJugado(ranking)) });
   } catch (error) {
     console.error('❌ Error al leer la vitrina:', error.message);
     // La página tiene su lista de respaldo: nunca se queda vacía por esto.

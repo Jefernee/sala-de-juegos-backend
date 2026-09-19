@@ -246,11 +246,11 @@ test('un juego sin compras se borra, y se lleva sus complementos gratis', async 
 
 test('la vitrina muestra todos los que se ofrecen y tienen foto', async () => {
   let filtro = null;
-  let orden = null;
   Juego.find = (f) => {
     filtro = f;
-    return { select: () => ({ sort: (o) => { orden = o; return { lean: async () => [] }; } }) };
+    return { select: () => ({ lean: async () => [] }) };
   };
+  Play.aggregate = async () => [];
   const res = fakeRes();
   await getVitrina({}, res);
 
@@ -258,8 +258,51 @@ test('la vitrina muestra todos los que se ofrecen y tienen foto', async () => {
   assert.equal(filtro.noSeOfrece, false, 'lo retirado no se le muestra al cliente');
   assert.deepEqual(filtro.imagenUrl, { $ne: null }, 'nunca una tarjeta sin foto');
   assert.equal(filtro.enVitrina, undefined, 'la estrella ya no decide quién entra, sino el orden');
-  assert.equal(orden.enVitrina, -1, 'los destacados abren el carrusel');
-  assert.equal(orden.nombre, 1, 'y el resto va alfabético');
+});
+
+test('en la página abren los más jugados', async () => {
+  Juego.find = () => ({
+    select: () => ({
+      lean: async () => [
+        { nombre: 'Sackboy', clave: 'sackboy', enVitrina: true },
+        { nombre: 'FIFA 26', clave: 'fifa 26', enVitrina: false },
+        { nombre: 'GTA V', clave: 'gta v', enVitrina: false },
+      ],
+    }),
+  });
+  Play.aggregate = async () => [
+    { _id: 'FIFA 26', veces: 267 },
+    { _id: 'GTA V', veces: 62 },
+  ];
+  const res = fakeRes();
+  await getVitrina({}, res);
+
+  assert.deepEqual(
+    res.body.data.map((j) => j.nombre),
+    ['FIFA 26', 'GTA V', 'Sackboy'],
+    'manda lo jugado: la estrella de Sackboy no lo pone adelante de FIFA 26'
+  );
+});
+
+test('entre los que se jugaron lo mismo, la estrella desempata', async () => {
+  Juego.find = () => ({
+    select: () => ({
+      lean: async () => [
+        { nombre: 'Zzz sin estrella', clave: 'zzz sin estrella', enVitrina: false },
+        { nombre: 'Aaa sin estrella', clave: 'aaa sin estrella', enVitrina: false },
+        { nombre: 'Mmm con estrella', clave: 'mmm con estrella', enVitrina: true },
+      ],
+    }),
+  });
+  Play.aggregate = async () => [];
+  const res = fakeRes();
+  await getVitrina({}, res);
+
+  assert.deepEqual(
+    res.body.data.map((j) => j.nombre),
+    ['Mmm con estrella', 'Aaa sin estrella', 'Zzz sin estrella'],
+    'primero la estrella, y después el abecedario'
+  );
 });
 
 test('para mostrarlo en la página primero hace falta la portada', async () => {
@@ -282,6 +325,22 @@ test('con portada sí se puede marcar', async () => {
 });
 
 // ─── LA LISTA DEL MÓDULO ─────────────────────────────────────────────────────
+
+test('el módulo ordena igual que la página: primero los más jugados', async () => {
+  const a = ficha('Poco jugado', { clave: 'poco jugado' });
+  const b = ficha('FIFA 26', { clave: 'fifa 26' });
+  armarBase({ fichas: [a, b], activos: [] });
+  Play.aggregate = async () => [{ _id: 'FIFA 26', veces: 267 }];
+
+  const res = fakeRes();
+  await getJuegos({}, res);
+
+  assert.deepEqual(
+    res.body.data.map((j) => j.nombre),
+    ['FIFA 26', 'Poco jugado'],
+    'lo que ve el dueño en el módulo es el orden que ve el cliente'
+  );
+});
 
 test('cada juego llega con sus complementos y lo gastado sumado', async () => {
   const j = ficha('Call of Duty 2', { clave: 'call of duty 2' });
