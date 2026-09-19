@@ -11,7 +11,10 @@ import mongoose from 'mongoose';
 export const ESTADOS_ACTIVO = ['En uso', 'En reparación', 'Reparado', 'Fuera de servicio', 'Almacenado'];
 // Los dos estados que el usuario puede forzar a mano (los otros son automáticos).
 export const ESTADOS_OVERRIDE = ['Fuera de servicio', 'Almacenado'];
-export const CATEGORIAS_ACTIVO = ['Control PS4', 'Control PS5', 'Consola PS4', 'Consola PS5', 'Pantalla', 'Juegos digitales', 'Juegos físicos', 'Otros'];
+// "Complementos" es lo que se le compra APARTE a un juego que ya se tiene:
+// mapas y DLC de Call of Duty, pases de temporada, monedas, skins. No es un
+// juego nuevo (esos van en Juegos digitales/físicos) sino un añadido de uno.
+export const CATEGORIAS_ACTIVO = ['Control PS4', 'Control PS5', 'Consola PS4', 'Consola PS5', 'Pantalla', 'Juegos digitales', 'Juegos físicos', 'Complementos', 'Otros'];
 
 // ============================================
 // Regla de estado automático (recalcular en CADA escritura que toque reparaciones):
