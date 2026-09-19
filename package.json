@@ -4,10 +4,11 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js",
+    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js",
     "probar-turno": "node --test scripts/probarTurnoPendiente.js",
     "probar-categorias": "node --test scripts/probarCategoriasActivos.js",
     "probar-juegos": "node --test scripts/probarJuegosDePlays.js",
+    "probar-filtro-pendiente": "node --test scripts/probarFiltroPendiente.js",
     "verificar-vocabulario": "node scripts/verificarVocabulario.js",
     "dev": "cross-env NODE_ENV=development node server.js",
     "start": "NODE_ENV=production node server.js"

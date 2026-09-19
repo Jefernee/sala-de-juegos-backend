@@ -387,12 +387,19 @@ export const getAllPlays = async (req, res) => {
     const regexCliente  = regexBusquedaFlexible(textoBusqueda);
     if (regexCliente) filtro.cliente = regexCliente;
 
-    const total      = await Play.countDocuments(filtro);
-    const plays      = await Play.find(filtro).sort({ fecha: -1, createdAt: -1 }).skip(skip).limit(limit);
     // Los turnos de tiempo pendiente que ya llegaron a su fin se cierran aca, al
     // leer (patron perezoso: sin un tercer reloj que ademas habria que duplicar
     // en Atlas). El WhatsApp ya lo mando el despachador por su cuenta.
-    await cerrarTurnosVencidos(plays);
+    //
+    // Va ANTES de contar y de filtrar a proposito: cerrar un turno BAJA el
+    // tiempo pendiente, y si se cerrara despues, un play al que se le acaba de
+    // terminar el pendiente ya habria entrado por el filtro "solo con
+    // pendiente" y saldria en la lista con 0 min. Lo mismo con el minimo: se
+    // colaba uno que ya habia bajado por debajo.
+    await cerrarTurnosVencidos();
+
+    const total      = await Play.countDocuments(filtro);
+    const plays      = await Play.find(filtro).sort({ fecha: -1, createdAt: -1 }).skip(skip).limit(limit);
     const totalPages = Math.ceil(total / limit);
 
     res.status(200).json({
@@ -422,9 +429,16 @@ export const getAllPlays = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────
 
 /**
- * Cierra los turnos que ya llegaron a su fin. Se llama al LEER la lista: es el
- * mismo patron perezoso que usa Finanzas para sus snapshots, y evita agregar un
- * tercer reloj al sistema (que ademas habria que duplicar en Atlas).
+ * Cierra los turnos que ya llegaron a su fin. Se llama al LEER la lista, ANTES
+ * de contarla y filtrarla: es el mismo patron perezoso que usa Finanzas para sus
+ * snapshots, y evita agregar un tercer reloj al sistema (que ademas habria que
+ * duplicar en Atlas).
+ *
+ * Busca los turnos abiertos por su cuenta en vez de recibir la pagina ya leida.
+ * Es lo que hace que la lista no mienta: al cerrar baja el tiempo pendiente, y
+ * si eso pasara despues del filtro, un play sin pendiente seguiria apareciendo
+ * en "solo con pendiente". Los turnos abiertos son un punado (casi siempre
+ * ninguno), asi que la consulta de mas no se siente.
  *
  * El aviso de WhatsApp ya lo mando el despachador por su cuenta; esto solo pone
  * al dia el pendiente. Si el turno llego al final se descuenta COMPLETO: es la
@@ -435,8 +449,18 @@ export const getAllPlays = async (req, res) => {
  *
  * Nunca lanza: si esto falla, la lista se tiene que ver igual.
  */
-const cerrarTurnosVencidos = async (plays) => {
-  const vencidos = plays.filter((p) => p.pendienteEnCurso && turnoVencido(p.pendienteEnCurso));
+const cerrarTurnosVencidos = async () => {
+  let abiertos = [];
+  try {
+    abiertos = await Play.find({ pendienteEnCurso: { $ne: null } })
+      .select('tiempoPendiente pendienteEnCurso')
+      .lean();
+  } catch (err) {
+    console.error('⚠️ No se pudieron leer los turnos en curso:', err.message);
+    return;
+  }
+
+  const vencidos = abiertos.filter((p) => turnoVencido(p.pendienteEnCurso));
   if (!vencidos.length) return;
 
   await Promise.all(vencidos.map(async (play) => {
@@ -450,9 +474,7 @@ const cerrarTurnosVencidos = async (plays) => {
         { $set: { tiempoPendiente: queda, pendienteEnCurso: null } }
       );
       if (r.modifiedCount > 0) {
-        // El documento ya leido tambien, para que la respuesta salga al dia.
-        play.tiempoPendiente = queda;
-        play.pendienteEnCurso = null;
+        // No hace falta tocar el documento en memoria: la lista se lee despues.
         console.log(`⏳ Play ${play._id}: turno de ${usados} min cerrado. Pendiente: ${queda} min.`);
       }
     } catch (err) {
