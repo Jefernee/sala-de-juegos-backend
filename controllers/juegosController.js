@@ -179,7 +179,7 @@ export const getVitrina = async (req, res) => {
   try {
     const [juegos, ranking] = await Promise.all([
       Juego.find({ padre: null, noSeOfrece: false, imagenUrl: { $ne: null } })
-        .select('nombre imagenUrl link enVitrina clave')
+        .select('nombre imagenUrl imagenAncho imagenAlto link enVitrina clave')
         .lean(),
       rankingPorClave(),
     ]);
@@ -245,6 +245,8 @@ export const crearJuego = async (req, res) => {
       nombre: limpio,
       padre: padre || null,
       imagenUrl: portadaUrl,
+      imagenAncho: req.cloudinaryPortadaAncho || null,
+      imagenAlto: req.cloudinaryPortadaAlto || null,
       // Sin portada no puede salir en la página (el modelo lo vuelve a revisar).
       enVitrina: portadaUrl ? req.body.enVitrina === true : false,
       link: link?.trim() || null,
@@ -306,9 +308,13 @@ export const actualizarJuego = async (req, res) => {
     if (req.cloudinaryPortadaUrl) {
       portadaVieja = ficha.imagenUrl;
       ficha.imagenUrl = req.cloudinaryPortadaUrl;
+      ficha.imagenAncho = req.cloudinaryPortadaAncho || null;
+      ficha.imagenAlto = req.cloudinaryPortadaAlto || null;
     } else if (req.body.quitarPortada === true) {
       portadaVieja = ficha.imagenUrl;
       ficha.imagenUrl = null;
+      ficha.imagenAncho = null;
+      ficha.imagenAlto = null;
     }
 
     if (req.body.enVitrina !== undefined) {

@@ -13,6 +13,7 @@
     "probar-migrar-juegos": "node --test scripts/probarMigrarJuegos.js",
     "probar-juegos-modulo": "node --test scripts/probarJuegosController.js",
     "probar-carrusel": "node --test scripts/probarCarruselJuegos.js",
+    "medir-portadas": "node scripts/medirPortadas.js",
     "verificar-vocabulario": "node scripts/verificarVocabulario.js",
     "dev": "cross-env NODE_ENV=development node server.js",
     "start": "NODE_ENV=production node server.js"

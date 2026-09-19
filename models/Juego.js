@@ -47,6 +47,17 @@ const juegoSchema = new mongoose.Schema(
     // del inventario (la caja, el recibo) y esta es la que ve el cliente.
     imagenUrl: { type: String, default: null },
 
+    // Medidas de la portada, tal como quedó en Cloudinary.
+    //
+    // No son un lujo: el carrusel de la página le da a cada foto el ancho que
+    // le corresponde por su forma, y las de más allá se bajan recién cuando
+    // hacen falta. Sin las medidas, una foto que todavía no llegó mide CERO,
+    // la fila entera mide mal y el carrusel cree que todo cabe en pantalla.
+    // Con ellas el navegador reserva el espacio exacto desde el principio, y
+    // de paso la página no da el salto feo cuando cada imagen aparece.
+    imagenAncho: { type: Number, default: null },
+    imagenAlto: { type: Number, default: null },
+
     // Se muestra en la página pública. Sin portada no se puede activar: una
     // tarjeta sin foto se ve rota (la regla se repite en el controlador).
     enVitrina: { type: Boolean, default: false },

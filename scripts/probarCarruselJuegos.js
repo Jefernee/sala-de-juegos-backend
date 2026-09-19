@@ -7,9 +7,10 @@
 // mira desde adentro: nadie del local abre la página pública todos los días.
 // Se prueban las dos cosas que se rompen en silencio:
 //
-//   1. Las flechas. Si la cuenta de "¿queda algo hacia ese lado?" falla, queda
-//      un botón que no hace nada o —peor— una flecha apagada con juegos
-//      escondidos detrás que el cliente nunca ve.
+//   1. El giro sin fin. La fila se dibuja tres veces y se reubica sola entre
+//      copias; si la cuenta falla, o el carrusel se frena contra un borde
+//      —que es lo que se quiso sacar— o da un tirón visible a mitad del
+//      deslizamiento, justo cuando alguien lo está usando.
 //   2. Las reglas de tamaño. Las 50 portadas vienen de todas las formas: 14
 //      verticales tipo carátula, 17 casi cuadradas y 19 apaisadas. Van como
 //      una tira de cine —mismo alto, ancho natural— porque obligarlas a un
@@ -40,7 +41,7 @@ try {
   console.error(err.message);
   process.exit(1);
 }
-const { puntasVisibles, pasoDeScroll, progresoDeScroll, MARGEN, PASO } = logica;
+const { COPIAS, acomodarCiclo, pasoDeScroll, progresoCiclico, PASO } = logica;
 
 const css = fs.readFileSync(RUTA_CSS, 'utf8');
 const componente = fs.readFileSync(RUTA_COMPONENTE, 'utf8');
@@ -48,45 +49,52 @@ const componente = fs.readFileSync(RUTA_COMPONENTE, 'utf8');
 // Una fila de 50 tarjetas en una ventana de 1200 px.
 const fila = (scrollLeft) => ({ scrollLeft, clientWidth: 1200, scrollWidth: 9500 });
 
-// ─── LAS FLECHAS ─────────────────────────────────────────────────────────────
+// ─── EL GIRO SIN FIN ─────────────────────────────────────────────────────────
 
-test('al principio solo se puede ir a la derecha', () => {
-  const { izquierda, derecha } = puntasVisibles(fila(0));
-  assert.equal(izquierda, false, 'no hay nada hacia atrás');
-  assert.equal(derecha, true, 'sí hay juegos hacia adelante');
+// Una vuelta de 50 tarjetas mide 3000 px; el carrete son tres, o sea 9000.
+const COPIA = 3000;
+const enPista = (scrollLeft) => ({ scrollLeft, anchoCopia: COPIA });
+
+test('son tres copias: con dos no alcanza el margen', () => {
+  assert.equal(COPIAS, 3);
 });
 
-test('en el medio se puede ir para los dos lados', () => {
-  const { izquierda, derecha } = puntasVisibles(fila(4000));
-  assert.equal(izquierda, true);
-  assert.equal(derecha, true);
+test('en la copia del medio no se toca nada', () => {
+  // Toda la zona buena va de media copia a copia y media.
+  assert.equal(acomodarCiclo(enPista(COPIA)), null, 'el arranque está en la zona buena');
+  assert.equal(acomodarCiclo(enPista(COPIA * 1.2)), null);
+  assert.equal(acomodarCiclo(enPista(COPIA * 0.8)), null);
 });
 
-test('al final solo se puede volver', () => {
-  const { izquierda, derecha } = puntasVisibles(fila(9500 - 1200));
-  assert.equal(izquierda, true);
-  assert.equal(derecha, false, 'no puede quedar una flecha que no hace nada');
+test('si se desliza hacia atrás de más, se reubica una vuelta adelante', () => {
+  // Es lo que hace que NO haya freno a la izquierda: se sigue deslizando y
+  // por detrás la fila vuelve al medio, sin que se note.
+  assert.equal(acomodarCiclo(enPista(COPIA * 0.4)), COPIA * 1.4);
+  assert.equal(acomodarCiclo(enPista(0)), COPIA, 'ni siquiera el tope de la izquierda frena');
 });
 
-test('el redondeo del navegador no deja una flecha fantasma', () => {
-  // Chrome deja 8299.6 de 8300: sin holgura, la flecha derecha quedaría
-  // encendida para siempre en el final.
-  const casi = { scrollLeft: 9500 - 1200 - 3, clientWidth: 1200, scrollWidth: 9500 };
-  assert.equal(puntasVisibles(casi).derecha, false, 'a 3 px del final ya es el final');
-  assert.equal(puntasVisibles({ ...casi, scrollLeft: 2 }).izquierda, false, 'y 2 px es el principio');
-  assert.ok(MARGEN >= 2 && MARGEN <= 20, 'la holgura tiene que ser chica, no tapar juegos');
+test('si se desliza hacia adelante de más, se reubica una vuelta atrás', () => {
+  assert.equal(acomodarCiclo(enPista(COPIA * 1.6)), COPIA * 0.6);
+  // Desde muy lejos salta las copias que haga falta de una sola vez: dos
+  // correcciones seguidas sí se notan como un tirón.
+  assert.equal(acomodarCiclo(enPista(COPIA * 3)), COPIA);
 });
 
-test('si todos los juegos entran en pantalla, no hay flechas', () => {
-  const cortito = { scrollLeft: 0, clientWidth: 1200, scrollWidth: 1200 };
-  const { izquierda, derecha } = puntasVisibles(cortito);
-  assert.equal(izquierda, false);
-  assert.equal(derecha, false, 'con 3 juegos no se muestra una flecha inútil');
+test('la reubicación siempre cae en la zona buena', () => {
+  // Si dejara la fila fuera del medio, la corrección se dispararía otra vez y
+  // el carrusel temblaría.
+  for (const donde of [0, 100, COPIA * 0.49, COPIA * 1.51, COPIA * 2, COPIA * 2.9]) {
+    const destino = acomodarCiclo(enPista(donde));
+    if (destino === null) continue;
+    assert.equal(acomodarCiclo(enPista(destino)), null,
+      `al reubicar desde ${donde} quedó en ${destino}, que vuelve a corregirse`);
+  }
 });
 
-test('sin datos no revienta', () => {
-  assert.deepEqual(puntasVisibles(), { izquierda: false, derecha: false });
-  assert.deepEqual(puntasVisibles({}), { izquierda: false, derecha: false });
+test('sin medidas todavía, no se reubica nada', () => {
+  // Antes de que el navegador mida la fila, mover algo la rompería.
+  assert.equal(acomodarCiclo({ scrollLeft: 0, anchoCopia: 0 }), null);
+  assert.equal(acomodarCiclo(), null);
 });
 
 // ─── CUÁNTO AVANZA CADA TOQUE ────────────────────────────────────────────────
@@ -111,30 +119,24 @@ test('un ancho raro no rompe el cálculo', () => {
 
 // ─── LA BARRITA DE POSICIÓN ──────────────────────────────────────────────────
 
-test('la barrita dice qué parte se ve y dónde está', () => {
-  const alPrincipio = progresoDeScroll(fila(0));
-  assert.equal(alPrincipio.avance, 0);
-  assert.ok(alPrincipio.visible > 0.12 && alPrincipio.visible < 0.14,
-    'de 9500 px de fila, en 1200 se ve algo más de un octavo');
-
-  const alFinal = progresoDeScroll(fila(9500 - 1200));
-  assert.equal(alFinal.avance, 1, 'al final la barrita llega al tope');
-
-  const medio = progresoDeScroll(fila((9500 - 1200) / 2));
-  assert.ok(Math.abs(medio.avance - 0.5) < 0.01, 'a mitad de camino, la mitad');
+test('la barrita mide contra UNA vuelta, no contra las tres copias', () => {
+  const { visible } = progresoCiclico({ scrollLeft: COPIA, clientWidth: 1200, anchoCopia: COPIA });
+  assert.ok(visible > 0.39 && visible < 0.41,
+    'en 1200 px se ve un 40% de una vuelta de 3000, no un 13% del carrete entero');
 });
 
-test('si todo entra en pantalla, no hay barrita que mostrar', () => {
-  const { visible, avance } = progresoDeScroll({ scrollLeft: 0, clientWidth: 1200, scrollWidth: 1200 });
-  assert.equal(visible, 1, 'visible = 1 es la señal de que no hay nada escondido');
-  assert.equal(avance, 0);
+test('la barrita recorre y vuelve a empezar, como el carrusel', () => {
+  const avance = (x) => progresoCiclico({ scrollLeft: x, clientWidth: 1200, anchoCopia: COPIA }).avance;
+  assert.equal(avance(COPIA), 0, 'el principio de cualquier vuelta es el principio');
+  assert.ok(Math.abs(avance(COPIA * 1.5) - 0.5) < 0.01, 'a media vuelta, la mitad');
+  assert.equal(avance(COPIA * 2), 0, 'y en la vuelta siguiente vuelve a arrancar');
 });
 
-test('la barrita nunca se sale de sus límites', () => {
-  // El rebote del iPhone deja scrollLeft negativo o pasado del final.
-  assert.equal(progresoDeScroll({ scrollLeft: -80, clientWidth: 1200, scrollWidth: 9500 }).avance, 0);
-  assert.equal(progresoDeScroll({ scrollLeft: 99999, clientWidth: 1200, scrollWidth: 9500 }).avance, 1);
-  assert.deepEqual(progresoDeScroll(), { visible: 1, avance: 0 });
+test('la barrita aguanta el rebote del iPhone', () => {
+  // El rebote deja scrollLeft negativo un instante.
+  const { avance } = progresoCiclico({ scrollLeft: -80, clientWidth: 1200, anchoCopia: COPIA });
+  assert.ok(avance >= 0 && avance <= 1, `se salió de los límites: ${avance}`);
+  assert.deepEqual(progresoCiclico(), { visible: 1, avance: 0 });
 });
 
 // ─── QUE SE VEA BIEN EN CUALQUIER PANTALLA ───────────────────────────────────
@@ -230,23 +232,62 @@ test('ninguna otra regla puede recortar las portadas del carrusel', () => {
 // ─── EL COMPONENTE ───────────────────────────────────────────────────────────
 
 test('el componente usa la lógica probada, no su propia cuenta', () => {
-  assert.match(componente, /puntasVisibles\(/, 'las flechas salen de la función probada');
-  assert.match(componente, /pasoDeScroll\(/, 'el avance también');
-  assert.ok(!/scrollLeft\s*>\s*\d/.test(componente), 'no puede haber una cuenta suelta dentro del componente');
+  assert.match(componente, /acomodarCiclo\(/, 'el giro sale de la función probada');
+  assert.match(componente, /progresoCiclico\(/, 'y la barrita también');
+  assert.ok(!/scrollLeft\s*[><]\s*\d/.test(componente), 'no puede haber una cuenta suelta dentro del componente');
 });
 
 test('cada portada dice de qué juego es', () => {
   assert.match(componente, /alt=\{juego\.nombre\}/, 'sin alt, un lector de pantalla no dice nada');
-  const imgs = (componente.match(/<img /g) || []).length;
+  // El \s cubre que la etiqueta esté partida en varias líneas por los atributos.
+  const imgs = (componente.match(/<img\s/g) || []).length;
   assert.equal(imgs, 1, 'una sola imagen por tarjeta: la copia borrosa ya no hace falta');
 });
 
-test('las flechas se apagan y se explican solas', () => {
-  assert.match(componente, /disabled=\{!puedeIzq\}/);
-  assert.match(componente, /disabled=\{!puedeDer\}/);
+test('cada foto lleva sus medidas: sin eso la fila mide mal y la barrita miente', () => {
+  // Las fotos de más allá se bajan recién cuando hacen falta, y una que no
+  // llegó mide CERO. Sin width/height, la fila entera mide mal desde el
+  // arranque: el carrusel cree que todo cabe en pantalla y la barrita sale
+  // llena, como si no hubiera nada más que ver.
+  assert.match(componente, /width=\{juego\.ancho \|\| undefined\}/);
+  assert.match(componente, /height=\{juego\.alto \|\| undefined\}/);
+});
+
+test('se vuelve a medir cuando cada foto termina de cargar', () => {
+  assert.match(componente, /onLoad=\{remedir\}/, 'las medidas cambian a medida que llegan');
+  assert.match(componente, /tocado\.current/,
+    'pero si la persona ya tocó el carrusel, no se le mueve la fila por debajo');
+});
+
+test('el componente dibuja las tres copias y solo le lee una al lector', () => {
+  assert.match(componente, /copias\.map\(/, 'la fila se repite para poder girar');
+  assert.match(componente, /aria-hidden=\{copia !== 1/,
+    'repetir 150 nombres a un lector de pantalla sería ruido');
+  assert.match(componente, /key=\{`\$\{copia\}-\$\{juego\.id\}`\}/,
+    'cada copia necesita su propia clave o React se confunde');
+});
+
+test('el salto entre copias va sin animación', () => {
+  assert.match(componente, /scrollBehavior = "auto"/,
+    'con el desplazamiento suave, el salto se veria como un viaje relámpago');
+  assert.match(componente, /ubicarSinAnimar\(/);
+});
+
+test('el carrusel no usa scroll-snap: pelea con el giro', () => {
+  assert.ok(!/scroll-snap-type:\s*x/.test(css),
+    'el imán del snap tira de la fila justo cuando se está reubicando');
+});
+
+test('las flechas se explican solas y solo salen si hay adónde ir', () => {
   assert.match(componente, /aria-label="Ver juegos anteriores"/);
   assert.match(componente, /aria-label="Ver más juegos"/);
+  assert.ok(!componente.includes('disabled={!puedeIzq}'),
+    'ya no se apagan: el carrusel gira sin fin, siempre hay adónde ir');
+  const conFlechas = (componente.match(/\{hayMas && \(/g) || []).length;
+  assert.ok(conFlechas >= 2, 'con todo a la vista, una flecha que da la vuelta a nada confunde');
 });
+
+
 
 test('sin juegos no se dibuja un carrusel vacío', () => {
   assert.match(componente, /if \(!juegos\?\.length\) return null/);
@@ -265,7 +306,7 @@ test('las tarjetas no son enlaces: no puede haber un toque que lleve a la nada',
     !/href=/.test(componente),
     'los 50 juegos apuntaban al mismo catálogo genérico de PS Plus, que ya está en el botón de abajo'
   );
-  assert.match(componente, /<article className="cj-item"/);
+  assert.match(componente, /<article[\s\S]{0,80}className="cj-item"/);
 });
 
 test('la barrita es informativa, no un control diminuto', () => {

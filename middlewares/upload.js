@@ -244,6 +244,11 @@ const procesarImagenesBase64 = (campos) => async (req, res, next) => {
 
       req[campo.reqUrl] = result.secure_url;
       req[campo.reqPublicId] = result.public_id;
+      // Las medidas, para quien las pida. Sirven para reservarle el espacio a
+      // la foto ANTES de que baje: sin eso, una imagen que todavía no llegó
+      // mide cero y desacomoda lo que la rodea.
+      if (campo.reqAncho) req[campo.reqAncho] = result.width || null;
+      if (campo.reqAlto) req[campo.reqAlto] = result.height || null;
       publicIdsSubidos.push(result.public_id);
 
       // Limpiar campos base64 del body para no guardarlos en MongoDB
@@ -318,6 +323,8 @@ export const uploadPortadaJuegoToCloudinary = procesarImagenesBase64([
     bodyMime: "portadaMimeType",
     reqUrl: "cloudinaryPortadaUrl",
     reqPublicId: "cloudinaryPortadaPublicId",
+    reqAncho: "cloudinaryPortadaAncho",
+    reqAlto: "cloudinaryPortadaAlto",
     etiqueta: "portada del juego",
   },
 ]);
