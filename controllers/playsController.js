@@ -12,6 +12,7 @@ import { notificarFinSesion } from '../utils/notificacionesWhatsApp.js';
 import { alertarAvisoWhatsAppFallido } from '../utils/alertasEmail.js';
 import { regexBusquedaFlexible } from '../utils/textoBusqueda.js';
 import { construirTopClientes } from '../utils/rankingClientes.js';
+import ActivoSala, { CATEGORIAS_JUEGO } from '../models/ActivoSala.js';
 
 // ─────────────────────────────────────────────────────────────────
 // Helpers de costo y tipo
@@ -286,6 +287,40 @@ export const regenerarReporteDeFecha = async (fechaPlay) => {
   } catch (err) {
     // No propagar el error: el play ya se guardó, el reporte se puede regenerar luego
     console.error('⚠️ Error al regenerar reporte mensual automáticamente:', err.message);
+  }
+};
+
+// ─────────────────────────────────────────────────────────────────
+// GET /api/plays/juegos — Los juegos que la sala tiene como activo.
+//
+// Devuelve el nombre de cada activo con categoría "Juegos digitales" o
+// "Juegos físicos" para que el formulario del play los sume a su lista fija
+// de "Juegos Jugados". Así, comprar un juego y anotarlo en Activos basta
+// para que aparezca en el selector: no hay que tocar código ni publicar.
+//
+// Vive en /api/plays y no en /api/activos-sala a propósito: un vendedor tiene
+// acceso a Control de plays pero NO al módulo de Activos, y pedirlo por allá
+// le devolvería un 403 (ver middlewares/roles.js).
+// ─────────────────────────────────────────────────────────────────
+
+export const getJuegosDeActivos = async (req, res) => {
+  try {
+    const nombres = await ActivoSala.distinct('nombre', { categoria: { $in: CATEGORIAS_JUEGO } });
+
+    // distinct no repite, pero los nombres vienen como los escribió la persona:
+    // se recortan los espacios y se ordenan para que el selector no cambie de
+    // orden entre una carga y otra.
+    const juegos = nombres
+      .map((n) => (n || '').trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, 'es'));
+
+    return res.status(200).json({ data: juegos });
+  } catch (error) {
+    console.error('❌ Error al leer los juegos de activos:', error.message);
+    // El formulario tiene su lista fija de respaldo: que esto falle no puede
+    // dejar a nadie sin registrar un play.
+    return res.status(500).json({ message: 'No se pudieron leer los juegos de activos', data: [] });
   }
 };
 

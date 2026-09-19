@@ -10,11 +10,15 @@ import {
   deletePlay,
   notificarFinSesionManual,
   iniciarTiempoPendiente,
-  detenerTiempoPendiente
+  detenerTiempoPendiente,
+  getJuegosDeActivos
 } from '../controllers/playsController.js';
 
 // Todas las rutas requieren autenticación
 router.get('/', authMiddleware, getAllPlays);
+// Los juegos que la sala tiene como activo, para el selector "Juegos Jugados".
+// IMPORTANTE: va ANTES de '/:id' o Express lo toma como el id "juegos".
+router.get('/juegos', authMiddleware, getJuegosDeActivos);
 router.get('/:id', authMiddleware, getPlayById);
 router.post('/', authMiddleware, createPlay);
 // Aviso de fin de sesión disparado por el frontend (cronómetro en 0)

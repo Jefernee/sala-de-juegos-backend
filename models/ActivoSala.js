@@ -16,6 +16,12 @@ export const ESTADOS_OVERRIDE = ['Fuera de servicio', 'Almacenado'];
 // juego nuevo (esos van en Juegos digitales/físicos) sino un añadido de uno.
 export const CATEGORIAS_ACTIVO = ['Control PS4', 'Control PS5', 'Consola PS4', 'Consola PS5', 'Pantalla', 'Juegos digitales', 'Juegos físicos', 'Complementos', 'Otros'];
 
+// Las categorías que son JUEGOS. El formulario de plays las lee para sumar
+// cada juego comprado a la lista de "Juegos Jugados" (ver getJuegosDeActivos
+// en controllers/playsController.js): agregar una categoría de juego acá la
+// hace aparecer sola en el selector del play, sin tocar el formulario.
+export const CATEGORIAS_JUEGO = ['Juegos digitales', 'Juegos físicos'];
+
 // ============================================
 // Regla de estado automático (recalcular en CADA escritura que toque reparaciones):
 //   - estadoOverride != null                    → gana el override
