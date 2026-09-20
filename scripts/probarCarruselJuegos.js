@@ -170,20 +170,6 @@ test('un nombre largo no ensancha la tarjeta más que su foto', () => {
     'pero después tiene que ocupar el ancho que definió la foto');
 });
 
-test('en el teléfono no se muestran las flechas: ahí se arrastra', () => {
-  assert.match(css, /\.cj-flecha\s*{[^}]*display:\s*none/s, 'apagadas por defecto');
-  assert.match(css, /@media\s*\(hover:\s*hover\)\s*and\s*\(min-width:\s*768px\)/,
-    'solo aparecen con mouse y con espacio');
-});
-
-test('las flechas no pueden empujar la página a lo ancho', () => {
-  const izq = css.match(/\.cj-flecha--izq\s*{\s*left:\s*(-?\d+)px/);
-  const der = css.match(/\.cj-flecha--der\s*{\s*right:\s*(-?\d+)px/);
-  assert.ok(izq && der, 'las flechas tienen que estar posicionadas');
-  assert.ok(Number(izq[1]) >= 0, 'una flecha fuera del borde crea barra horizontal en pantallas angostas');
-  assert.ok(Number(der[1]) >= 0);
-});
-
 test('un nombre largo no desalinea la fila', () => {
   assert.match(css, /\.cj-nombre\s*{[^}]*-webkit-line-clamp:\s*2/s, 'máximo dos líneas');
   assert.match(css, /\.cj-nombre\s*{[^}]*min-height/s, 'y una altura pareja para todas');
@@ -233,7 +219,6 @@ test('ninguna otra regla puede recortar las portadas del carrusel', () => {
 
 test('el componente usa la lógica probada, no su propia cuenta', () => {
   assert.match(componente, /acomodarCiclo\(/, 'el giro sale de la función probada');
-  assert.match(componente, /progresoCiclico\(/, 'y la barrita también');
   assert.ok(!/scrollLeft\s*[><]\s*\d/.test(componente), 'no puede haber una cuenta suelta dentro del componente');
 });
 
@@ -278,16 +263,14 @@ test('el carrusel no usa scroll-snap: pelea con el giro', () => {
     'el imán del snap tira de la fila justo cuando se está reubicando');
 });
 
-test('las flechas se explican solas y solo salen si hay adónde ir', () => {
-  assert.match(componente, /aria-label="Ver juegos anteriores"/);
-  assert.match(componente, /aria-label="Ver más juegos"/);
-  assert.ok(!componente.includes('disabled={!puedeIzq}'),
-    'ya no se apagan: el carrusel gira sin fin, siempre hay adónde ir');
-  const conFlechas = (componente.match(/\{hayMas && \(/g) || []).length;
-  assert.ok(conFlechas >= 2, 'con todo a la vista, una flecha que da la vuelta a nada confunde');
+test('sin flechas, sin barrita y sin contador: la fila anda sola', () => {
+  // Los dos recuadros negros de los costados tapaban carátulas y en el
+  // teléfono competían con el dedo. Con la fila andando sola ya se ve que hay
+  // más, así que ni el cartel ni los botones hacen falta.
+  assert.ok(!componente.includes('cj-flecha'), 'las flechas se quitaron a propósito');
+  assert.ok(!componente.includes('cj-barra'), 'la barrita se quitó a propósito');
+  assert.ok(!componente.includes('cj-contador'), 'el contador se quitó a propósito');
 });
-
-
 
 test('sin juegos no se dibuja un carrusel vacío', () => {
   assert.match(componente, /if \(!juegos\?\.length\) return null/);
@@ -309,22 +292,49 @@ test('las tarjetas no son enlaces: no puede haber un toque que lleve a la nada',
   assert.match(componente, /<article[\s\S]{0,80}className="cj-item"/);
 });
 
-test('la barrita es informativa, no un control diminuto', () => {
-  assert.match(componente, /className="cj-barra" aria-hidden="true"/,
-    'no se le lee al lector de pantalla: las flechas ya dicen el estado');
-  assert.ok(!/onClick[\s\S]{0,40}cj-barra/.test(componente),
-    'un riel de 4 px es un blanco imposible para un dedo: no puede ser tocable');
-  const alto = css.match(/\.cj-barra\s*{[^}]*height:\s*(\d+)px/s);
-  assert.ok(alto && Number(alto[1]) <= 6, 'tiene que ser una línea fina, no una barra de scroll');
+// ─── LA CINTA QUE ANDA SOLA ──────────────────────────────────────────────────
+
+test('la cinta se anima con CSS, no empujando la barra de desplazamiento', () => {
+  // Empujando `scrollLeft` cuadro a cuadro se veía "pegada": ese empujón pasa
+  // por el hilo principal y rehace el maquetado en cada paso. Una animación de
+  // `transform` la lleva el compositor y sale pareja.
+  assert.ok(!/setInterval\(/.test(componente), 'un temporizador se ve a tirones');
+  assert.ok(!/requestAnimationFrame\(/.test(componente), 'tampoco cuadro a cuadro a mano');
+  assert.match(css, /\.cj-tira\s*\{[^}]*animation:\s*cj-correr/s, 'la tira se anima sola');
+  assert.match(css, /@keyframes cj-correr[^}]*\{[\s\S]*?translate3d\(-33\.3+%/,
+    'corre justo UNA copia de las tres, para que el salto caiga en un dibujo igual');
 });
 
-test('la barrita se esconde cuando no hay nada más que ver', () => {
-  assert.match(componente, /hayMas && \(/, 'con pocos juegos no se muestra una barra llena');
-  assert.match(componente, /barra\.visible < 1/);
+test('se para al tocarla y sigue de una al soltar', () => {
+  // Con `animation-play-state` se reanuda DONDE IBA y al instante. Con un
+  // temporizador de por medio, quien la soltaba se quedaba esperando un rato.
+  assert.match(css, /animation-play-state:\s*paused/, 'se pausa, no se reinicia');
+  assert.match(css, /\.cj-pista:hover \.cj-tira/, 'el mouse encima la frena para poder leer');
+  assert.match(css, /\.cj-tira--quieta/, 'y el dedo encima también');
+  assert.match(componente, /onPointerUp=\{\(\) => setTocando\(false\)\}/, 'al soltar, sigue');
 });
 
-test('el teclado mueve una pantalla, no tres píxeles', () => {
-  assert.match(componente, /ArrowRight/);
-  assert.match(componente, /ArrowLeft/);
-  assert.match(componente, /preventDefault/, 'para que no lo pise el desplazamiento del navegador');
+test('la velocidad no depende de cuántos juegos haya', () => {
+  // Con una duración fija, una cinta de 50 y una de 5 correrían a velocidades
+  // distintas. Se fija en píxeles por segundo y la duración se calcula.
+  assert.match(componente, /PX_POR_SEGUNDO/, 'la velocidad se fija en px por segundo');
+  assert.match(componente, /anchoCopia \/ PX_POR_SEGUNDO/, 'y la duración sale del ancho real');
+});
+
+test('aunque ande sola, se puede arrastrar', () => {
+  // Si alguien quiere adelantarse a mirar, tiene que poder: una cinta que solo
+  // se deja mirar es peor que una que no se mueve.
+  assert.match(css, /\.cj-pista\s*\{[^}]*overflow-x:\s*auto/s, 'la ventana se desplaza');
+  assert.match(componente, /onScroll=\{alDesplazar\}/, 'y el giro sin fin sigue vivo al arrastrar');
+  assert.match(componente, /acomodarCiclo\(/, 'con la misma lógica probada arriba');
+});
+
+test('quien pidió menos movimiento no recibe la cinta andando', () => {
+  // Se busca el bloque a mano: una expresión con saltos de línea dentro es
+  // justo lo que se colapsa al escribirla desde un script.
+  const desde = css.indexOf('@media (prefers-reduced-motion: reduce)');
+  assert.ok(desde !== -1, 'tiene que haber una regla para eso');
+  const cierre = css.indexOf(String.fromCharCode(10) + '}', desde);
+  const bloque = css.slice(desde, cierre + 2);
+  assert.match(bloque, /\.cj-tira\s*\{[^}]*animation:\s*none/s);
 });
