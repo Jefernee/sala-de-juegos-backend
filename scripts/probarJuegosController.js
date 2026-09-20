@@ -133,7 +133,7 @@ test('un juego con compra crea el activo por el camino de siempre', async () => 
   await crearJuego({
     body: {
       nombre: 'Tekken 8',
-      compra: { tipo: 'digital', costo: '30000', fechaCompra: '2026-09-19', nombreInventario: 'Juego: Tekken 8' },
+      compra: { tipo: 'digital', costo: '30000', fechaCompra: '2026-09-19', usuario: 'jefernee' },
     },
   }, res);
 
@@ -145,9 +145,63 @@ test('un juego con compra crea el activo por el camino de siempre', async () => 
   assert.equal(registrado.costo, 30000);
   assert.equal(registrado.numeroPlaca, 77, 'con su placa consecutiva');
   assert.equal(registrado.categoria, 'Juegos digitales');
-  assert.equal(registrado.nombre, 'Juego: Tekken 8', 'el inventario usa su propio nombre');
+  // EL NOMBRE ES SIEMPRE EL DEL JUEGO. Antes había un campo para reescribirlo
+  // y terminó usándose para anotar de quién era la copia, así que en Activos
+  // 17 de 19 filas de juegos no decían de qué juego eran.
+  assert.equal(registrado.nombre, 'Tekken 8', 'la fila de Activos tiene que decir qué juego es');
+  assert.equal(registrado.descripcion, 'jefernee', 'y de quién es va debajo, en la descripción');
   assert.ok(registrado.juegoId, 'y queda enlazado a la ficha');
   assert.ok(registrado.fechaCompra instanceof Date, 'con fecha: si no, no cae en ningún mes');
+});
+
+test('la foto de la factura se guarda igual que en Activos', async () => {
+  // El formulario de compra de Juegos no tenía dónde adjuntarla, así que de
+  // 19 compras de juegos NINGUNA tenía factura. Entra por el mismo campo que
+  // usa Activos y se guarda en el mismo lugar: es la misma factura, entre por
+  // donde entre.
+  armarBase();
+  let registrado = null;
+  const originalSave = ActivoSala.prototype.save;
+  ActivoSala.prototype.save = async function () { registrado = this; return this; };
+  const { default: Counter } = await import('../models/Counter.js');
+  const originalCounter = Counter.findByIdAndUpdate;
+  Counter.findByIdAndUpdate = async () => ({ seq: 78 });
+
+  const res = fakeRes();
+  await crearJuego({
+    // El middleware de subida deja la URL acá antes de llegar al controlador.
+    cloudinaryFacturaUrl: 'https://res.cloudinary.com/x/factura.jpg',
+    body: {
+      nombre: 'Tekken 9',
+      compra: { tipo: 'digital', costo: '25000', fechaCompra: '2026-09-19' },
+    },
+  }, res);
+
+  ActivoSala.prototype.save = originalSave;
+  Counter.findByIdAndUpdate = originalCounter;
+
+  assert.equal(res.statusCode, 201);
+  assert.equal(registrado.imagenFacturaUrl, 'https://res.cloudinary.com/x/factura.jpg');
+});
+
+test('sin foto de factura, el campo queda en null y no en undefined', async () => {
+  // Con undefined el campo ni se guarda, y después una edición no lo encuentra.
+  armarBase();
+  let registrado = null;
+  const originalSave = ActivoSala.prototype.save;
+  ActivoSala.prototype.save = async function () { registrado = this; return this; };
+  const { default: Counter } = await import('../models/Counter.js');
+  const originalCounter = Counter.findByIdAndUpdate;
+  Counter.findByIdAndUpdate = async () => ({ seq: 79 });
+
+  const res = fakeRes();
+  await crearJuego({
+    body: { nombre: 'Tekken 10', compra: { tipo: 'digital', costo: '1000', fechaCompra: '2026-09-19' } },
+  }, res);
+
+  ActivoSala.prototype.save = originalSave;
+  Counter.findByIdAndUpdate = originalCounter;
+  assert.equal(registrado.imagenFacturaUrl, null);
 });
 
 test('una compra sin fecha se rechaza: quedaría fuera del estado de resultados', async () => {

@@ -9,7 +9,10 @@
 //     vendedor igual ve los juegos al cobrar, por GET /api/plays/juegos.
 import express from 'express';
 import authMiddleware from '../middlewares/auth.js';
-import { uploadPortadaJuegoToCloudinary } from '../middlewares/upload.js';
+import {
+  uploadPortadaJuegoToCloudinary,
+  uploadActivoImagesToCloudinary,   // de acá sale la foto de la factura
+} from '../middlewares/upload.js';
 import {
   getJuegos,
   crearJuego,
@@ -27,6 +30,7 @@ router.get('/', authMiddleware, getJuegos);
 router.post('/',
   authMiddleware,
   uploadPortadaJuegoToCloudinary,   // procesa portadaBase64 (opcional)
+  uploadActivoImagesToCloudinary,   // y imagenFacturaBase64, si vino con compra
   crearJuego
 );
 
@@ -42,8 +46,11 @@ router.delete('/:id', authMiddleware, borrarJuego);
 // resulta que se compró"; darla de baja es el de vuelta. Las tres tocan los
 // reportes del mes de la compra, por eso viven juntas y no dentro del PUT del
 // juego, que no toca plata.
-router.post('/:id/compra', authMiddleware, agregarCompra);
-router.put('/:id/compra/:placa', authMiddleware, editarCompra);
+// La foto de la factura viaja igual que en Activos (imagenFacturaBase64), y
+// se guarda en el mismo campo del activo: es la misma factura, entre por
+// donde entre.
+router.post('/:id/compra', authMiddleware, uploadActivoImagesToCloudinary, agregarCompra);
+router.put('/:id/compra/:placa', authMiddleware, uploadActivoImagesToCloudinary, editarCompra);
 router.delete('/:id/compra/:placa', authMiddleware, borrarCompra);
 
 export default router;

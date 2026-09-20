@@ -63,7 +63,7 @@ const rankingPorClave = async () => {
 // Valida una compra y la deja lista para registrarActivo. Devuelve { error }
 // si algo no sirve, o { datos } si está todo bien. Lo comparten los tres
 // caminos por los que puede nacer una compra, para que las reglas sean una.
-const validarCompra = (compra, { nombre, esComplemento }) => {
+const validarCompra = (compra, { nombre, esComplemento, facturaUrl = null }) => {
   const costo = Number(compra?.costo);
   if (!Number.isFinite(costo) || costo <= 0) {
     return { error: 'El costo de la compra debe ser mayor a 0' };
@@ -81,11 +81,21 @@ const validarCompra = (compra, { nombre, esComplemento }) => {
     CATEGORIA_POR_TIPO[compra.tipo] || (esComplemento ? 'Complementos' : 'Juegos digitales');
   return {
     datos: {
-      nombre: String(compra.nombreInventario || nombre).trim(),
+      // EL NOMBRE ES SIEMPRE EL DEL JUEGO. Antes había un campo para
+      // reescribirlo y terminó usándose para anotar de quién era la compra
+      // ("Usuario jefernee"), así que en Activos 17 de 19 filas de juegos no
+      // decían de qué juego eran. Lo que se escribe a mano va a la
+      // descripción, que Activos también muestra, y así la fila se lee.
+      nombre: String(nombre).trim(),
+      // DE QUIÉN ES LA COPIA. Va en `descripcion`, que es el campo que Activos
+      // ya muestra debajo del nombre. `nombreInventario` se sigue aceptando
+      // por las compras viejas que lo mandaban.
+      descripcion: compra.usuario?.trim() || compra.nombreInventario?.trim() || null,
       categoria,
       costo,
       fechaCompra,
       numeroFactura: compra.numeroFactura?.trim() || null,
+      imagenFacturaUrl: facturaUrl,
     },
   };
 };
@@ -115,7 +125,9 @@ export const getJuegos = async (req, res) => {
     const [fichas, activos, ranking] = await Promise.all([
       Juego.find().sort({ nombre: 1 }).lean(),
       ActivoSala.find({ juegoId: { $ne: null } })
-        .select('numeroPlaca nombre categoria costo fechaCompra estado juegoId')
+        // `descripcion` trae de quién es la copia: se muestra al abrir el
+        // juego, que es donde uno va a preguntarse de quién era.
+        .select('numeroPlaca nombre descripcion categoria costo fechaCompra estado juegoId imagenFacturaUrl numeroFactura')
         .lean(),
       rankingPorClave(),
     ]);
@@ -235,7 +247,11 @@ export const crearJuego = async (req, res) => {
     // una ficha suelta si el costo viene mal.
     let datosCompra = null;
     if (compra) {
-      const { error, datos } = validarCompra(compra, { nombre: limpio, esComplemento: !!padre });
+      const { error, datos } = validarCompra(compra, {
+        nombre: limpio,
+        esComplemento: !!padre,
+        facturaUrl: req.cloudinaryFacturaUrl || null,
+      });
       if (error) return res.status(400).json({ message: error });
       datosCompra = datos;
     }
@@ -405,6 +421,7 @@ export const agregarCompra = async (req, res) => {
     const { error, datos } = validarCompra(req.body, {
       nombre: ficha.nombre,
       esComplemento: !!ficha.padre,
+      facturaUrl: req.cloudinaryFacturaUrl || null,
     });
     if (error) return res.status(400).json({ message: error });
 
@@ -454,9 +471,18 @@ export const editarCompra = async (req, res) => {
     if (req.body.numeroFactura !== undefined) {
       activo.numeroFactura = req.body.numeroFactura?.trim() || null;
     }
-    if (req.body.nombreInventario !== undefined) {
-      const n = String(req.body.nombreInventario).trim();
-      if (n) activo.nombre = n;
+    // De quién es la copia. Va a la descripción, no al nombre: el nombre es
+    // siempre el del juego, si no la fila de Activos no dice de qué es.
+    // `nombreInventario` se sigue aceptando por las pantallas viejas.
+    const usuario = req.body.usuario ?? req.body.nombreInventario;
+    if (usuario !== undefined) {
+      activo.descripcion = String(usuario).trim() || null;
+    }
+    // Una foto nueva reemplaza la anterior.
+    if (req.cloudinaryFacturaUrl) {
+      activo.imagenFacturaUrl = req.cloudinaryFacturaUrl;
+    } else if (req.body.quitarFactura === true || req.body.quitarFactura === 'true') {
+      activo.imagenFacturaUrl = null;
     }
 
     await activo.save();

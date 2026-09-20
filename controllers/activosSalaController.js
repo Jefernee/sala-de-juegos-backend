@@ -190,6 +190,18 @@ export const getActivos = async (req, res) => {
   try {
     const filtro = {};
 
+    // LOS JUEGOS NO SALEN EN ESTA LISTA. Se administran desde el módulo de
+    // Juegos —ahí se les cambia la portada, se les agregan complementos y se
+    // registran sus compras— y acá solo ensuciaban: Activos es para cosas que
+    // se reparan, y un juego no se repara.
+    //
+    // Ojo: siguen EXISTIENDO como activos y su plata sigue contando igual en
+    // los reportes, que leen la colección directamente y no pasan por acá.
+    // Esto es un filtro de pantalla, no una baja.
+    if (req.query.incluirJuegos !== 'true') {
+      filtro.juegoId = null;
+    }
+
     const search = req.query.search?.trim();
     if (search) {
       filtro.nombre = { $regex: search, $options: 'i' };
