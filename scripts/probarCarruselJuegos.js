@@ -309,9 +309,19 @@ test('se para al tocarla y sigue de una al soltar', () => {
   // Con `animation-play-state` se reanuda DONDE IBA y al instante. Con un
   // temporizador de por medio, quien la soltaba se quedaba esperando un rato.
   assert.match(css, /animation-play-state:\s*paused/, 'se pausa, no se reinicia');
-  assert.match(css, /\.cj-pista:hover \.cj-tira/, 'el mouse encima la frena para poder leer');
-  assert.match(css, /\.cj-tira--quieta/, 'y el dedo encima también');
-  assert.match(componente, /onPointerUp=\{\(\) => setTocando\(false\)\}/, 'al soltar, sigue');
+  assert.match(css, /\.cj-tira--quieta/, 'el dedo encima la frena');
+
+  // NADA de pausar por tener el mouse encima. Confunde: quien dejaba el
+  // cursor ahí —o en el teléfono, donde un toque deja el :hover pegado hasta
+  // tocar otra cosa— veía la cinta detenida y creía que se había roto. Si
+  // nadie la está presionando, se mueve.
+  assert.ok(!/:hover[^{]*\.cj-tira/.test(css), 'el hover no puede parar la cinta');
+
+  // Y si el dedo se levanta AFUERA de la fila, o el navegador se queda el
+  // gesto para desplazar la página, el aviso igual tiene que llegar.
+  assert.match(componente, /window\.addEventListener\("pointerup"/, 'se escucha en toda la ventana');
+  assert.match(componente, /window\.addEventListener\("pointercancel"/);
+  assert.match(componente, /window\.addEventListener\("touchend"/);
 });
 
 test('la velocidad no depende de cuántos juegos haya', () => {
