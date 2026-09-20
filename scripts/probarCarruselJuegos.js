@@ -324,6 +324,41 @@ test('se para al tocarla y sigue de una al soltar', () => {
   assert.match(componente, /window\.addEventListener\("touchend"/);
 });
 
+test('mantener el dedo no saca el menú del navegador', () => {
+  // En el teléfono, dejar el dedo sobre una foto o un texto saca el menú de
+  // "Compartir / Copiar", que tapa la cinta y se come el gesto de frenarla.
+  // Acá no hay nada que seleccionar ni copiar: son portadas y sus nombres.
+  assert.match(css, /\.cj-pista\s*\{[^}]*-webkit-touch-callout:\s*none/s);
+  assert.match(css, /\.cj-pista\s*\{[^}]*user-select:\s*none/s);
+  assert.match(css, /\.cj-img\s*\{[^}]*-webkit-touch-callout:\s*none/s);
+  assert.match(componente, /draggable=\{false\}/,
+    'en escritorio, sin esto el navegador arranca a arrastrar la imagen');
+});
+
+test('un toque la suelta de una; un arrastre le da unos segundos', () => {
+  // La diferencia entre tocar y arrastrar es la que importa. Un toque suelto
+  // que la deje parada varios segundos se siente rota: se soltó y no arranca.
+  // Pero si alguien la arrastró fue para mirar algo, y si arranca en el acto,
+  // eso que quería ver se le escapa y tiene que volver a presionar.
+  assert.match(componente, /MINIMO_ARRASTRE/, 'hay un mínimo para no confundir el temblor de un dedo');
+  assert.match(componente, /SEGUNDOS_DE_CALMA/, 'y una calma después de arrastrar');
+  assert.match(componente, /if \(arrastro\.current\) darCalma\(\)/,
+    'la calma es SOLO si arrastró: un toque suelto tiene que seguir de una');
+  // Con el dedo el arrastre no llega por pointermove, lo hace el navegador
+  // desplazando: por eso también se mira en el desplazamiento.
+  assert.match(componente, /if \(presionando\) arrastro\.current = true/);
+});
+
+test('en escritorio se agarra la fila con el mouse', () => {
+  // Con el dedo el navegador ya desplaza solo; con el mouse no, y agarrar la
+  // fila y moverla es lo primero que intenta cualquiera en un escritorio.
+  assert.match(componente, /e\.pointerType === "mouse"/, 'solo con mouse: el dedo ya funciona');
+  assert.match(componente, /setPointerCapture/, 'el gesto no se pierde al salirse de la fila');
+  assert.match(componente, /onPointerMove/);
+  assert.match(css, /cursor:\s*grab/, 'la mano abierta invita a agarrarla');
+  assert.match(css, /cursor:\s*grabbing/, 'y al agarrarla se cierra');
+});
+
 test('la velocidad no depende de cuántos juegos haya', () => {
   // Con una duración fija, una cinta de 50 y una de 5 correrían a velocidades
   // distintas. Se fija en píxeles por segundo y la duración se calcula.
@@ -335,7 +370,7 @@ test('aunque ande sola, se puede arrastrar', () => {
   // Si alguien quiere adelantarse a mirar, tiene que poder: una cinta que solo
   // se deja mirar es peor que una que no se mueve.
   assert.match(css, /\.cj-pista\s*\{[^}]*overflow-x:\s*auto/s, 'la ventana se desplaza');
-  assert.match(componente, /onScroll=\{alDesplazar\}/, 'y el giro sin fin sigue vivo al arrastrar');
+  assert.match(componente, /onScroll=\{alDesplazarUsuario\}/, 'y el giro sin fin sigue vivo al arrastrar');
   assert.match(componente, /acomodarCiclo\(/, 'con la misma lógica probada arriba');
 });
 
