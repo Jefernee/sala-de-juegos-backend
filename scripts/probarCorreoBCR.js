@@ -115,6 +115,41 @@ test('categoría según el comercio', () => {
   assert.equal(categoriaDeComercio('FERRETERIA EPA'), 'Otros');
 });
 
+test('categorías de comercios típicos de Costa Rica', () => {
+  const casos = {
+    'MAXI PALI SANTO DOMINGO CR': 'Supermercado',
+    'SUPERCOMPRO BARVA CR': 'Supermercado',
+    'AUTO MERCADO HEREDIA': 'Supermercado',
+    'DELTA SAN PABLO CR': 'Combustible',
+    'RESTAURANTE EL FOGON': 'Comida preparada',
+    'CAFETERIA LA U': 'Comida preparada',
+    'POLLO RICO HEREDIA': 'Comida preparada',
+    'FARMACIA FISCHEL HEREDIA': 'Salud',
+    'SPOTIFY P1234': 'Suscripciones',
+    'DIDI RIDES CR': 'Transporte',
+    'KOLBI RECARGAS': 'Internet/Celular',
+    'ICE PAGO SERVICIOS': 'Internet/Celular',
+  };
+  for (const [comercio, categoria] of Object.entries(casos)) {
+    assert.equal(categoriaDeComercio(comercio), categoria, comercio);
+  }
+});
+
+test('una palabra metida DENTRO de otra no cambia la categoría', () => {
+  assert.equal(categoriaDeComercio('AMAZON WEB SERVICES'), 'Otros'); // "ICE" en SERVICES
+  assert.equal(categoriaDeComercio('TUBERIAS DEL VALLE'), 'Otros'); // "UBER" en TUBERIAS
+  assert.equal(categoriaDeComercio('MASSAGE CENTER'), 'Otros'); // "ASSA" en MASSAGE
+});
+
+test('todas las categorías de las reglas existen en el modelo', async () => {
+  const { CATEGORIAS_EGRESO } = await import('../models/MovimientoPersonal.js');
+  const { REGLAS_CATEGORIA } = await import('../utils/correoBCR.js');
+  for (const { categoria } of REGLAS_CATEGORIA) {
+    assert.ok(CATEGORIAS_EGRESO.includes(categoria), categoria);
+  }
+  assert.ok(CATEGORIAS_EGRESO.includes('Otros'));
+});
+
 test('una moneda desconocida no se anota a ciegas', () => {
   const fila = [...COMPRA];
   fila[4] = 'EURO';

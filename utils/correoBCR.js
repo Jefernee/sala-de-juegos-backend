@@ -23,16 +23,26 @@ const PALABRAS_CAJERO = ['ATM', 'ATH', 'CAJERO', 'RETIRO'];
 
 // Comercio → categoría de egreso. Gana la PRIMERA regla que calce; lo que no
 // calce con ninguna queda en 'Otros' para acomodarlo a mano.
+// Cada palabra tiene que estar al INICIO de una palabra del comercio
+// ("SUPER" calza con "SUPERCOMPRO" pero "ICE" no calza con "SERVICES").
 export const REGLAS_CATEGORIA = [
-  { categoria: 'Supermercado', palabras: ['WALMART', 'MAXI PALI', 'PALI ', 'MAS X MENOS', 'MASXMENOS', 'AUTOMERCADO', 'AUTO MERCADO', 'PRICESMART', 'PERIMERCADO', 'MEGASUPER', 'SUPER ', 'SUPERMERCADO', 'MINISUPER', 'FRESH MARKET', 'AM PM', 'AMPM'] },
-  { categoria: 'Combustible', palabras: ['SERVICENTRO', 'GASOLINERA', 'ESTACION DE SERVICIO', 'DELTA '] },
-  { categoria: 'Comida preparada', palabras: ['SODA', 'RESTAURANTE', 'REST ', 'PIZZA', 'MCDONALD', 'BURGER', 'KFC', 'TACO BELL', 'SUBWAY', 'POPEYES', 'CAFE ', 'CAFETERIA', 'PANADERIA', 'POLLO'] },
+  { categoria: 'Supermercado', palabras: ['WALMART', 'MAXI PALI', 'PALI', 'MAS X MENOS', 'MASXMENOS', 'AUTOMERCADO', 'AUTO MERCADO', 'PRICESMART', 'PERIMERCADO', 'MEGASUPER', 'SUPER', 'MINISUPER', 'FRESH MARKET', 'AM PM', 'AMPM'] },
+  { categoria: 'Combustible', palabras: ['SERVICENTRO', 'GASOLINERA', 'ESTACION DE SERVICIO', 'DELTA'] },
+  { categoria: 'Comida preparada', palabras: ['SODA', 'RESTAURANTE', 'REST', 'PIZZA', 'MCDONALD', 'BURGER', 'KFC', 'TACO BELL', 'SUBWAY', 'POPEYES', 'CAFE', 'PANADERIA', 'POLLO'] },
   { categoria: 'Salud', palabras: ['FARMACIA', 'FISCHEL', 'SUCRE', 'LA BOMBA', 'CLINICA', 'HOSPITAL', 'LABORATORIO'] },
   { categoria: 'Suscripciones', palabras: ['NETFLIX', 'SPOTIFY', 'DISNEY', 'YOUTUBE', 'APPLE.COM', 'HBO', 'MAX.COM', 'PRIME VIDEO', 'AMAZON PRIME', 'OPENAI', 'CHATGPT', 'CLAUDE.AI', 'ANTHROPIC'] },
   { categoria: 'Transporte', palabras: ['UBER', 'DIDI', 'INDRIVE', 'PEAJE', 'PARQUEO'] },
-  { categoria: 'Seguros', palabras: ['ASSA ', 'SEGURO', 'ASEGURADORA'] },
-  { categoria: 'Internet/Celular', palabras:['KOLBI', 'ICE ', 'LIBERTY', 'CLARO', 'TIGO'] },
+  { categoria: 'Seguros', palabras: ['ASSA', 'SEGURO', 'ASEGURADORA'] },
+  { categoria: 'Internet/Celular', palabras: ['KOLBI', 'ICE', 'LIBERTY', 'CLARO', 'TIGO'] },
 ];
+
+const escaparRegex = (texto) => texto.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Una regex por palabra, armadas una sola vez.
+const REGLAS_COMPILADAS = REGLAS_CATEGORIA.map(({ categoria, palabras }) => ({
+  categoria,
+  patrones: palabras.map((p) => new RegExp(`(?:^|[^A-Z0-9])${escaparRegex(p)}`)),
+}));
 
 // Mayúsculas y sin tildes, para comparar sin depender de cómo lo escriba el banco.
 const normalizar = (texto) =>
@@ -126,10 +136,8 @@ export const pareceRetiro = ({ comercio, referencia }) => {
 
 // Categoría de egreso según el comercio.
 export const categoriaDeComercio = (comercio) => {
-  // Espacio al final para que las palabras con espacio ("SUPER ") calcen
-  // también cuando están al final del nombre.
-  const c = `${normalizar(comercio)} `;
-  const regla = REGLAS_CATEGORIA.find((r) => r.palabras.some((p) => c.includes(p)));
+  const c = normalizar(comercio);
+  const regla = REGLAS_COMPILADAS.find((r) => r.patrones.some((patron) => patron.test(c)));
   return regla ? regla.categoria : 'Otros';
 };
 

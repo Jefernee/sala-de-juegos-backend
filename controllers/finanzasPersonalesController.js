@@ -2310,7 +2310,13 @@ export const updateMovimiento = async (req, res) => {
       if (resultadoFecha.error) {
         return res.status(400).json({ message: resultadoFecha.error });
       }
-      if (resultadoFecha.fecha) $set.fecha = resultadoFecha.fecha;
+      // El formulario manda mes/anio SIEMPRE, aunque no se haya tocado el mes.
+      // La fecha solo se reemplaza si de verdad se mueve a OTRO mes: si no,
+      // editar el monto o la categoría le cambiaba la fecha original (a "ahora"
+      // en el mes actual, o al día 1 en un mes pasado).
+      const original = anioMesCR(actual.fecha);
+      const mismoMes = original.mes === parseInt(req.body.mes) && original.anio === parseInt(req.body.anio);
+      if (resultadoFecha.fecha && !mismoMes) $set.fecha = resultadoFecha.fecha;
     }
 
     if (Object.keys($set).length === 0) {
