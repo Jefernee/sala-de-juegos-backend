@@ -2148,11 +2148,25 @@ export const regenerarSnapshots = async (req, res) => {
 // obtener, responde 503.
 // ============================================
 export const getTipoCambio = async (_req, res) => {
+  try {
+    return res.status(200).json(await obtenerTipoCambio());
+  } catch {
+    // Nunca se pudo obtener: error claro para que el frontend reintente.
+    return res.status(503).json({
+      message: 'No se pudo obtener el tipo de cambio. Intentá de nuevo en unos segundos.',
+    });
+  }
+};
+
+// Lo mismo que GET /tipo-cambio pero para usar dentro del backend (los gastos
+// en dólares que llegan del correo del BCR). Devuelve { fecha, venta, compra
+// [, stale] } o lanza si nunca se pudo obtener.
+export const obtenerTipoCambio = async () => {
   const hoy = hoyCostaRica();
 
   // 1. Cache del día: no llamamos a Hacienda si ya lo trajimos hoy.
   if (cacheTC && cacheDiaTC === hoy) {
-    return res.status(200).json(cacheTC);
+    return cacheTC;
   }
 
   // 2. Consultar a Hacienda con timeout corto (7s) para no colgar la respuesta.
@@ -2174,19 +2188,17 @@ export const getTipoCambio = async (_req, res) => {
     cacheTC = { fecha, venta, compra };
     cacheDiaTC = hoy;
 
-    return res.status(200).json(cacheTC);
+    return cacheTC;
   } catch (error) {
     console.error('❌ Error al obtener el tipo de cambio de Hacienda:', error.message);
 
     // 3a. Fallback: devolver el último conocido, aunque sea de un día anterior.
     if (cacheTC) {
-      return res.status(200).json({ ...cacheTC, stale: true });
+      return { ...cacheTC, stale: true };
     }
 
-    // 3b. Nunca se pudo obtener: error claro para que el frontend reintente.
-    return res.status(503).json({
-      message: 'No se pudo obtener el tipo de cambio. Intentá de nuevo en unos segundos.',
-    });
+    // 3b. Nunca se pudo obtener.
+    throw error;
   }
 };
 

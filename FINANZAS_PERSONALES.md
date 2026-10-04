@@ -589,3 +589,32 @@ colchón de emergencia (🛟) se caía casi siempre detrás de las comparaciones
 contra el mes anterior.
 
 El rediseño completo de la pantalla está en `PROMPT_FRONTEND_FINANZAS.md`.
+
+---
+
+## 9. Gastos que se anotan solos desde el correo del BCR
+
+Al pagar con la tarjeta BCR, el banco manda el correo "Notificación de
+Transacciones BCR" (`bcrtarjestcta@bancobcr.com`). Un Google Apps Script en el
+Gmail se lo pasa al backend y la compra queda anotada como **egreso del mes**,
+igual que si se hubiera anotado a mano.
+
+- Endpoint: `POST /api/gastos-correo/bcr` — sin token de sesión; header
+  `x-clave-correo` = `CORREO_BCR_CLAVE`. Body `{ html, prueba? }`.
+- Dueño de los gastos: el usuario con email `CORREO_BCR_USUARIO_EMAIL`.
+- Lógica: `utils/correoBCR.js` · controlador: `controllers/gastosCorreoController.js`.
+- Pruebas: `npm run probar-correo-bcr` (filas de correos reales).
+
+**Qué NO se anota.** El BCR manda con el mismo formato compras, retiros y
+negadas; ninguna columna dice "retiro".
+- Estado distinto de "Aprobada" (ej. "Negada").
+- Retiros de cajero: comercio en `CAJEROS_CONOCIDOS` (hoy ICAFE San Pedro de
+  Barva), o con la palabra ATM/ATH/CAJERO/RETIRO, o **No.Referencia de 12 dígitos**
+  (en los correos de muestra la compra trae 8 y el retiro 12).
+
+**Categoría:** según el comercio (`REGLAS_CATEGORIA`); lo que no calce va a
+"Otros" para acomodarlo a mano. Compras en dólares se pasan a colones con el
+tipo de cambio de venta de Hacienda.
+
+**Sin duplicados:** se guarda `referenciaBanco` = "autorización-referencia" con
+índice único por usuario. El movimiento queda con `origen: 'correo_bcr'`.

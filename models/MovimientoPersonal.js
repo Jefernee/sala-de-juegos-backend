@@ -226,11 +226,31 @@ const movimientoPersonalSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // Cómo entró: 'manual' (lo anotó el usuario) o 'correo_bcr' (se anotó solo
+    // desde el correo del BCR al pagar con la tarjeta).
+    origen: {
+      type: String,
+      enum: ['manual', 'correo_bcr'],
+      default: 'manual',
+    },
+    // Solo para origen='correo_bcr': "autorización-referencia" del banco. Evita
+    // anotar dos veces la misma compra si el correo se procesa de nuevo.
+    referenciaBanco: {
+      type: String,
+      default: undefined,
+    },
   },
   { timestamps: true }
 );
 
 // Índice para acelerar el filtro por usuario + mes/año.
 movimientoPersonalSchema.index({ usuario: 1, fecha: 1 });
+
+// Una misma transacción del banco entra una sola vez por usuario. Parcial: los
+// movimientos manuales (sin referenciaBanco) no participan.
+movimientoPersonalSchema.index(
+  { usuario: 1, referenciaBanco: 1 },
+  { unique: true, partialFilterExpression: { referenciaBanco: { $type: 'string' } } }
+);
 
 export default mongoose.model('MovimientoPersonal', movimientoPersonalSchema);

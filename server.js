@@ -26,6 +26,8 @@ import estadoResultadosRoutes from './routes/estadoResultados.js';
 import torneosRoutes from './routes/torneos.js';
 // Finanzas Personales del administrador (módulo APARTE de la sala de juegos)
 import finanzasPersonalesRoutes from './routes/finanzasPersonales.js';
+// Gastos personales que se anotan solos desde el correo del BCR (Apps Script)
+import gastosCorreoRoutes from './routes/gastosCorreo.js';
 import { migrarPlacasActivos } from './utils/migrarPlacas.js';
 import { migrarTotalControles } from './utils/migrarTotalControles.js';
 import { migrarMontoPagado } from './utils/migrarMontoPagado.js';
@@ -444,6 +446,7 @@ app.use('/api/torneos', torneosRoutes);
 // Finanzas Personales del administrador — APARTE de la sala de juegos.
 // El propio router exige authMiddleware + soloAdmin en todas sus rutas.
 app.use('/api/finanzas-personales', finanzasPersonalesRoutes);
+app.use('/api/gastos-correo', gastosCorreoRoutes);
 
 // ============================================
 // ✅ MIDDLEWARE DE ERRORES DE MULTER (IMPORTANTE)

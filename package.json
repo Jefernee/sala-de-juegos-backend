@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js scripts/probarMigrarJuegos.js scripts/probarJuegosController.js scripts/probarCarruselJuegos.js",
+    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js scripts/probarMigrarJuegos.js scripts/probarJuegosController.js scripts/probarCarruselJuegos.js scripts/probarCorreoBCR.js",
     "probar-turno": "node --test scripts/probarTurnoPendiente.js",
     "probar-categorias": "node --test scripts/probarCategoriasActivos.js",
     "probar-juegos": "node --test scripts/probarJuegosDePlays.js",
@@ -13,6 +13,7 @@
     "probar-migrar-juegos": "node --test scripts/probarMigrarJuegos.js",
     "probar-juegos-modulo": "node --test scripts/probarJuegosController.js",
     "probar-carrusel": "node --test scripts/probarCarruselJuegos.js",
+    "probar-correo-bcr": "node --test scripts/probarCorreoBCR.js",
     "medir-portadas": "node scripts/medirPortadas.js",
     "verificar-vocabulario": "node scripts/verificarVocabulario.js",
     "dev": "cross-env NODE_ENV=development node server.js",
