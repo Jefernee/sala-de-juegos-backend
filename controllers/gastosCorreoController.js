@@ -1,22 +1,53 @@
 // controllers/gastosCorreoController.js
 // Gastos automáticos desde el correo del BCR (Finanzas Personales).
 //
-// Cuando el administrador paga con la tarjeta BCR, el banco le manda el correo
-// "Notificación de Transacciones BCR" a su Gmail. Un Google Apps Script en ese
-// Gmail le reenvía el HTML del correo a este endpoint, y acá se anota como
-// egreso del mes — igual que si lo hubiera anotado a mano.
+// Cuando el administrador paga con la tarjeta BCR o manda un SINPE Móvil, el
+// banco le manda un correo a su Gmail ("Notificación de Transacciones BCR" o
+// "SINPEMOVIL - Notificación de transacción realizada"). Un Google Apps Script
+// en ese Gmail le reenvía el HTML del correo a este endpoint, y acá se anota
+// como egreso del mes — igual que si lo hubiera anotado a mano.
 //
 // No usa el token de sesión (el script no inicia sesión): se protege con una
 // clave compartida en el header `x-clave-correo` = CORREO_BCR_CLAVE. El dueño de
 // los gastos es el usuario cuyo email es CORREO_BCR_USUARIO_EMAIL.
 //
-// Qué se ignora (ver utils/correoBCR.js): retiros de efectivo en cajero y
-// transacciones no aprobadas (ej. "Negada").
+// Qué se ignora: retiros de efectivo en cajero y transacciones no aprobadas
+// (utils/correoBCR.js), y SINPE recibidos (utils/correoSinpeBCR.js).
 import crypto from 'node:crypto';
 import MovimientoPersonal from '../models/MovimientoPersonal.js';
 import User from '../models/User.js';
 import { leerTransacciones, decidir } from '../utils/correoBCR.js';
+import { esCorreoSinpe, leerSinpe, decidirSinpe, descripcionSinpe } from '../utils/correoSinpeBCR.js';
 import { obtenerTipoCambio, regenerarResumenDeFecha } from './finanzasPersonalesController.js';
+
+// Lleva cualquiera de los dos avisos del BCR a la misma forma:
+//   { base, decision, referenciaBanco, descripcion, monto, moneda, fecha }
+// `base` es lo que se devuelve al script de Gmail para que deje registro.
+const leerAvisos = (html) => {
+  if (esCorreoSinpe(html)) {
+    const s = leerSinpe(html);
+    return [{
+      base: { tipoAviso: 'sinpe', comercio: descripcionSinpe(s), monto: s.monto, moneda: 'CRC', fecha: s.fechaTexto, referencia: s.referencia },
+      decision: decidirSinpe(s),
+      // Prefijo para que nunca choque con una referencia de la tarjeta.
+      referenciaBanco: `SINPE-${s.referencia}`,
+      descripcion: descripcionSinpe(s),
+      monto: s.monto,
+      moneda: 'CRC', // SINPE Móvil es siempre en colones
+      fecha: s.fecha,
+    }];
+  }
+
+  return leerTransacciones(html).map((tx) => ({
+    base: { tipoAviso: 'tarjeta', comercio: tx.comercio, monto: tx.monto, moneda: tx.moneda, fecha: tx.fechaTexto, referencia: tx.referencia },
+    decision: decidir(tx),
+    referenciaBanco: `${tx.autorizacion}-${tx.referencia}`,
+    descripcion: tx.comercio,
+    monto: tx.monto,
+    moneda: tx.moneda,
+    fecha: tx.fecha,
+  }));
+};
 
 // Comparación en tiempo constante para no filtrar la clave por tiempos.
 const claveValida = (recibida) => {
@@ -59,30 +90,22 @@ export const recibirCorreoBCR = async (req, res) => {
       return res.status(503).json({ message: 'El dueño de los gastos no está configurado' });
     }
 
-    const transacciones = leerTransacciones(html);
-    if (transacciones.length === 0) {
+    const avisos = leerAvisos(html);
+    if (avisos.length === 0) {
       return res.status(422).json({ message: 'No se encontró ninguna transacción en el correo' });
     }
 
     const resultados = [];
     const fechasTocadas = [];
 
-    for (const tx of transacciones) {
-      const base = {
-        comercio: tx.comercio,
-        monto: tx.monto,
-        moneda: tx.moneda,
-        fecha: tx.fechaTexto,
-        referencia: tx.referencia,
-      };
-      const decision = decidir(tx);
+    for (const aviso of avisos) {
+      const { base, decision, referenciaBanco, descripcion } = aviso;
 
       if (decision.accion === 'ignorar') {
         resultados.push({ ...base, accion: 'ignorado', motivo: decision.motivo, retiro: !!decision.retiro });
         continue;
       }
 
-      const referenciaBanco = `${tx.autorizacion}-${tx.referencia}`;
       const yaEsta = await MovimientoPersonal.findOne({ usuario: usuario._id, referenciaBanco })
         .select('_id')
         .lean();
@@ -93,13 +116,13 @@ export const recibirCorreoBCR = async (req, res) => {
 
       // Colones: tal cual. Dólares: a colones con el tipo de cambio de VENTA
       // (lo que cuesta comprar dólares), igual que un gasto en USD anotado a mano.
-      let dinero = { monto: tx.monto, moneda: 'CRC', montoOriginal: tx.monto, tipoCambio: null };
-      if (tx.moneda === 'USD') {
+      let dinero = { monto: aviso.monto, moneda: 'CRC', montoOriginal: aviso.monto, tipoCambio: null };
+      if (aviso.moneda === 'USD') {
         const tc = await obtenerTipoCambio();
         dinero = {
-          monto: Math.round(tx.monto * tc.venta),
+          monto: Math.round(aviso.monto * tc.venta),
           moneda: 'USD',
-          montoOriginal: tx.monto,
+          montoOriginal: aviso.monto,
           tipoCambio: tc.venta,
         };
       }
@@ -116,8 +139,8 @@ export const recibirCorreoBCR = async (req, res) => {
           categoria: decision.categoria,
           fondo: 'mes',
           ...dinero,
-          descripcion: tx.comercio,
-          fecha: tx.fecha,
+          descripcion,
+          fecha: aviso.fecha,
           origen: 'correo_bcr',
           referenciaBanco,
         });

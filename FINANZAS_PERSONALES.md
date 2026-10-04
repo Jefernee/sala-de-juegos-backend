@@ -618,3 +618,13 @@ tipo de cambio de venta de Hacienda.
 
 **Sin duplicados:** se guarda `referenciaBanco` = "autorización-referencia" con
 índice único por usuario. El movimiento queda con `origen: 'correo_bcr'`.
+
+### SINPE Móvil enviados
+
+También se anotan los SINPE Móvil que **salen** de la cuenta: correo
+"SINPEMOVIL - Notificación de transacción realizada" de `mensajero@bancobcr.com`
+(`utils/correoSinpeBCR.js`). Se lee por etiquetas ("Monto:", "Número de
+referencia:", "Nombre cliente Destino:"...). Solo cuenta si dice "debitado"; un
+SINPE recibido ("acreditado") se ignora. Entra en **Otros** (el correo dice a
+quién, no para qué) con descripción "SINPE a <nombre>" y `referenciaBanco` =
+"SINPE-<referencia>".

@@ -2,9 +2,11 @@
  * Gastos automáticos desde el correo del BCR — Google Apps Script.
  *
  * Corre en el Gmail donde llegan los avisos del BCR (jefernee50@gmail.com).
- * Cada 5 minutos busca los correos "Notificación de Transacciones BCR" nuevos y
- * se los pasa al backend (POST /api/gastos-correo/bcr), que decide si es una
- * compra (la anota como gasto) o un retiro / una negada (la ignora).
+ * Cada 5 minutos busca los avisos nuevos del BCR —"Notificación de
+ * Transacciones BCR" (tarjeta) y "SINPEMOVIL - Notificación de transacción
+ * realizada"— y se los pasa al backend (POST /api/gastos-correo/bcr), que
+ * decide si es un gasto (lo anota) o un retiro / una negada / un SINPE
+ * recibido (lo ignora).
  *
  * NO guarda la clave en el código: va en Configuración del proyecto →
  * Propiedades del script → CORREO_BCR_CLAVE.
@@ -22,7 +24,9 @@
  */
 
 const URL_BACKEND = 'https://chosen-sandra-jefernee-f13f70d9.koyeb.app/api/gastos-correo/bcr';
-const BUSQUEDA = 'from:bcrtarjestcta@bancobcr.com newer_than:3d';
+// Tarjeta: bcrtarjestcta@. SINPE Móvil: mensajero@ (que manda también otros
+// avisos; los que no son SINPE el backend los responde con 422 y se saltan).
+const BUSQUEDA = '{from:bcrtarjestcta@bancobcr.com from:mensajero@bancobcr.com} newer_than:3d';
 const ETIQUETAS = { anotado: 'Finanzas/Anotado', retiro: 'Finanzas/Retiro', error: 'Finanzas/Error' };
 // Ids de correos ya procesados que se recuerdan (los de 3 días caben de sobra).
 const MAX_RECORDADOS = 300;

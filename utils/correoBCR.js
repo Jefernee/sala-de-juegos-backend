@@ -45,7 +45,7 @@ const REGLAS_COMPILADAS = REGLAS_CATEGORIA.map(({ categoria, palabras }) => ({
 }));
 
 // Mayúsculas y sin tildes, para comparar sin depender de cómo lo escriba el banco.
-const normalizar = (texto) =>
+export const normalizar = (texto) =>
   String(texto || '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
@@ -53,14 +53,32 @@ const normalizar = (texto) =>
     .replace(/\s+/g, ' ')
     .trim();
 
-const decodificarEntidades = (texto) =>
+// Letra base de las entidades con tilde (&aacute; → á, &Ntilde; → Ñ...).
+const ACENTOS = { acute: '́', tilde: '̃', uml: '̈' };
+
+export const decodificarEntidades = (texto) =>
   texto
     .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
     .replace(/&lt;/gi, '<')
     .replace(/&gt;/gi, '>')
     .replace(/&quot;/gi, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+    .replace(/&([a-zA-Z])(acute|tilde|uml);/g, (_, letra, marca) => (letra + ACENTOS[marca]).normalize('NFC'))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&amp;/gi, '&');
+
+// El HTML como texto, una línea por bloque (párrafo, fila, <br>...).
+export const textoPlano = (html) =>
+  decodificarEntidades(
+    String(html)
+      .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
+      .replace(/<br\s*\/?>|<\/(p|div|tr|td|th|li|h\d)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+  )
+    .split('\n')
+    .map((l) => l.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
 
 const textoCelda = (html) =>
   decodificarEntidades(html.replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
