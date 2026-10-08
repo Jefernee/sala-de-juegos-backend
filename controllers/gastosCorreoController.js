@@ -18,6 +18,10 @@ import MovimientoPersonal from '../models/MovimientoPersonal.js';
 import User from '../models/User.js';
 import { leerTransacciones, decidir } from '../utils/correoBCR.js';
 import { esCorreoSinpe, leerSinpe, decidirSinpe, descripcionSinpe } from '../utils/correoSinpeBCR.js';
+
+// Apagado a pedido del administrador (2026-10-07): los correos llegan pero no se
+// anota nada. Para reactivar, poner en false y pushear.
+const PAUSADO = true;
 import { obtenerTipoCambio, regenerarResumenDeFecha } from './finanzasPersonalesController.js';
 
 // Lleva cualquiera de los dos avisos del BCR a la misma forma:
@@ -75,6 +79,11 @@ export const recibirCorreoBCR = async (req, res) => {
   }
   if (!claveValida(req.get('x-clave-correo'))) {
     return res.status(401).json({ message: 'Clave inválida' });
+  }
+  // Pausado: responde 200 sin anotar nada, así el script de Gmail da el correo
+  // por visto y no lo reintenta ni lo anota de golpe al reactivar.
+  if (PAUSADO) {
+    return res.json({ resultados: [], pausado: true });
   }
 
   const { html, prueba } = req.body || {};
