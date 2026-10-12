@@ -468,8 +468,12 @@ app.use((err, req, res, next) => {
   // Alerta por correo SOLO si la culpa es del servidor. Los errores de cliente
   // (payload muy grande, validación, CORS) son normales y llenarían el correo
   // de ruido: los manda el navegador, no son una falla del sistema.
+  // 'request.aborted': el navegador cortó la conexión mientras subía el cuerpo
+  // (señal que se cae, pestaña cerrada). Pasó el 10/10/2026 creando un
+  // producto: no se guardó nada y el servidor no tuvo ninguna falla.
   const esErrorDeCliente =
     err.type === 'entity.too.large' ||
+    err.type === 'request.aborted' ||
     err.name === 'ValidationError' ||
     err.message === 'Not allowed by CORS';
   if (!esErrorDeCliente) {
@@ -486,6 +490,15 @@ app.use((err, req, res, next) => {
       error: 'La petición es demasiado grande. Reduce el tamaño de los datos o la imagen.',
       code: 'PAYLOAD_TOO_LARGE',
       limit: '10mb'
+    });
+  }
+
+  // El navegador ya colgó: esta respuesta no le llega, pero no debe contar
+  // como un 500 del servidor.
+  if (err.type === 'request.aborted') {
+    return res.status(400).json({
+      error: 'La conexión se cortó mientras se enviaban los datos.',
+      code: 'REQUEST_ABORTED'
     });
   }
 
