@@ -74,60 +74,41 @@ export const validarInicioTurno = (play, minutos) => {
 };
 
 /**
- * LA EXTENSION TARDIA.
+ * EL FIN TRAS EDITAR: SIEMPRE LINEAL.
  *
- * El formulario deriva la hora final de `horaInicio + tiempoPagado`, no de
- * "ahora + lo que se agrego". Si entre que el tiempo se vencio y que se
- * registra la extension paso mas rato que el tiempo agregado, ese fin nace ya
- * vencido: el aviso no se re-armaba y esos minutos nuevos NUNCA avisaban (y el
- * cronometro de la pantalla tambien quedaba mal).
+ * El fin es `horaInicio + tiempoPagado`, la misma "Hora final" que ve el
+ * encargado. El tiempo agregado se pega al final del anterior, no a la hora en
+ * que se digito: el chico no deja de jugar mientras el encargado lo anota.
  *
- * Cuando se AGREGA tiempo a una sesion cuyo fin anterior ya paso, el tiempo
- * nuevo empieza a correr ahora: el fin se ancla al reloj.
+ * Antes, si se agregaba tiempo despues de vencido, el fin se anclaba al reloj
+ * (hora de la edicion + lo agregado). Eso regalaba el rato entre el
+ * vencimiento y la edicion, y el aviso salia tarde: Nando, 13-oct-2026, 2 h
+ * agregadas a las 8:39 PM sobre un fin de 8:05 PM → aviso a las 10:39 PM. Se
+ * acordo con el dueno quitarlo: el que vuelve despues de irse va en partida
+ * nueva.
  *
- * EL OTRO LADO: si el fin nuevo YA PASO, el aviso no solo no se re-arma: hay
- * que CANCELARLO. Es el caso de guardar tiempo pendiente porque el cliente se
- * fue antes (se le baja el tiempo pagado y el fin nuevo cae en el pasado). No
- * hay partida que anunciar -el encargado esta ahi mismo editando-, pero el
- * aviso seguia pendiente y la ventana de catch-up del despachador lo mandaba
- * igual, un rato despues de que el chico ya se habia ido.
+ * Si el fin nuevo YA PASO, el aviso no solo no se re-arma: hay que CANCELARLO.
+ * Cubre dos casos: la extension anotada tan tarde que ya se jugo, y guardar
+ * tiempo pendiente porque el cliente se fue antes (el fin nuevo cae en el
+ * pasado). El encargado esta ahi mismo editando; sin cancelar, la ventana de
+ * catch-up del despachador mandaba el aviso igual.
  *
- * Con esto updatePlay queda igual que createPlay, que ya hacia exactamente
- * esto: `notificacionFinEnviada: !finEnFuturo`.
+ * Con esto updatePlay queda igual que createPlay: `notificacionFinEnviada: !finEnFuturo`.
  *
  * Vive aca y no dentro del controlador para poder probarlo de verdad
  * (ver scripts/probarTurnoPendiente.js).
  *
- * @returns {{ fin: Date, reArmaAviso: boolean, cancelaAviso: boolean, anclado: boolean }}
+ * @returns {{ fin: Date, reArmaAviso: boolean, cancelaAviso: boolean }}
  */
-export const resolverFinTrasEditar = ({
-  finCalculado, finAnterior, tiempoPagadoNuevo, tiempoPagadoViejo, ahora = new Date(),
-}) => {
-  const ahoraMs = new Date(ahora).getTime();
-  const finEnFuturo = finCalculado instanceof Date && finCalculado.getTime() > ahoraMs;
-
-  const sumoTiempo = Number(tiempoPagadoNuevo) > Number(tiempoPagadoViejo);
-  const finAnteriorVencido =
-    finAnterior instanceof Date && finAnterior.getTime() <= ahoraMs;
-
-  if (!finEnFuturo && sumoTiempo && finAnteriorVencido) {
-    const agregados = Number(tiempoPagadoNuevo) - Number(tiempoPagadoViejo);
-    const base = new Date(ahoraMs);
-    base.setSeconds(0, 0);
-    return {
-      fin: new Date(base.getTime() + agregados * MIN_MS),
-      reArmaAviso: true,
-      cancelaAviso: false,
-      anclado: true,
-    };
-  }
+export const resolverFinTrasEditar = ({ finCalculado, ahora = new Date() }) => {
+  const finEnFuturo =
+    finCalculado instanceof Date && finCalculado.getTime() > new Date(ahora).getTime();
 
   return {
     fin: finCalculado,
     reArmaAviso: finEnFuturo,
     // El fin nuevo ya paso: no hay nada que anunciar.
     cancelaAviso: !finEnFuturo,
-    anclado: false,
   };
 };
 

@@ -1,6 +1,6 @@
 // scripts/probarTurnoPendiente.js
 //
-// Pruebas del turno de tiempo pendiente y del arreglo de la extensión tardía.
+// Pruebas del turno de tiempo pendiente y del fin lineal al agregar tiempo.
 // Corre con `npm run probar-turno` (o `node scripts/probarTurnoPendiente.js`).
 // No necesita base de datos ni servidor: prueba la aritmética pura, que es
 // donde vivían las decisiones difíciles.
@@ -113,37 +113,40 @@ test('arrancar con todo el pendiente es válido (el caso normal)', () => {
   assert.equal(validarInicioTurno({ tiempoPendiente: 45, pendienteEnCurso: null }, 45), null);
 });
 
-// ─── El bug que se arregló: la extensión tardía ──────────────────────────────
-// El formulario deriva la hora final de horaInicio + tiempoPagado. Si entre que
-// el tiempo se venció y que se registra la extensión pasó más rato que el tiempo
-// agregado, ese fin nace ya vencido y el aviso no se re-armaba: esos minutos
-// nuevos nunca avisaban. Acá se reproduce la condición y se comprueba que el
-// arreglo la detecta.
+// ─── Agregar tiempo: el fin es LINEAL ────────────────────────────────────────
+// El tiempo agregado se pega al final del anterior (horaInicio + tiempoPagado),
+// no a la hora en que se digitó. Antes se anclaba al reloj y regalaba minutos.
 
-test('extensión tardía: el fin se ancla al reloj y el aviso se re-arma', () => {
-  // Arrancó 3:00 con 30 min → venció 3:30. A las 4:10 paga 30 más.
-  const ahora = new Date('2026-09-14T16:10:00Z');
-  const finAnterior = new Date('2026-09-14T15:30:00Z');
-  // horaInicio + tiempoPagado = 3:00 + 60 = 4:00, que YA PASÓ.
-  const finCalculado = new Date('2026-09-14T16:00:00Z');
+test('caso Nando: agregar tarde NO corre el aviso a las 10:39 PM', () => {
+  // Inicio 4:05 PM con 2 h. A las 8:39 PM le agregan 2 h más (total 4 h).
+  // Hora CR = UTC-6.
+  const ahora = new Date('2026-10-14T02:39:00Z');        // 8:39 PM
+  const finCalculado = new Date('2026-10-14T02:05:00Z'); // 4:05 + 4 h = 8:05 PM
 
-  const r = resolverFinTrasEditar({
-    finCalculado, finAnterior, tiempoPagadoNuevo: 60, tiempoPagadoViejo: 30, ahora,
-  });
+  const r = resolverFinTrasEditar({ finCalculado, ahora });
 
-  assert.equal(r.reArmaAviso, true, 'antes del arreglo esto quedaba en false y no avisaba nunca');
-  assert.equal(r.fin.toISOString(), '2026-09-14T16:40:00.000Z', 'los 30 min nuevos corren desde ahora');
+  assert.equal(r.fin.toISOString(), '2026-10-14T02:05:00.000Z', 'el fin es 8:05 PM, no 10:39 PM');
+  assert.equal(r.reArmaAviso, false, 'esas 2 h ya se jugaron: no hay aviso que mandar');
+  assert.equal(r.cancelaAviso, true);
+});
+
+test('agregar un poco tarde: el fin no regala los minutos de atraso', () => {
+  // Arrancó 3:00 con 1 h (venció 4:00). A las 4:20 le agregan otra hora.
+  const ahora = new Date('2026-09-14T16:20:00Z');
+  const finCalculado = new Date('2026-09-14T17:00:00Z'); // 3:00 + 2 h
+
+  const r = resolverFinTrasEditar({ finCalculado, ahora });
+
+  assert.equal(r.fin.toISOString(), '2026-09-14T17:00:00.000Z', 'termina 5:00, no 5:20');
+  assert.equal(r.reArmaAviso, true, 'el fin está en el futuro: avisa a las 5:00');
 });
 
 test('extensión normal: si el fin nuevo ya cae en el futuro, no se toca nada', () => {
   // Arrancó 3:00 con 30 min. A las 3:10, todavía jugando, paga 30 más.
   const ahora = new Date('2026-09-14T15:10:00Z');
-  const finAnterior = new Date('2026-09-14T15:30:00Z');
   const finCalculado = new Date('2026-09-14T16:00:00Z'); // 3:00 + 60
 
-  const r = resolverFinTrasEditar({
-    finCalculado, finAnterior, tiempoPagadoNuevo: 60, tiempoPagadoViejo: 30, ahora,
-  });
+  const r = resolverFinTrasEditar({ finCalculado, ahora });
 
   assert.equal(r.fin.toISOString(), finCalculado.toISOString(), 'se respeta horaInicio + tiempoPagado');
   assert.equal(r.reArmaAviso, true);
@@ -152,12 +155,9 @@ test('extensión normal: si el fin nuevo ya cae en el futuro, no se toca nada', 
 test('corregir hacia ABAJO una sesión vieja no re-arma el aviso', () => {
   // Editar ayer un play para bajarle el tiempo no puede mandar un WhatsApp.
   const ahora = new Date('2026-09-14T16:10:00Z');
-  const finAnterior = new Date('2026-09-13T15:30:00Z');
   const finCalculado = new Date('2026-09-13T15:00:00Z');
 
-  const r = resolverFinTrasEditar({
-    finCalculado, finAnterior, tiempoPagadoNuevo: 20, tiempoPagadoViejo: 30, ahora,
-  });
+  const r = resolverFinTrasEditar({ finCalculado, ahora });
 
   assert.equal(r.reArmaAviso, false, 'no se avisa de algo que terminó ayer');
 });
@@ -171,12 +171,9 @@ test('corregir hacia ABAJO una sesión vieja no re-arma el aviso', () => {
 test('cortar la sesión para guardar tiempo pendiente cancela el aviso', () => {
   // Arrancó 3:00 con 2h (fin 5:00). A las 4:00 se va y se le guarda 1h.
   const ahora = new Date('2026-09-14T16:00:00Z');
-  const finAnterior = new Date('2026-09-14T17:00:00Z');   // las 5:00, todavía no llegaba
   const finCalculado = new Date('2026-09-14T16:00:00Z');  // 3:00 + 60 = 4:00, ya pasó
 
-  const r = resolverFinTrasEditar({
-    finCalculado, finAnterior, tiempoPagadoNuevo: 60, tiempoPagadoViejo: 120, ahora,
-  });
+  const r = resolverFinTrasEditar({ finCalculado, ahora });
 
   assert.equal(r.reArmaAviso, false, 'no se arma un aviso nuevo');
   assert.equal(r.cancelaAviso, true, 'y el que estaba pendiente se cancela');
@@ -187,26 +184,12 @@ test('una sesión que SÍ está corriendo con tiempo pendiente guardado igual av
   // para después. Esa hora que está jugando termina y la consola queda libre:
   // el aviso tiene que salir aunque haya tiempo pendiente guardado.
   const ahora = new Date('2026-09-14T15:10:00Z');
-  const finAnterior = new Date('2026-09-14T15:30:00Z');
   const finCalculado = new Date('2026-09-14T16:00:00Z'); // en el futuro
 
-  const r = resolverFinTrasEditar({
-    finCalculado, finAnterior, tiempoPagadoNuevo: 60, tiempoPagadoViejo: 30, ahora,
-  });
+  const r = resolverFinTrasEditar({ finCalculado, ahora });
 
   assert.equal(r.reArmaAviso, true, 'tener pendiente guardado no calla el aviso');
   assert.equal(r.cancelaAviso, false);
-});
-
-test('extender no cancela nada', () => {
-  const ahora = new Date('2026-09-14T16:10:00Z');
-  const r = resolverFinTrasEditar({
-    finCalculado: new Date('2026-09-14T16:00:00Z'),
-    finAnterior: new Date('2026-09-14T15:30:00Z'),
-    tiempoPagadoNuevo: 60, tiempoPagadoViejo: 30, ahora,
-  });
-  assert.equal(r.anclado, true);
-  assert.equal(r.cancelaAviso, false, 'anclar al reloj no puede cancelar el aviso');
 });
 
 // ─── Mongoose escribe la bandera cuando se fuerza ────────────────────────────

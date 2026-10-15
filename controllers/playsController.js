@@ -676,7 +676,6 @@ export const updatePlay = async (req, res) => {
     const tiempoPagadoOriginal = play.tiempoPagado;
     const horaInicioOriginal   = play.horaInicio;
     const horaFinalOriginal    = play.horaFinal;
-    const finProgramadoOriginal = play.finProgramado;
     const tiempoPendienteOriginal = play.tiempoPendiente;
 
     if (req.body.cliente          !== undefined) play.cliente          = req.body.cliente;
@@ -731,22 +730,11 @@ export const updatePlay = async (req, res) => {
       const refMs = play.createdAt ? play.createdAt.getTime() : Date.now();
       const finCalculado = calcularFinProgramado(play.horaInicio, play.horaFinal, play.tiempoPagado, refMs);
 
-      // La decision de si el fin se respeta o se ancla al reloj vive en
-      // utils/turnoPendiente.js (resolverFinTrasEditar), aparte para poder
-      // probarla: ver scripts/probarTurnoPendiente.js.
-      const { fin: nuevoFin, reArmaAviso: nuevoFinEnFuturo, cancelaAviso, anclado } = resolverFinTrasEditar({
-        finCalculado,
-        finAnterior: finProgramadoOriginal,
-        tiempoPagadoNuevo: req.body.tiempoPagado !== undefined ? req.body.tiempoPagado : play.tiempoPagado,
-        tiempoPagadoViejo: tiempoPagadoOriginal,
-      });
-
-      if (anclado) {
-        console.log(
-          `⏱️ Play ${play._id}: extension tardia. El fin se ancla a la hora ` +
-          'actual en vez de a horaInicio + tiempoPagado, o esos minutos nuevos no avisaban.'
-        );
-      }
+      // El fin es siempre lineal (horaInicio + tiempoPagado). La decision de si
+      // el aviso se re-arma o se cancela vive en utils/turnoPendiente.js
+      // (resolverFinTrasEditar), aparte para poder probarla: ver
+      // scripts/probarTurnoPendiente.js.
+      const { fin: nuevoFin, reArmaAviso: nuevoFinEnFuturo, cancelaAviso } = resolverFinTrasEditar({ finCalculado });
 
       play.finProgramado = nuevoFin;
       // Re-armamos el aviso SOLO si el nuevo fin está en el FUTURO (extensión de
