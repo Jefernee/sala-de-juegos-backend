@@ -56,7 +56,8 @@ export const CATEGORIAS_INGRESO = [
   'Abono de préstamo',
   'Negocio',
   'Ventas/Extras',
-  'Préstamos',
+  // Plata que TE prestan (antes "Préstamos": se confundía con "Abono de préstamo").
+  'Me prestaron',
   'Otros',
 ];
 
