@@ -1279,21 +1279,35 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
       `Pagaste ${fmtCRC(totalGastoDesdeAhorro)} directo con el ahorro${detalle}. No toca el saldo del mes —esa plata nunca pasó por tu bolsillo— pero tu acumulado quedó en ${fmtCRC(ahorroAcumulado)}.${pesoSobreAhorro}`);
   }
 
-  // --- 2) Proyección de cierre (solo si el mes va a medias y ya hay días suficientes)
+  // --- 2) Ritmo de gasto: ¿para cuántos días alcanza lo que se puede gastar?
+  // Antes comparaba la proyección del mes contra lo que había entrado HASTA HOY,
+  // así que antes del pago siempre decía "no alcanzaría". Ahora cruza el ritmo
+  // con "Podés gastar hasta" (el mismo número de la fila). Si la fila ya está
+  // en ₡0, el aviso 🚨 de arriba ya lo dice y este no sale.
+  // `proyeccionGastos` se sigue calculando para la comparación del punto 4.
   let proyeccionGastos = null;
   if (mesAMedias && diasTranscurridos >= 5 && totalGastos > 0) {
     const porDia = totalGastos / diasTranscurridos;
     proyeccionGastos = Math.round(porDia * diasDelMes);
     const faltan = diasDelMes - diasTranscurridos;
-    if (totalIngresos > 0 && proyeccionGastos + totalAhorro > totalIngresos) {
-      add('advertencia', '⏳', `Vas gastando ${fmtCRC(porDia)} por día: a ese ritmo el mes cierra en ${fmtCRC(proyeccionGastos)} de gastos y no alcanzaría con lo que entró. Te quedan ${faltan} días y ${fmtCRC(saldoFinal)} de saldo.`);
-    } else {
-      add('info', '⏳', `Vas gastando ${fmtCRC(porDia)} por día: a ese ritmo el mes cerraría cerca de ${fmtCRC(proyeccionGastos)} en gastos (faltan ${faltan} días).`);
+    const podesGastar = arrastre + fin.variacionSaldo;
+    if (podesGastar > 0) {
+      const dias = Math.floor(podesGastar / porDia);
+      const alcanza = dias < 1 ? 'no te alcanza ni para un día más' : `te alcanza para unos ${dias} ${dias === 1 ? 'día' : 'días'}`;
+      const ritmo = `Al ritmo de ${fmtCRC(porDia)} por día, lo que podés gastar (${fmtCRC(podesGastar)}) ${alcanza}`;
+      if (arrastre > 0) {
+        add('consejo', '📆', `${ritmo}. Si tu pago tarda más que eso, bajá el ritmo para no tocar lo que tenías del mes pasado.`);
+      } else if (dias < faltan) {
+        add('advertencia', '📆', `${ritmo} y faltan ${faltan} para terminar el mes. Si no te entra otro pago antes, tendrías que bajar a ${fmtCRC(podesGastar / faltan)} por día.`);
+      } else {
+        add('info', '📆', `${ritmo}: de sobra para los ${faltan} días que le quedan al mes.`);
+      }
     }
   }
 
-  // --- 3) Ingresos vs mes anterior
-  if (ingresoPrevio > 0 && totalIngresos > 0) {
+  // --- 3) Ingresos vs mes anterior. Solo con el mes cerrado: a medias se
+  // compararía un pedazo de mes contra uno completo ("bajaron 100%" el día 7).
+  if (!mesAMedias && ingresoPrevio > 0 && totalIngresos > 0) {
     const dif = totalIngresos - ingresoPrevio;
     const pct = Math.round((Math.abs(dif) / ingresoPrevio) * 100);
     if (dif < 0 && pct >= 10) {
@@ -1363,9 +1377,10 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
     }
   }
 
-  // --- 6) Gastos fijos: la parte del ingreso que no podés mover
+  // --- 6) Gastos fijos: la parte del ingreso que no podés mover. Solo con el
+  // mes cerrado: con medio sueldo anotado el porcentaje sale inflado.
   const totalFijos = sumarSi(filasGasto, esGastoFijo);
-  if (totalFijos > 0 && totalIngresos > 0) {
+  if (!mesAMedias && totalFijos > 0 && totalIngresos > 0) {
     const pct = Math.round((totalFijos / totalIngresos) * 100);
     if (pct >= 50) {
       add('advertencia', '🧱', `Tus gastos fijos (alquiler, servicios, internet, seguros, cuota del banco, suscripciones) se llevan el ${pct}% de lo que entra: ${fmtCRC(totalFijos)}. Arriba del 50% cualquier bajón de ingresos pega fuerte, porque esa plata no se puede recortar de un día para otro.`);
@@ -1377,7 +1392,8 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
   // --- 7) Peso de las deudas SOBRE LOS INGRESOS (regla clásica: máx. 30%)
   const filasDeuda = filasGasto.filter((e) => CATEGORIAS_DEUDA.includes(e.categoria));
   const totalDeuda = filasDeuda.reduce((s, e) => s + e.total, 0);
-  if (totalDeuda > 0 && totalIngresos > 0) {
+  // Igual que los fijos: solo con el mes cerrado.
+  if (!mesAMedias && totalDeuda > 0 && totalIngresos > 0) {
     const pct = Math.round((totalDeuda / totalIngresos) * 100);
     const detalle = filasDeuda.length > 1 ? ` (${listarFilas(filasDeuda)})` : '';
     if (pct >= 30) {
@@ -1415,7 +1431,8 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
   // apartar ₡100.000 y sacar ₡300.000 el mismo mes no es "ahorré 12%". Si hubo
   // retiro o gasto pagado con el ahorro, los avisos 🏧/🏦 ya contaron esa
   // historia con los dos números, así que este no se repite.
-  if (totalIngresos > 0 && totalRetiroAhorro === 0 && totalGastoDesdeAhorro === 0) {
+  // Antes de que entre el pago del mes no se juzga el ahorro: se aparta al cobrar.
+  if (podes?.conPago !== false && totalIngresos > 0 && totalRetiroAhorro === 0 && totalGastoDesdeAhorro === 0) {
     const tasa = Math.round((ahorroNetoMes / totalIngresos) * 100);
     const tasaPrevia = ingresoPrevio > 0 ? Math.round((ahorroPrevio / ingresoPrevio) * 100) : null;
     const meta = Math.round(totalIngresos * 0.1);
@@ -1755,6 +1772,8 @@ const construirRecomendacionesAnuales = ({
   comparativo,
   enCurso,
   mesesConMovimiento,
+  mesEnCurso = null,             // el mes que todavía corre (año en curso), o null
+  gastoPromedioReciente = null,  // calcularGastoPromedioMensual: el mismo del 🛟 del mes
 }) => {
   const recs = [];
   const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
@@ -1772,11 +1791,20 @@ const construirRecomendacionesAnuales = ({
   const salidasAhorro = totalRetiroAhorro + totalGastoDesdeAhorro;
   const ahorroNeto = totales.ahorroNeto ?? totalAhorro;
   const conMov = meses.filter((m) => m.movimientos > 0);
-  const promedioGasto = Math.round(totalGastos / mesesConMovimiento);
+  // Solo meses CERRADOS: el que va corriendo todavía no "cerró" en rojo (antes
+  // del pago siempre va negativo) ni es un mes de gasto completo.
+  const cerrados = conMov.filter((m) => m.mes !== mesEnCurso);
+  // Gasto de un mes normal: meses cerrados que tuvieron gastos. Un mes a medias
+  // o uno sin gastos (solo un ajuste) bajaban el promedio y hacían ver "caro" a
+  // cualquier mes normal. Sin meses así, cae en el promedio de antes.
+  const conGasto = cerrados.filter((m) => m.totalGastos > 0);
+  const promedioGasto = conGasto.length > 0
+    ? Math.round(conGasto.reduce((s, m) => s + m.totalGastos, 0) / conGasto.length)
+    : Math.round(totalGastos / mesesConMovimiento);
 
   // --- 1) Resultado del año: ¿el saldo creció o se achicó?
   const difSaldo = saldoFinalAnio - saldoInicialAnio;
-  const enRojo = conMov.filter((m) => m.balanceMes < 0);
+  const enRojo = cerrados.filter((m) => m.balanceMes < 0);
   // Con retiros de por medio, hablar del ahorro apartado (bruto) engañaría: lo
   // que importa es cuánto subió o bajó el ahorro en el año.
   const frasAhorro = salidasAhorro > 0
@@ -1809,7 +1837,7 @@ const construirRecomendacionesAnuales = ({
   if (enRojo.length > 0) {
     const cuales = enRojo.map((m) => m.nombreMes).join(', ');
     const peor = enRojo.reduce((a, b) => (a.balanceMes <= b.balanceMes ? a : b));
-    add(enRojo.length >= 3 ? 'critico' : 'advertencia', '🚨', `${enRojo.length} de ${mesesConMovimiento} ${enRojo.length === 1 ? 'mes cerró' : 'meses cerraron'} gastando más de lo que entró (${cuales}). El peor fue ${peor.nombreMes} con ${fmtCRC(peor.balanceMes)}. Esos son los meses que hay que mirar para que no se repitan.`);
+    add(enRojo.length >= 3 ? 'critico' : 'advertencia', '🚨', `${enRojo.length} de ${cerrados.length} ${enRojo.length === 1 ? 'mes cerró' : 'meses cerraron'} gastando más de lo que entró (${cuales}). El peor fue ${peor.nombreMes} con ${fmtCRC(peor.balanceMes)}. Esos son los meses que hay que mirar para que no se repitan.`);
   }
 
   // --- 3) Tasa de ahorro del año, sobre el ahorro NETO (apartado − retirado):
@@ -1888,17 +1916,20 @@ const construirRecomendacionesAnuales = ({
     }
   }
 
-  // --- 9) Colchón al cierre del año (a mano + apartado)
-  if (promedioGasto > 0) {
+  // --- 9) Colchón al cierre del año (a mano + apartado). El gasto de referencia
+  // es el MISMO que usa el 🛟 del mes (últimos 3 meses cerrados, con lo pagado
+  // con el ahorro); antes el anual decía 13 meses cubiertos y el del mes 8.
+  const gastoColchon = gastoPromedioReciente || promedioGasto;
+  if (gastoColchon > 0) {
     const colchon = saldoFinalAnio + ahorroFinalAnio;
-    const mesesCubiertos = colchon / promedioGasto;
+    const mesesCubiertos = colchon / gastoColchon;
     const detalle = ahorroFinalAnio > 0
       ? `${fmtCRC(saldoFinalAnio)} a mano + ${fmtCRC(ahorroFinalAnio)} ahorrados`
       : `${fmtCRC(saldoFinalAnio)} a mano`;
     if (mesesCubiertos >= 3) {
-      add('bien', '🛟', `${enCurso ? 'Hoy' : `Al cerrar ${anio}`} tenés ${detalle}: ${Math.floor(mesesCubiertos)} meses de gastos cubiertos (gastás ~${fmtCRC(promedioGasto)} al mes). Ese es un fondo de emergencia de verdad.`);
+      add('bien', '🛟', `${enCurso ? 'Hoy' : `Al cerrar ${anio}`} tenés ${detalle}: ${Math.floor(mesesCubiertos)} meses de gastos cubiertos (gastás ~${fmtCRC(gastoColchon)} al mes). Ese es un fondo de emergencia de verdad.`);
     } else if (colchon > 0) {
-      add('consejo', '🛟', `${enCurso ? 'Hoy' : `Al cerrar ${anio}`} tu colchón es ${detalle}: ${mesesCubiertos.toFixed(1).replace('.', ',')} meses de gastos. Para llegar a los 3 meses recomendados te faltan ${fmtCRC(promedioGasto * 3 - colchon)}.`);
+      add('consejo', '🛟', `${enCurso ? 'Hoy' : `Al cerrar ${anio}`} tu colchón es ${detalle}: ${mesesCubiertos.toFixed(1).replace('.', ',')} meses de gastos. Para llegar a los 3 meses recomendados te faltan ${fmtCRC(gastoColchon * 3 - colchon)}.`);
     }
   }
 
@@ -1934,11 +1965,19 @@ export const getResumenAnual = async (req, res) => {
     await asegurarSnapshots(req.user.id);
 
     // UNA consulta para el año y el anterior (≤24 docs) + los acumulados al 1 de enero.
-    const [snapshots, acum] = await Promise.all([
+    // Año en curso: el mes de hoy todavía no cerró. Para el colchón se usa el
+    // gasto de los 3 meses cerrados antes de hoy (o antes del enero siguiente,
+    // si el año ya terminó), igual que el 🛟 del mes.
+    const enCurso = anio === anioActualCR();
+    const mesEnCurso = enCurso ? Number(hoyCostaRica().slice(5, 7)) : null;
+    const [snapshots, acum, gastoPromedioReciente] = await Promise.all([
       ResumenPersonalMes.find({ usuario: req.user.id, anio: { $in: [anio - 1, anio] } })
         .sort({ anio: 1, mes: 1 })
         .lean(),
       calcularAcumulados(req.user.id, 1, anio),
+      enCurso
+        ? calcularGastoPromedioMensual(req.user.id, mesEnCurso, anio)
+        : calcularGastoPromedioMensual(req.user.id, 1, anio + 1),
     ]);
 
     const delAnio = snapshots.filter((s) => s.anio === anio);
@@ -2076,7 +2115,8 @@ export const getResumenAnual = async (req, res) => {
       mesMasGastoDesdeAhorro:
         totales.totalGastoDesdeAhorro > 0 ? mejor('totalGastoDesdeAhorro', true) : null,
       categoriaTopGasto: desglose.gasto[0] || null,
-      mesesEnRojo: conMov.filter((m) => m.balanceMes < 0).map((m) => ({
+      // Solo meses cerrados (el que va corriendo no "cerró" en rojo).
+      mesesEnRojo: conMov.filter((m) => m.balanceMes < 0 && m.mes !== mesEnCurso).map((m) => ({
         mes: m.mes,
         nombreMes: m.nombreMes,
         balanceMes: m.balanceMes,
@@ -2116,8 +2156,6 @@ export const getResumenAnual = async (req, res) => {
         },
       };
     }
-
-    const enCurso = anio === anioActualCR();
 
     res.status(200).json({
       anio,
@@ -2166,6 +2204,8 @@ export const getResumenAnual = async (req, res) => {
         comparativo,
         enCurso,
         mesesConMovimiento,
+        mesEnCurso,
+        gastoPromedioReciente,
       }),
     });
   } catch (error) {

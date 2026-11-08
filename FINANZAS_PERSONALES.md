@@ -654,3 +654,16 @@ pago.
 - El aviso principal de los mensajes usa el mismo número: mientras queda algo de
   lo que sobró dice cuánto queda; si se acabó, cuánto se usó «de lo que tenías del
   mes pasado».
+
+### Mensajes con el mes a medias
+
+- 📆 **Te alcanza para X días**: el ritmo de gasto del mes contra lo que se puede
+  gastar (reemplaza a «no alcanzaría con lo que entró», que comparaba contra lo
+  entrado hasta hoy). No sale si la fila ya está en ₡0.
+- Mientras el mes va a medias **no** se comparan ingresos contra el mes anterior
+  ni se calcula el peso de fijos y deudas (con medio sueldo anotado salen
+  inflados). Antes de que entre el pago tampoco se juzga el ahorro.
+- Reporte anual: el mes en curso no cuenta como «cerrado en rojo» (mensaje y
+  `mesesEnRojo`), el colchón 🛟 usa el mismo gasto de referencia que el del mes
+  (`calcularGastoPromedioMensual`) y el «mes más caro» se compara contra el
+  promedio de los meses cerrados con gastos.
