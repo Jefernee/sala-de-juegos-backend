@@ -628,3 +628,51 @@ referencia:", "Nombre cliente Destino:"...). Solo cuenta si dice "debitado"; un
 SINPE recibido ("acreditado") se ignora. Entra en **Otros** (el correo dice a
 quién, no para qué) con descripción "SINPE a <nombre>" y `referenciaBanco` =
 "SINPE-<referencia>".
+
+---
+
+## 10. «Podés gastar hasta» arrastra lo que sobró hasta el primer pago
+
+**El problema.** La fila medía solo el mes (`variacionSaldo`). Del día 1 hasta el
+primer pago marcaba ₡0 aunque hubiera sobrado plata del mes anterior.
+
+**La regla.** Lo que sobró pasa al mes siguiente y se queda en la fila hasta que
+entra el **primer pago** del mes: un ingreso de categoría `Salario`, `Salario
+MEP`, `Salario CreAI`, `Aguinaldo`, `Aguinaldo MEP` o `Bono escolar`
+(`CATEGORIAS_PAGO`). Ahí se suelta lo que quedaba sin gastar —ya está dentro de
+«Te queda»— y la fila vuelve a contar solo el mes. Los extras (`FCL`, `Caja de
+ANDE`, `Otros`…) suman, pero no sueltan nada.
+
+```
+podesGastar = arrastre + flujo del mes − liberado
+liberado    = entre 0 y arrastre: arrastre + flujoAntesDelPago
+arrastre    = max(0, podesGastar del mes anterior)
+```
+
+- Lo gastado antes del pago sale primero del arrastre: el pago no lo paga dos veces.
+- Mes sin pago (enero hasta el bono escolar, o si se deja de cobrar): el arrastre
+  sigue y baja con cada gasto; al acabarse marca ₡0.
+- **No cambia** `saldoInicial`, `saldoFinal` («Te queda»), el ahorro ni el reporte
+  anual. Se aplica a todos los meses (también los viejos).
+- Snapshot v4: `fechaPrimerPago` y `flujoAntesDelPago`. El cálculo es
+  `recorrerPodesGastar` (función pura) sobre los snapshots.
+- `GET /resumen` agrega `podesGastar` y `podesGastarDetalle: { arrastre,
+  liberado, fechaPrimerPago }`.
+
+### Mensajes del mes
+
+- El aviso principal usa `podesGastar` (nunca contradice la fila). Antes del pago,
+  dice cuánto queda de lo que sobró en vez de «los gastos pasaron lo que entró».
+- 📆 **Te alcanza para X días**: ritmo de gasto contra lo que queda para gastar.
+- 📌 **Fijos pendientes**: fijos ≥ ₡5.000 que el mes anterior se pagaron por esta
+  fecha (hasta 3 días después) y este mes todavía no están.
+- 🐜 **Gastos hormiga**: 8+ compras de menos de ₡5.000 que pesan 10%+ del gasto.
+- Con el mes a medias **no** se comparan ingresos ni se calcula el peso de fijos y
+  deudas (saldrían inflados). Antes del pago tampoco se juzga el ahorro.
+
+### Reporte anual
+
+- El mes en curso no cuenta como «cerrado en rojo» (mensaje y `mesesEnRojo`).
+- El colchón 🛟 usa el mismo gasto de referencia que el del mes
+  (`calcularGastoPromedioMensual`), y el «mes más caro» se compara contra el
+  promedio de los meses cerrados con gastos.

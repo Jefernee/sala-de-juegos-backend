@@ -72,6 +72,15 @@ const resumenPersonalMesSchema = new mongoose.Schema(
     // balanceMes + totalRetiroAhorro.
     balanceMes: { type: Number, default: 0 },
 
+    // ── Para "Podés gastar hasta" con arrastre ──
+    // Cuándo entró el PRIMER pago del mes (sueldo, aguinaldo, bono escolar; ver
+    // CATEGORIAS_PAGO), o null si todavía no entró ninguno.
+    fechaPrimerPago: { type: Date, default: null },
+    // Cuánto se movió el saldo a mano ANTES de ese pago (ingresos − egresos +
+    // retiros). Con esto se sabe cuánto de lo arrastrado ya se había gastado
+    // cuando cayó el pago, sin volver a leer los movimientos.
+    flujoAntesDelPago: { type: Number, default: 0 },
+
     // ── Desglose por categoría ──
     desgloseIngreso: { type: [filaCategoriaSchema], default: [] },
     desgloseEgreso: { type: [filaCategoriaSchema], default: [] },

@@ -43,6 +43,11 @@ export const CATEGORIAS_INGRESO = [
   'Salario',
   'Salario MEP',
   'Salario CreAI',
+  'Aguinaldo',
+  'Aguinaldo MEP',
+  'Bono escolar',
+  'FCL',
+  'Caja de ANDE',
   'Negocio',
   'Ventas/Extras',
   'Préstamos',
@@ -116,6 +121,20 @@ export const CATEGORIAS_FIJAS = [
 // Gastos asociados a los viajes a Batán (comida allá + los viajes en sí).
 // Se agrupan para poder decir cuánto cuesta Batán en total cada mes.
 export const CATEGORIAS_BATAN = ['Comida en Batán', 'Viajes a Batán'];
+
+// Ingresos que son un PAGO (el sueldo, el aguinaldo, el bono escolar): son los
+// que sueltan lo que "Podés gastar hasta" arrastraba del mes anterior. Los
+// demás ingresos (FCL, Caja de ANDE, Otros…) son extras: suman, pero no sueltan.
+export const CATEGORIAS_PAGO = [
+  'Salario',
+  'Salario MEP',
+  'Salario CreAI',
+  'Aguinaldo',
+  'Aguinaldo MEP',
+  'Bono escolar',
+];
+
+export const esPago = (tipo, categoria) => tipo === 'ingreso' && CATEGORIAS_PAGO.includes(categoria);
 
 // Helper: ¿esta categoría de egreso es ahorro?
 export const esAhorro = (categoria) => CATEGORIAS_AHORRO.includes(categoria);
