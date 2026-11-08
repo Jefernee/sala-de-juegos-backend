@@ -22,6 +22,7 @@ import MovimientoPersonal, {
   CATEGORIAS_DEUDA,
   CATEGORIAS_FIJAS,
   CATEGORIAS_AHORRO,
+  CATEGORIAS_PAGO,
   MONEDAS,
   FONDOS,
   categoriasPorTipo,
@@ -752,6 +753,72 @@ const calcularAcumulados = async (usuarioId, mes, anio) => {
   };
 };
 
+// ============================================
+// "Podés gastar hasta": lo que sobró del mes pasado espera al primer pago.
+//
+// La fila mide el mes (variacionSaldo: lo que entró − lo que se gastó y se
+// apartó). Como el pago no cae el día 1, del 1 hasta el pago marcaba ₡0 aunque
+// hubiera sobrado plata. Ahora, MIENTRAS el mes no tiene pago, la fila arranca
+// con lo que marcó el mes anterior al cerrar (el "arrastre") y cada gasto lo
+// baja. Cuando entra el primer pago del mes (CATEGORIAS_PAGO: sueldo,
+// aguinaldo, bono escolar) la fila vuelve a contar solo el mes, igual que
+// antes. Lo que quedara del arrastre no se pierde: siempre estuvo en "Tenés a
+// mano".
+//
+// Un mes que SÍ tuvo pago cierra con lo del mes y nada más, así que los meses
+// pasados muestran lo mismo que antes del cambio. Un mes sin ningún pago
+// (enero hasta el bono escolar) pasa su cierre al siguiente. Nunca se arrastra
+// un negativo: un mes que cerró pasado arranca el siguiente en ₡0.
+//
+// No toca saldoInicial, saldoFinal ("Tenés a mano"), el ahorro ni el reporte.
+// ============================================
+
+// Recorre los meses desde el del último pago (o desde el primero con datos)
+// hasta el anterior al consultado y devuelve con cuánto arranca el consultado.
+// `flujos`: Map ordinalMes → variacionSaldo de ese mes.
+export const arrastreAlEmpezar = (flujos, ordinalUltimoPago, ordinalMesConsultado) => {
+  const inicio = ordinalUltimoPago ?? (flujos.size ? Math.min(...flujos.keys()) : ordinalMesConsultado);
+  let cierre = 0;
+  for (let o = inicio; o < ordinalMesConsultado; o++) {
+    const flujo = flujos.get(o) || 0;
+    // El mes del pago cierra con lo suyo; los siguientes (sin pago) suman lo
+    // que venía, si era positivo.
+    cierre = o === ordinalUltimoPago ? flujo : Math.max(0, cierre) + flujo;
+  }
+  return Math.max(0, cierre);
+};
+
+const calcularPodesGastar = async (usuarioId, mes, anio) => {
+  const usuario = new mongoose.Types.ObjectId(usuarioId);
+  const { $gte: inicioMes, $lt: finMes } = crearFiltroMes(mes, anio);
+  const esPagoEn = (fecha) => ({ usuario, tipo: 'ingreso', categoria: { $in: CATEGORIAS_PAGO }, fecha });
+
+  const [pagoDelMes, ultimoPagoAntes] = await Promise.all([
+    MovimientoPersonal.findOne(esPagoEn({ $gte: inicioMes, $lt: finMes }), 'fecha').sort({ fecha: 1 }).lean(),
+    MovimientoPersonal.findOne(esPagoEn({ $lt: inicioMes }), 'fecha').sort({ fecha: -1 }).lean(),
+  ]);
+  if (pagoDelMes) return { arrastre: 0, conPago: true };
+
+  const desde = ultimoPagoAntes ? anioMesCR(ultimoPagoAntes.fecha) : null;
+  const snaps = await ResumenPersonalMes.find(
+    {
+      usuario,
+      $and: [
+        { $or: [{ anio: { $lt: anio } }, { anio, mes: { $lt: mes } }] },
+        desde ? { $or: [{ anio: { $gt: desde.anio } }, { anio: desde.anio, mes: { $gte: desde.mes } }] } : {},
+      ],
+    },
+    'anio mes balanceMes totalRetiroAhorro'
+  ).lean();
+  const flujos = new Map(
+    snaps.map((s) => [ordinalMes(s.anio, s.mes), (s.balanceMes || 0) + (s.totalRetiroAhorro || 0)])
+  );
+  return {
+    arrastre: arrastreAlEmpezar(flujos, desde ? ordinalMes(desde.anio, desde.mes) : null, ordinalMes(anio, mes)),
+    conPago: false,
+  };
+};
+
 // ════════════════════════════════════════════════════════════════════
 // INVARIANTE: el ahorro acumulado NUNCA puede quedar negativo
 // ════════════════════════════════════════════════════════════════════
@@ -980,15 +1047,24 @@ export const getResumenMensual = async (req, res) => {
     // Snapshots al día (solo la 1ª vez por proceso; después no hace nada).
     await asegurarSnapshots(req.user.id);
 
-    const [snap, acum] = await Promise.all([
+    const [snap, acum, podes] = await Promise.all([
       leerResumenMes(req.user.id, mes, anio),
       calcularAcumulados(req.user.id, mes, anio),
+      calcularPodesGastar(req.user.id, mes, anio),
     ]);
+    const finanzas = componerFinanzasMes(comoResumen(snap), acum.saldoInicial, acum.ahorroAcumulado);
 
     res.status(200).json({
       mes,
       anio,
-      ...componerFinanzasMes(comoResumen(snap), acum.saldoInicial, acum.ahorroAcumulado),
+      ...finanzas,
+      // "Podés gastar hasta" (ver calcularPodesGastar). Puede ser negativo: el
+      // frontend lo muestra en ₡0 y dice cuánto se usó de lo del mes pasado.
+      podesGastar: podes.arrastre + finanzas.variacionSaldo,
+      podesGastarDetalle: {
+        arrastre: podes.arrastre, // lo que sobró del mes pasado (0 si ya entró el pago)
+        conPago: podes.conPago,   // ¿ya entró el primer pago de este mes?
+      },
       // Cuánto había ahorrado al EMPEZAR el mes. Con esto el frontend puede
       // dibujar el ahorro como una escalera que cierra sola:
       //   ahorroInicial + totalAhorro − totalRetiroAhorro − totalGastoDesdeAhorro
@@ -1079,7 +1155,7 @@ const UMBRAL_CAMBIO = 5000;
 // Cada mensaje trae `nivel` (para que el frontend lo pinte), `icono` y `mensaje`.
 //   niveles: 'critico' | 'advertencia' | 'bien' | 'consejo' | 'info'
 // ============================================
-const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcumulado = 0, gastoPromedio = null, mes, anio }) => {
+const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcumulado = 0, gastoPromedio = null, podes = null, mes, anio }) => {
   const recs = [];
   const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
 
@@ -1131,7 +1207,20 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
   // (fin.libreParaGastar), así que se toma de ahí para que el aviso y la tarjeta
   // nunca se contradigan.
   const flujo = fin.libreParaGastar;
-  if (totalIngresos === 0 && totalGastos > 0) {
+  // Mientras el pago del mes no entra y sobró algo del mes pasado, la fila
+  // "Podés gastar hasta" cuenta eso (ver calcularPodesGastar). El aviso usa el
+  // mismo número para no contradecirla, y el mes no se juzga contra sus
+  // ingresos porque el pago todavía no llegó.
+  const arrastre = podes && !podes.conPago ? podes.arrastre : 0;
+  if (arrastre > 0) {
+    const quedan = arrastre + fin.variacionSaldo;
+    const cuando = mesAMedias ? 'tu pago de este mes todavía no entra' : 'este mes no entró ningún pago';
+    if (quedan >= 0) {
+      add('info', '⏳', `${cuando.charAt(0).toUpperCase()}${cuando.slice(1)}: de lo que sobró de ${nombrePrevio} (${fmtCRC(arrastre)}) te quedan ${fmtCRC(quedan)}.`);
+    } else {
+      add('critico', '🚨', `Ya se acabó lo que sobró de ${nombrePrevio} (${fmtCRC(arrastre)}) y ${cuando}: llevás ${fmtCRC(Math.abs(quedan))} gastados de lo que tenías del mes pasado.`);
+    }
+  } else if (totalIngresos === 0 && totalGastos > 0) {
     add('advertencia', '❓', `Registraste ${fmtCRC(totalGastos)} en gastos y ningún ingreso este mes. Si te falta anotar el salario, todos los porcentajes de abajo van a salir mal.`);
   } else if (totalGastos > totalIngresos) {
     // Lo que sale del saldo viejo es |flujo| (gastos Y ahorro), no solo el
@@ -1143,15 +1232,15 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
       // todo o en parte). Decir otra cosa sería falso.
       const resto = sobregiro - totalRetiroAhorro;
       add('critico', '🚨', resto > 0
-        ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro para cubrirlo y los otros ${fmtCRC(resto)} salieron del saldo que traías.`
+        ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Sacaste ${fmtCRC(totalRetiroAhorro)} del ahorro para cubrirlo y los otros ${fmtCRC(resto)} salieron de lo que tenías del mes pasado.`
         : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y lo tapaste sacando ${fmtCRC(totalRetiroAhorro)} del ahorro. Tu acumulado bajó a ${fmtCRC(ahorroAcumulado)}: el mes se financió con plata vieja, no con dinero nuevo.`);
     } else {
       add('critico', '🚨', totalAhorro > 0
-        ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y encima apartaste ${fmtCRC(totalAhorro)} de ahorro. En total le sacaste ${fmtCRC(Math.abs(flujo))} al saldo de meses anteriores, no lo tapaste con dinero nuevo.`
-        : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Ese hueco lo estás tapando con el saldo de meses anteriores, no con dinero nuevo.`);
+        ? `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}, y encima apartaste ${fmtCRC(totalAhorro)} de ahorro. En total usaste ${fmtCRC(Math.abs(flujo))} de lo que tenías del mes pasado, no lo tapaste con dinero nuevo.`
+        : `Alerta: los gastos del mes pasaron lo que entró por ${fmtCRC(sobregiro)}. Ese hueco lo estás tapando con lo que tenías del mes pasado, no con dinero nuevo.`);
     }
   } else if (flujo < 0) {
-    add('advertencia', '🏦', `Para apartar ${fmtCRC(totalAhorro)} de ahorro tuviste que sacar ${fmtCRC(Math.abs(flujo))} del saldo acumulado. Así el ahorro solo cambia de bolsillo: lo sano es que salga de lo que entra en el mes.`);
+    add('advertencia', '🏦', `Para apartar ${fmtCRC(totalAhorro)} de ahorro tuviste que usar ${fmtCRC(Math.abs(flujo))} de lo que tenías del mes pasado. Así el ahorro solo cambia de bolsillo: lo sano es que salga de lo que entra en el mes.`);
   } else if (totalIngresos > 0 && flujo < totalIngresos * 0.05) {
     add('advertencia', '😬', `${mesAMedias ? 'Vas al filo' : 'Cerraste al filo'}: de los ${fmtCRC(totalIngresos)} que entraron ${mesAMedias ? 'solo quedan' : 'solo sobraron'} ${fmtCRC(flujo)} libres después de gastos y ahorro. Un imprevisto te deja en rojo.`);
   } else if (flujo > 0) {
@@ -1405,11 +1494,12 @@ export const getRecomendaciones = async (req, res) => {
     await asegurarSnapshots(req.user.id);
 
     // Todo sale de snapshots ya sumados: no se recorren los movimientos.
-    const [snapActual, snapPrevio, acum, gastoPromedio] = await Promise.all([
+    const [snapActual, snapPrevio, acum, gastoPromedio, podes] = await Promise.all([
       leerResumenMes(req.user.id, mes, anio),
       leerResumenMes(req.user.id, mesPrevio, anioPrevio),
       calcularAcumulados(req.user.id, mes, anio),
       calcularGastoPromedioMensual(req.user.id, mes, anio),
+      calcularPodesGastar(req.user.id, mes, anio),
     ]);
 
     const actual = comoResumen(snapActual);
@@ -1426,6 +1516,7 @@ export const getRecomendaciones = async (req, res) => {
         saldoInicial,
         ahorroAcumulado,
         gastoPromedio,
+        podes,
         mes,
         anio,
       }),

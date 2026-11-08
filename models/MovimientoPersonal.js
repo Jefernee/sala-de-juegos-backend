@@ -122,6 +122,19 @@ export const CATEGORIAS_FIJAS = [
 // Se agrupan para poder decir cuánto cuesta Batán en total cada mes.
 export const CATEGORIAS_BATAN = ['Comida en Batán', 'Viajes a Batán'];
 
+// Ingresos que son un PAGO (sueldo, aguinaldo, bono escolar). Hasta que entra
+// el primero del mes, "Podés gastar hasta" sigue con lo que sobró del mes
+// pasado. Los demás ingresos (FCL, Caja de ANDE, Otros…) son extras: suman,
+// pero no cuentan como pago.
+export const CATEGORIAS_PAGO = [
+  'Salario',
+  'Salario MEP',
+  'Salario CreAI',
+  'Aguinaldo',
+  'Aguinaldo MEP',
+  'Bono escolar',
+];
+
 // Helper: ¿esta categoría de egreso es ahorro?
 export const esAhorro = (categoria) => CATEGORIAS_AHORRO.includes(categoria);
 

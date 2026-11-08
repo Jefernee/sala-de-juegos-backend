@@ -628,3 +628,29 @@ referencia:", "Nombre cliente Destino:"...). Solo cuenta si dice "debitado"; un
 SINPE recibido ("acreditado") se ignora. Entra en **Otros** (el correo dice a
 quién, no para qué) con descripción "SINPE a <nombre>" y `referenciaBanco` =
 "SINPE-<referencia>".
+
+---
+
+## 10. «Podés gastar hasta» espera al primer pago del mes
+
+Antes la fila medía solo el mes (`variacionSaldo`), así que del día 1 hasta el
+primer pago marcaba ₡0 aunque hubiera sobrado plata.
+
+**La regla.** Mientras el mes no tiene pago, la fila arranca con lo que marcó el
+mes anterior al cerrar (si fue positivo) y cada gasto lo baja. Cuando entra el
+primer pago del mes —un ingreso de `Salario`, `Salario MEP`, `Salario CreAI`,
+`Aguinaldo`, `Aguinaldo MEP` o `Bono escolar` (`CATEGORIAS_PAGO`)— la fila vuelve
+a contar solo el mes, igual que antes. FCL, Caja de ANDE y Otros no cuentan como
+pago.
+
+- Un mes con pago muestra lo mismo que antes del cambio (los meses viejos no se
+  mueven). Un mes sin pago pasa su cierre al siguiente. Nunca se arrastra un
+  negativo.
+- `GET /resumen` agrega `podesGastar` (= `arrastre + variacionSaldo`) y
+  `podesGastarDetalle: { arrastre, conPago }`. Cálculo: `calcularPodesGastar` y
+  la función pura `arrastreAlEmpezar`.
+- **No cambia** `saldoFinal` (en pantalla ahora se llama «Tenés a mano»), el
+  ahorro ni el reporte anual.
+- El aviso principal de los mensajes usa el mismo número: mientras queda algo de
+  lo que sobró dice cuánto queda; si se acabó, cuánto se usó «de lo que tenías del
+  mes pasado».
