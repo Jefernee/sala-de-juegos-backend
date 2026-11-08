@@ -667,3 +667,22 @@ pago.
   `mesesEnRojo`), el colchón 🛟 usa el mismo gasto de referencia que el del mes
   (`calcularGastoPromedioMensual`) y el «mes más caro» se compara contra el
   promedio de los meses cerrados con gastos.
+
+---
+
+## 11. Préstamos dados, abonos e ingresos al ahorro
+
+- **«Préstamo dado»** (egreso) y **«Abono de préstamo»** (ingreso) llevan
+  `persona` (obligatoria; en cualquier otra categoría se guarda `null`).
+  «Deudas/Préstamos» queda para deudas propias.
+- Un **ingreso** puede ir directo al ahorro (`fondo: 'ahorro'` + `bolsaAhorro`):
+  es el espejo del gasto pagado con el ahorro. Sube el ahorro acumulado y no toca
+  `totalIngresos`, el saldo a mano ni «Podés gastar hasta». Snapshot v5:
+  `totalIngresoAlAhorro` y `desgloseIngresoAhorro` (también en el anual).
+- `GET /prestamos` → «Te deben»: `{ totalTeDeben, personas: [{ persona,
+  prestado, abonado, pendiente, movimientos }] }`. Agrupa por nombre sin
+  mayúsculas, tildes ni espacios de más; muestra el nombre como se anotó primero.
+- **Mensajes:** un préstamo no es gasto. Se saca de las comparaciones, las
+  categorías, el ritmo de gasto, el 🏦 «pagaste con el ahorro», la tasa de ahorro
+  y el promedio del colchón; tiene su propio 🤝 (en el mes y en el año) con
+  cuánto te deben hoy. El 📅/💰/🏧 del año informan el ahorro sin préstamos.

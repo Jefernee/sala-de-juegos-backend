@@ -249,13 +249,12 @@ export const getCategorias = async (_req, res) => {
 //   bolsaAhorro }] }] } — de mayor a menor pendiente.
 // ============================================
 const clavePersona = (nombre) =>
-  String(nombre || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
+  String(nombre || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().replace(/\s+/g, ' ').toLowerCase();
 
-export const getPrestamos = async (req, res) => {
-  try {
+const calcularPrestamos = async (usuarioId) => {
     const movs = await MovimientoPersonal.find(
       {
-        usuario: req.user.id,
+        usuario: usuarioId,
         $or: [
           { tipo: 'egreso', categoria: CATEGORIA_PRESTAMO },
           { tipo: 'ingreso', categoria: CATEGORIA_ABONO },
@@ -289,11 +288,16 @@ export const getPrestamos = async (req, res) => {
       .map((p) => ({ ...p, pendiente: p.prestado - p.abonado, movimientos: p.movimientos.reverse() }))
       .sort((a, b) => b.pendiente - a.pendiente);
 
-    res.status(200).json({
+    return {
       // Un abono de más (pendiente negativo) no resta lo que deben los demás.
       totalTeDeben: personas.reduce((s, p) => s + Math.max(0, p.pendiente), 0),
       personas,
-    });
+    };
+};
+
+export const getPrestamos = async (req, res) => {
+  try {
+    res.status(200).json(await calcularPrestamos(req.user.id));
   } catch (error) {
     console.error('❌ Error al leer los préstamos:', error);
     res.status(500).json({ message: 'Error al leer los préstamos', error: error.message });
@@ -1056,6 +1060,12 @@ const validarAhorroNoNegativo = async (usuarioId, deltas = [], aperturaOverride 
 // Se promedia solo entre los meses que SÍ tuvieron gastos (un mes vacío no
 // diluye el promedio). Lee snapshots, no movimientos. null si no hay historial.
 // ============================================
+// Cuánto de un desglose por categoría son préstamos dados / abonos.
+const totalPrestado = (filas) =>
+  (filas || []).filter((f) => f.categoria === CATEGORIA_PRESTAMO).reduce((s, f) => s + (f.total || 0), 0);
+const totalAbonado = (filas) =>
+  (filas || []).filter((f) => f.categoria === CATEGORIA_ABONO).reduce((s, f) => s + (f.total || 0), 0);
+
 const calcularGastoPromedioMensual = async (usuarioId, mes, anio, meses = 3) => {
   // Los N meses anteriores al consultado, como pares {anio, mes} exactos (así la
   // consulta pide justo esos snapshots y no depende de cuántos años haya).
@@ -1067,14 +1077,17 @@ const calcularGastoPromedioMensual = async (usuarioId, mes, anio, meses = 3) => 
 
   // Cuenta TODO el consumo: lo pagado con plata del mes y lo pagado con el
   // ahorro. Para saber cuánto aguanta el colchón importa cuánto se consume al
-  // mes, no de cuál bolsillo salió.
+  // mes, no de cuál bolsillo salió. Un préstamo dado NO es consumo (vuelve), así
+  // que se descuenta, salga de donde salga.
   const filas = await ResumenPersonalMes.find(
     { usuario: usuarioId, $or: ventana },
-    'totalGastos totalGastoDesdeAhorro'
+    'totalGastos totalGastoDesdeAhorro desgloseEgreso desgloseGastoAhorro'
   ).lean();
 
   const consumos = filas
-    .map((f) => (f.totalGastos || 0) + (f.totalGastoDesdeAhorro || 0))
+    .map((f) =>
+      (f.totalGastos || 0) + (f.totalGastoDesdeAhorro || 0)
+      - totalPrestado(f.desgloseEgreso) - totalPrestado(f.desgloseGastoAhorro))
     .filter((c) => c > 0); // un mes sin consumo no diluye el promedio
 
   if (consumos.length === 0) return null;
@@ -1283,26 +1296,43 @@ const UMBRAL_CAMBIO = 5000;
 // Cada mensaje trae `nivel` (para que el frontend lo pinte), `icono` y `mensaje`.
 //   niveles: 'critico' | 'advertencia' | 'bien' | 'consejo' | 'info'
 // ============================================
-const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcumulado = 0, gastoPromedio = null, podes = null, mes, anio }) => {
+const construirRecomendaciones = ({
+  actual, previo, saldoInicial = 0, ahorroAcumulado = 0, gastoPromedio = null, podes = null,
+  teDeben = null, // calcularPrestamos: lo que deben hoy, por persona
+  mes, anio,
+}) => {
   const recs = [];
   const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
+  const esPrestamo = (f) => f.categoria === CATEGORIA_PRESTAMO;
 
   // --- Números del mes actual (el ahorro se separa: es dinero apartado, no gasto)
   const fin = componerFinanzasMes(actual, saldoInicial, ahorroAcumulado);
-  const { totalIngresos, totalGastos, totalAhorro, totalEgresos, saldoFinal } = fin;
+  const { totalIngresos, totalAhorro, totalEgresos, saldoFinal } = fin;
+  // Un préstamo dado no es gasto: es plata tuya que vuelve. Para los mensajes de
+  // GASTO (comparaciones, categorías, ritmo, lo pagado con el ahorro) se saca; el
+  // préstamo tiene su propio mensaje 🤝 más abajo.
+  const prestadoAMano = totalPrestado(actual.desglose.egreso);
+  const prestadoDesdeAhorro = totalPrestado(actual.desglose.gastoAhorro);
+  const abonadoAMano = totalAbonado(actual.desglose.ingreso);
+  const abonadoAlAhorro = totalAbonado(actual.desglose.ingresoAhorro);
+  const totalGastos = fin.totalGastos - prestadoAMano;
   const totalRetiroAhorro = fin.totalRetiroAhorro;
-  const totalGastoDesdeAhorro = fin.totalGastoDesdeAhorro;
-  const ahorroNetoMes = fin.ahorroNetoMes; // apartado − retirado − pagado con ahorro
+  const totalGastoDesdeAhorro = fin.totalGastoDesdeAhorro - prestadoDesdeAhorro;
+  const ahorroNetoMes = fin.ahorroNetoMes; // apartado + entrado − retirado − pagado con ahorro
+  // El mismo, sin los préstamos ni sus abonos: lo que de verdad se ahorró o se
+  // consumió del ahorro (para la tasa y para el aviso de lo pagado con ahorro).
+  const ahorroNetoSinPrestamos = ahorroNetoMes + prestadoDesdeAhorro - abonadoAlAhorro;
   const filasAhorro = actual.desglose.egreso.filter((e) => esAhorro(e.categoria));
-  const filasGasto = actual.desglose.egreso.filter((e) => !esAhorro(e.categoria));
-  const filasGastoAhorro = actual.desglose.gastoAhorro || [];
+  const filasGasto = actual.desglose.egreso.filter((e) => !esAhorro(e.categoria) && !esPrestamo(e));
+  const filasGastoAhorro = (actual.desglose.gastoAhorro || []).filter((e) => !esPrestamo(e));
 
   // --- Números del mes anterior (para comparar)
-  const filasGastoPrevio = (previo.desglose?.egreso || []).filter((e) => !esAhorro(e.categoria));
+  const filasGastoPrevio = (previo.desglose?.egreso || []).filter((e) => !esAhorro(e.categoria) && !esPrestamo(e));
   const ahorroBrutoPrevio = calcularAhorro(previo.desglose || { egreso: [] });
   const ahorroPrevio =
-    ahorroBrutoPrevio - (previo.totalRetiroAhorro || 0) - (previo.totalGastoDesdeAhorro || 0); // neto, para comparar peras con peras
-  const gastoPrevio = previo.totalEgresos - ahorroBrutoPrevio;
+    ahorroBrutoPrevio - (previo.totalRetiroAhorro || 0)
+    - ((previo.totalGastoDesdeAhorro || 0) - totalPrestado(previo.desglose?.gastoAhorro)); // neto, sin préstamos
+  const gastoPrevio = previo.totalEgresos - ahorroBrutoPrevio - totalPrestado(previo.desglose?.egreso);
   const ingresoPrevio = previo.totalIngresos;
   const hayMesPrevio = ingresoPrevio > 0 || previo.totalEgresos > 0;
   const nombrePrevio = NOMBRES_MES[(mes === 1 ? 12 : mes - 1) - 1];
@@ -1312,7 +1342,8 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
     totalIngresos === 0 &&
     totalEgresos === 0 &&
     totalRetiroAhorro === 0 &&
-    totalGastoDesdeAhorro === 0
+    fin.totalGastoDesdeAhorro === 0 &&
+    fin.totalIngresoAlAhorro === 0
   ) {
     add('info', '📝', 'Todavía no registraste movimientos este mes. Anotá tus ingresos y gastos para ver los avisos.');
     return recs;
@@ -1393,18 +1424,40 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
   // --- 1c) Gasto pagado DIRECTO con el ahorro. No movió nada del mes (por eso
   // ninguna tarjeta cambió), pero sí achicó el colchón: hay que decirlo, porque
   // es la única forma de que se note que esa plata ya no está.
+  // Los préstamos dados con el ahorro NO van acá (tienen su 🤝): el neto que se
+  // informa es sin préstamos ni abonos.
   if (totalGastoDesdeAhorro > 0) {
     const detalle = filasGastoAhorro.length > 0 ? ` (${listarFilas(filasGastoAhorro)})` : '';
     const pesoSobreAhorro = totalAhorro > 0
       ? ` Este mes apartaste ${fmtCRC(totalAhorro)}, así que en neto tu ahorro ${
-          ahorroNetoMes >= 0 ? `subió ${fmtCRC(ahorroNetoMes)}` : `bajó ${fmtCRC(Math.abs(ahorroNetoMes))}`
+          ahorroNetoSinPrestamos >= 0 ? `subió ${fmtCRC(ahorroNetoSinPrestamos)}` : `bajó ${fmtCRC(Math.abs(ahorroNetoSinPrestamos))}`
         }.`
       : '';
     // Nivel 'consejo' como mínimo (no 'info'): es lo que explica por qué las
     // tarjetas del mes no se movieron, así que no puede quedar cortado por el
     // tope de mensajes detrás de avisos menos importantes.
-    add(ahorroNetoMes < 0 ? 'advertencia' : 'consejo', '🏦',
+    add(ahorroNetoSinPrestamos < 0 ? 'advertencia' : 'consejo', '🏦',
       `Pagaste ${fmtCRC(totalGastoDesdeAhorro)} directo con el ahorro${detalle}. No toca el saldo del mes —esa plata nunca pasó por tu bolsillo— pero tu acumulado quedó en ${fmtCRC(ahorroAcumulado)}.${pesoSobreAhorro}`);
+  }
+
+  // --- 1d) Préstamos: lo que se prestó y lo que te abonaron este mes. No es
+  // gasto: es plata tuya que está afuera y vuelve. Se dice cuánto te deben en
+  // total, por persona, para que se vea de un vistazo.
+  const prestadoMes = prestadoAMano + prestadoDesdeAhorro;
+  const abonadoMes = abonadoAMano + abonadoAlAhorro;
+  if (prestadoMes > 0 || abonadoMes > 0) {
+    const partes = [];
+    if (prestadoMes > 0) {
+      partes.push(`prestaste ${fmtCRC(prestadoMes)}${prestadoDesdeAhorro > 0 && prestadoAMano === 0 ? ' (salió del ahorro)' : ''}`);
+    }
+    if (abonadoMes > 0) {
+      partes.push(`te abonaron ${fmtCRC(abonadoMes)}${abonadoAlAhorro > 0 && abonadoAMano === 0 ? ' (volvió al ahorro)' : ''}`);
+    }
+    const deben = (teDeben?.personas || []).filter((p) => p.pendiente > 0);
+    const resto = deben.length
+      ? ` Hoy te deben ${fmtCRC(teDeben.totalTeDeben)} (${deben.map((p) => `${p.persona} ${fmtCRC(p.pendiente)}`).join(', ')}).`
+      : ' Ya nadie te debe nada.';
+    add('consejo', '🤝', `Este mes ${partes.join(' y ')}. No es gasto: es plata tuya que vuelve.${resto}`);
   }
 
   // --- 2) Ritmo de gasto: ¿para cuántos días alcanza lo que se puede gastar?
@@ -1560,8 +1613,9 @@ const construirRecomendaciones = ({ actual, previo, saldoInicial = 0, ahorroAcum
   // retiro o gasto pagado con el ahorro, los avisos 🏧/🏦 ya contaron esa
   // historia con los dos números, así que este no se repite.
   // Antes de que entre el pago del mes no se juzga el ahorro: se aparta al cobrar.
+  // Los préstamos no cuentan: prestar del ahorro no es "ahorrar menos".
   if (podes?.conPago !== false && totalIngresos > 0 && totalRetiroAhorro === 0 && totalGastoDesdeAhorro === 0) {
-    const tasa = Math.round((ahorroNetoMes / totalIngresos) * 100);
+    const tasa = Math.round((ahorroNetoSinPrestamos / totalIngresos) * 100);
     const tasaPrevia = ingresoPrevio > 0 ? Math.round((ahorroPrevio / ingresoPrevio) * 100) : null;
     const meta = Math.round(totalIngresos * 0.1);
 
@@ -1639,12 +1693,13 @@ export const getRecomendaciones = async (req, res) => {
     await asegurarSnapshots(req.user.id);
 
     // Todo sale de snapshots ya sumados: no se recorren los movimientos.
-    const [snapActual, snapPrevio, acum, gastoPromedio, podes] = await Promise.all([
+    const [snapActual, snapPrevio, acum, gastoPromedio, podes, teDeben] = await Promise.all([
       leerResumenMes(req.user.id, mes, anio),
       leerResumenMes(req.user.id, mesPrevio, anioPrevio),
       calcularAcumulados(req.user.id, mes, anio),
       calcularGastoPromedioMensual(req.user.id, mes, anio),
       calcularPodesGastar(req.user.id, mes, anio),
+      calcularPrestamos(req.user.id),
     ]);
 
     const actual = comoResumen(snapActual);
@@ -1662,6 +1717,7 @@ export const getRecomendaciones = async (req, res) => {
         ahorroAcumulado,
         gastoPromedio,
         podes,
+        teDeben,
         mes,
         anio,
       }),
@@ -1902,6 +1958,7 @@ const construirRecomendacionesAnuales = ({
   mesesConMovimiento,
   mesEnCurso = null,             // el mes que todavía corre (año en curso), o null
   gastoPromedioReciente = null,  // calcularGastoPromedioMensual: el mismo del 🛟 del mes
+  prestamos = null,              // { prestadoAhorro, prestadoAMano, abonadoAhorro, abonado, teDeben }
 }) => {
   const recs = [];
   const add = (nivel, icono, mensaje) => recs.push({ nivel, icono, mensaje });
@@ -1913,11 +1970,16 @@ const construirRecomendacionesAnuales = ({
 
   const { totalIngresos, totalGastos, totalAhorro } = totales;
   const totalRetiroAhorro = totales.totalRetiroAhorro || 0;
-  const totalGastoDesdeAhorro = totales.totalGastoDesdeAhorro || 0;
+  // Un préstamo dado no es plata que se fue: vuelve. Lo que salió del ahorro
+  // para PRESTAR (y lo que volvió con los abonos) se saca de estas cuentas y se
+  // cuenta aparte en el 🤝.
+  const prestadoAhorro = prestamos?.prestadoAhorro || 0;
+  const abonadoAhorro = prestamos?.abonadoAhorro || 0;
+  const totalGastoDesdeAhorro = (totales.totalGastoDesdeAhorro || 0) - prestadoAhorro;
   // Las dos formas de sacarle plata al ahorro: retirarla al bolsillo o pagar
   // directo con ella. Para el ahorro del año pesan igual.
   const salidasAhorro = totalRetiroAhorro + totalGastoDesdeAhorro;
-  const ahorroNeto = totales.ahorroNeto ?? totalAhorro;
+  const ahorroNeto = (totales.ahorroNeto ?? totalAhorro) + prestadoAhorro - abonadoAhorro;
   const conMov = meses.filter((m) => m.movimientos > 0);
   // Solo meses CERRADOS: el que va corriendo todavía no "cerró" en rojo (antes
   // del pago siempre va negativo) ni es un mes de gasto completo.
@@ -1948,7 +2010,7 @@ const construirRecomendacionesAnuales = ({
   // --- 1b) Plata que salió del ahorro en el año (retirada o gastada directo)
   if (salidasAhorro > 0) {
     const mesesConSalida = conMov.filter(
-      (m) => (m.totalRetiroAhorro || 0) + (m.totalGastoDesdeAhorro || 0) > 0
+      (m) => (m.totalRetiroAhorro || 0) + (m.totalGastoDesdeAhorro || 0) - (m.prestadoDesdeAhorro || 0) > 0
     );
     const cuales = mesesConSalida.map((m) => m.nombreMes).join(', ');
     // Se detalla el desglose solo si hubo de las dos clases: si no, repetir el
@@ -1959,6 +2021,18 @@ const construirRecomendacionesAnuales = ({
     add(ahorroNeto < 0 ? 'advertencia' : 'info', '🏧', ahorroNeto < 0
       ? `En ${anio} le sacaste ${fmtCRC(salidasAhorro)} al ahorro${comoSalio} en ${cuales}, y apartaste ${fmtCRC(totalAhorro)}: en el año tu ahorro bajó ${fmtCRC(Math.abs(ahorroNeto))}. Cerrás con ${fmtCRC(ahorroFinalAnio)} acumulados.`
       : `En ${anio} le sacaste ${fmtCRC(salidasAhorro)} al ahorro${comoSalio} en ${cuales}, pero apartaste ${fmtCRC(totalAhorro)}: igual terminás ${fmtCRC(ahorroNeto)} arriba, con ${fmtCRC(ahorroFinalAnio)} acumulados.`);
+  }
+
+  // --- 1c) Préstamos del año: lo prestado y lo que ya volvió. Va aparte del
+  // ahorro porque no se consumió: lo que falta está en "Te deben".
+  const prestadoAnio = prestadoAhorro + (prestamos?.prestadoAMano || 0);
+  if (prestadoAnio > 0) {
+    const abonado = prestamos?.abonado || 0;
+    const deben = (prestamos?.teDeben?.personas || []).filter((p) => p.pendiente > 0);
+    const resto = deben.length
+      ? ` Hoy te deben ${fmtCRC(prestamos.teDeben.totalTeDeben)} (${deben.map((p) => `${p.persona} ${fmtCRC(p.pendiente)}`).join(', ')}).`
+      : ' Ya te devolvieron todo.';
+    add('info', '🤝', `En ${anio} prestaste ${fmtCRC(prestadoAnio)}${abonado > 0 ? ` y te abonaron ${fmtCRC(abonado)}` : ''}. No cuenta como gasto ni como ahorro perdido: es plata tuya que vuelve.${resto}`);
   }
 
   // --- 2) Meses en rojo: el patrón que no se ve en el total del año
@@ -2098,7 +2172,7 @@ export const getResumenAnual = async (req, res) => {
     // si el año ya terminó), igual que el 🛟 del mes.
     const enCurso = anio === anioActualCR();
     const mesEnCurso = enCurso ? Number(hoyCostaRica().slice(5, 7)) : null;
-    const [snapshots, acum, gastoPromedioReciente] = await Promise.all([
+    const [snapshots, acum, gastoPromedioReciente, teDeben] = await Promise.all([
       ResumenPersonalMes.find({ usuario: req.user.id, anio: { $in: [anio - 1, anio] } })
         .sort({ anio: 1, mes: 1 })
         .lean(),
@@ -2106,6 +2180,7 @@ export const getResumenAnual = async (req, res) => {
       enCurso
         ? calcularGastoPromedioMensual(req.user.id, mesEnCurso, anio)
         : calcularGastoPromedioMensual(req.user.id, 1, anio + 1),
+      calcularPrestamos(req.user.id),
     ]);
 
     const delAnio = snapshots.filter((s) => s.anio === anio);
@@ -2162,6 +2237,7 @@ export const getResumenAnual = async (req, res) => {
         totalGastoDesdeAhorro: gastoAhorro,
         totalIngresoAlAhorro: entradaAhorro,
         gastoTotalConAhorro: snap.totalGastos + gastoAhorro,
+        prestadoDesdeAhorro: totalPrestado(snap.desgloseGastoAhorro), // parte de gastoAhorro que fue préstamo
         ahorroNetoMes: snap.totalAhorro + entradaAhorro - retiro - gastoAhorro,
         totalEgresos: snap.totalEgresos,
         balanceMes: snap.balanceMes,          // ingresos − egresos (sin retiros)
@@ -2336,12 +2412,20 @@ export const getResumenAnual = async (req, res) => {
         saldoFinalAnio,
         ahorroFinalAnio,
         meses,
-        desgloseGasto: desglose.gasto,
+        // Sin préstamos: un préstamo dado con plata a mano no es "lo que más te costó".
+        desgloseGasto: desglose.gasto.filter((f) => f.categoria !== CATEGORIA_PRESTAMO),
         comparativo,
         enCurso,
         mesesConMovimiento,
         mesEnCurso,
         gastoPromedioReciente,
+        prestamos: {
+          prestadoAhorro: totalPrestado(desglose.gastoAhorro),
+          prestadoAMano: totalPrestado(desglose.gasto),
+          abonadoAhorro: totalAbonado(desglose.ingresoAhorro),
+          abonado: totalAbonado(desglose.ingreso) + totalAbonado(desglose.ingresoAhorro),
+          teDeben,
+        },
       }),
     });
   } catch (error) {
