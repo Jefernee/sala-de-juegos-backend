@@ -35,6 +35,11 @@ export const TIPOS_MOVIMIENTO = ['ingreso', 'egreso', 'retiro_ahorro'];
 // al bolsillo: si no se anota el gasto, el saldo final queda inflado; y si se
 // anota, "Puedo gastar hasta" (ingresos − egresos) baja aunque el mes no haya
 // puesto un colón. Con `fondo: 'ahorro'` las dos mitades viajan juntas.
+//
+// En un INGRESO, `fondo: 'ahorro'` es lo mismo al revés: la plata entra DIRECTO
+// a una bolsa de ahorro (ej. un abono de un préstamo que había salido del
+// Ahorro MEP). Sube el ahorro acumulado y NO toca nada del mes: ni los ingresos
+// del mes, ni el saldo a mano, ni "Podés gastar hasta".
 export const FONDOS = ['mes', 'ahorro'];
 
 // Categorías predefinidas (decisión del usuario: lista fija, no texto libre).
@@ -48,6 +53,7 @@ export const CATEGORIAS_INGRESO = [
   'Bono escolar',
   'FCL',
   'Caja de ANDE',
+  'Abono de préstamo',
   'Negocio',
   'Ventas/Extras',
   'Préstamos',
@@ -89,6 +95,7 @@ export const CATEGORIAS_EGRESO = [
   'Rifas',
   // Compromisos financieros
   'Deudas/Préstamos',
+  'Préstamo dado',
   'Cuota banco (BCR)',
   'Seguros',
   // Ahorro (dinero apartado, NO gasto de consumo)
@@ -145,11 +152,26 @@ export const esRetiroAhorro = (tipo) => tipo === 'retiro_ahorro';
 export const esGastoDesdeAhorro = (mov) =>
   mov?.tipo === 'egreso' && mov?.fondo === 'ahorro';
 
-// ¿Se puede marcar "pagado con el ahorro"? Solo un egreso de CONSUMO: apartar
-// ahorro pagándolo con ahorro no significa nada (sería mover plata de una bolsa
-// a otra), y un ingreso o un retiro nunca salen del ahorro de esta forma.
+// Helper: ¿este ingreso entró DIRECTO al ahorro?
+export const esIngresoAlAhorro = (mov) =>
+  mov?.tipo === 'ingreso' && mov?.fondo === 'ahorro';
+
+// ¿Se puede marcar fondo 'ahorro'?
+//   • egreso de CONSUMO → "lo pagué con el ahorro". Un egreso de categoría de
+//     ahorro no: apartar ahorro pagándolo con ahorro no significa nada.
+//   • ingreso → "va al ahorro" (entra directo a una bolsa).
+//   • retiro → nunca: ya es, por definición, plata que sale del ahorro.
 export const admiteFondoAhorro = (tipo, categoria) =>
-  tipo === 'egreso' && !esAhorro(categoria);
+  (tipo === 'egreso' && !esAhorro(categoria)) || tipo === 'ingreso';
+
+// Préstamos que la persona DA (no deudas propias: esas son 'Deudas/Préstamos').
+// El préstamo es un egreso y cada abono que le devuelven, un ingreso aparte. Los
+// dos llevan `persona`: con eso se arma "Te deben" (prestado − abonado).
+export const CATEGORIA_PRESTAMO = 'Préstamo dado';
+export const CATEGORIA_ABONO = 'Abono de préstamo';
+export const llevaPersona = (tipo, categoria) =>
+  (tipo === 'egreso' && categoria === CATEGORIA_PRESTAMO) ||
+  (tipo === 'ingreso' && categoria === CATEGORIA_ABONO);
 
 // Helpers de grupo para los mensajes inteligentes.
 export const esGastoFijo = (categoria) => CATEGORIAS_FIJAS.includes(categoria);
@@ -191,8 +213,9 @@ const movimientoPersonalSchema = new mongoose.Schema(
       required: [true, 'La categoría es obligatoria'],
       trim: true,
     },
-    // De qué bolsillo salió (solo aplica a los egresos). 'mes' es lo normal;
-    // 'ahorro' marca el gasto como pagado directo con plata ya apartada.
+    // De qué bolsillo salió (egreso) o a cuál entró (ingreso). 'mes' es lo
+    // normal; 'ahorro' marca el gasto como pagado directo con plata ya apartada,
+    // o el ingreso como entrado directo a una bolsa de ahorro.
     fondo: {
       type: String,
       enum: {
@@ -238,6 +261,15 @@ const movimientoPersonalSchema = new mongoose.Schema(
       type: String,
       default: null,
       trim: true,
+    },
+    // A quién se le prestó (Préstamo dado) o quién abonó (Abono de préstamo).
+    // Obligatorio en esas dos categorías y null en las demás. "Te deben" agrupa
+    // por este nombre sin distinguir mayúsculas ni tildes de más.
+    persona: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: [60, 'El nombre puede tener hasta 60 caracteres'],
     },
     // La fecha SIEMPRE la asigna el backend; el frontend solo elige mes/anio.
     fecha: {

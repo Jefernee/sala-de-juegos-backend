@@ -67,6 +67,11 @@ const resumenPersonalMesSchema = new mongoose.Schema(
     // hasta". Lo único que hace es bajar el ahorro acumulado (y el patrimonio,
     // que es lo correcto: la plata se consumió).
     totalGastoDesdeAhorro: { type: Number, default: 0 },
+    // Ingreso que entró DIRECTO al ahorro (ingresos con fondo='ahorro', ej. el
+    // abono de un préstamo que había salido del ahorro). Es el espejo del de
+    // arriba: va APARTE de totalIngresos, no toca el saldo a mano ni "Podés
+    // gastar hasta" y solo sube el ahorro acumulado.
+    totalIngresoAlAhorro: { type: Number, default: 0 },
     // Flujo propio del mes: ingresos − egresos. NO incluye los retiros (un retiro
     // no es plata que el mes generó). El movimiento del saldo a mano es
     // balanceMes + totalRetiroAhorro.
@@ -85,6 +90,8 @@ const resumenPersonalMesSchema = new mongoose.Schema(
     // guardado igual para que se vea en qué se gastó el ahorro.
     desgloseGastoAhorro: { type: [filaCategoriaSchema], default: [] },
     desgloseGastoAhorroPorBolsa: { type: [filaCategoriaSchema], default: [] },
+    // Lo que entró al ahorro, por categoría de ingreso (Abono de préstamo…).
+    desgloseIngresoAhorro: { type: [filaCategoriaSchema], default: [] },
 
     // Conteo de movimientos del mes (informativo y para saber si el mes está vacío).
     movimientos: { type: Number, default: 0 },
