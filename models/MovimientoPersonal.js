@@ -94,7 +94,7 @@ export const CATEGORIAS_EGRESO = [
   'Cumpleaños',
   'Rifas',
   // Compromisos financieros
-  'Deudas/Préstamos',
+  'Mis deudas y cuotas',
   'Préstamo dado',
   'Cuota banco (BCR)',
   'Seguros',
@@ -111,7 +111,9 @@ export const CATEGORIAS_EGRESO = [
 export const CATEGORIAS_AHORRO = ['Ahorro', 'Ahorro CreAI', 'Ahorro MEP'];
 
 // Categorías que cuentan como DEUDA para el aviso de "peso de las deudas".
-export const CATEGORIAS_DEUDA = ['Deudas/Préstamos', 'Cuota banco (BCR)'];
+// ("Mis deudas y cuotas" se llamaba "Deudas/Préstamos": se confundía con
+// "Préstamo dado". Los movimientos viejos se pasaron al nombre nuevo.)
+export const CATEGORIAS_DEUDA = ['Mis deudas y cuotas', 'Cuota banco (BCR)'];
 
 // Gastos FIJOS: los que llegan todos los meses casi igual y no se pueden
 // recortar de un día para otro. Los mensajes inteligentes avisan cuando se
@@ -164,7 +166,7 @@ export const esIngresoAlAhorro = (mov) =>
 export const admiteFondoAhorro = (tipo, categoria) =>
   (tipo === 'egreso' && !esAhorro(categoria)) || tipo === 'ingreso';
 
-// Préstamos que la persona DA (no deudas propias: esas son 'Deudas/Préstamos').
+// Préstamos que la persona DA (no deudas propias: esas son 'Mis deudas y cuotas').
 // El préstamo es un egreso y cada abono que le devuelven, un ingreso aparte. Los
 // dos llevan `persona`: con eso se arma "Te deben" (prestado − abonado).
 export const CATEGORIA_PRESTAMO = 'Préstamo dado';
