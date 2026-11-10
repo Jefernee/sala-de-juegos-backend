@@ -317,17 +317,19 @@ const REGLAS_LIMITE = {
 };
 
 // Categorías a las que se les puede poner un límite propio: las de gasto que
-// no son ahorro, préstamo ni fijas.
+// no son ahorro ni préstamo. Las "fijas" por nombre también: si varían (ej.
+// suscripciones) se manejan como cualquier otra, y ponerle un límite propio a
+// una fija es decir "esta la quiero controlar".
 const admiteLimite = (categoria) =>
   CATEGORIAS_EGRESO.includes(categoria) &&
   !REGLAS_LIMITE.esAhorro(categoria) &&
-  !REGLAS_LIMITE.esPrestamo(categoria) &&
-  !REGLAS_LIMITE.esFijo(categoria);
+  !REGLAS_LIMITE.esPrestamo(categoria);
 
 // GET /api/finanzas-personales/limites?mes=&anio=
 // Respuesta: { mes, anio, avanceMes (0-1), mesesBase: [{anio,mes}],
 //   categorias: [{ categoria, fijo, gastado, promedio, propio, limite, historial }] }
 // `limite` es el propio si hay, si no el promedio; null en los fijos o sin datos.
+// `limitables`: categorías a las que se les puede poner un límite propio.
 export const getLimites = async (req, res) => {
   try {
     const mes = parseInt(req.query.mes);
@@ -349,7 +351,15 @@ export const getLimites = async (req, res) => {
 
     const propios = new Map(guardados.map((g) => [g.categoria, g.monto]));
     const { mesesBase, categorias } = calcularLimites({ previos, delMes, propios, reglas: REGLAS_LIMITE });
-    res.status(200).json({ mes, anio, avanceMes: avanceDelMes(mes, anio), mesesBase, categorias });
+    res.status(200).json({
+      mes,
+      anio,
+      avanceMes: avanceDelMes(mes, anio),
+      mesesBase,
+      categorias,
+      // Las que admiten un límite propio (para "Ponerle límite a otra categoría").
+      limitables: CATEGORIAS_EGRESO.filter(admiteLimite),
+    });
   } catch (error) {
     console.error('❌ Error al calcular los límites por categoría:', error);
     res.status(500).json({ message: 'Error al calcular los límites por categoría', error: error.message });
@@ -363,7 +373,7 @@ export const guardarLimite = async (req, res) => {
   try {
     const categoria = String(req.body?.categoria || '').normalize('NFC').trim();
     if (!admiteLimite(categoria)) {
-      return res.status(400).json({ message: `"${categoria}" no admite límite (solo categorías de gasto que no sean ahorro, préstamos ni fijas)` });
+      return res.status(400).json({ message: `"${categoria}" no admite límite (solo categorías de gasto que no sean ahorro ni préstamos)` });
     }
     const usuario = new mongoose.Types.ObjectId(req.user.id);
     const crudo = req.body?.monto;

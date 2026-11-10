@@ -3,7 +3,7 @@
 // Correr: node --test scripts/probarLimitesCategoria.js
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calcularLimites, avanceDelMes, gastoPorCategoria } from '../utils/limitesCategoria.js';
+import { calcularLimites, avanceDelMes, gastoPorCategoria, esEstable } from '../utils/limitesCategoria.js';
 
 const reglas = {
   esAhorro: (c) => c.startsWith('Ahorro'),
@@ -59,7 +59,6 @@ test('ahorro y préstamos no cuentan; los fijos van sin límite', () => {
   const r = calcularLimites({
     previos: [snap(2026, 10, [['Ahorro MEP', 400000], ['Préstamo dado', 50000], ['Internet/Celular', 22000]])],
     delMes: snap(2026, 11, [['Ahorro', 1500], ['Internet/Celular', 21614]]),
-    propios: new Map([['Internet/Celular', 10000]]),
     reglas,
   });
   assert.equal(buscar(r, 'Ahorro MEP'), undefined);
@@ -88,4 +87,41 @@ test('avance del mes en hora de Costa Rica', () => {
   assert.equal(avanceDelMes(11, 2026, ahora), 0.3);
   assert.equal(avanceDelMes(10, 2026, ahora), 1);
   assert.equal(avanceDelMes(12, 2026, ahora), 0);
+});
+
+test('un "fijo" que varía (suscripciones) se maneja como cualquier otra', () => {
+  const reglasSus = { ...reglas, esFijo: (c) => ['Suscripciones', 'Internet/Celular'].includes(c) };
+  const r = calcularLimites({
+    previos: [
+      snap(2026, 8, [['Suscripciones', 4130], ['Internet/Celular', 22000]]),
+      snap(2026, 9, [['Suscripciones', 21566], ['Internet/Celular', 22000]]),
+      snap(2026, 10, [['Suscripciones', 12840], ['Internet/Celular', 21570]]),
+    ],
+    delMes: snap(2026, 11, [['Suscripciones', 9160], ['Internet/Celular', 21614]]),
+    reglas: reglasSus,
+  });
+  const sus = buscar(r, 'Suscripciones');
+  assert.equal(sus.fijo, false);
+  assert.equal(sus.limite, Math.round((4130 + 21566 + 12840) / 3));
+  assert.equal(buscar(r, 'Internet/Celular').fijo, true);
+});
+
+test('un fijo con límite propio deja de ser fijo', () => {
+  const r = calcularLimites({
+    previos: [snap(2026, 9, [['Internet/Celular', 22000]]), snap(2026, 10, [['Internet/Celular', 22000]])],
+    delMes: snap(2026, 11, [['Internet/Celular', 21614]]),
+    propios: new Map([['Internet/Celular', 20000]]),
+    reglas,
+  });
+  const i = buscar(r, 'Internet/Celular');
+  assert.equal(i.fijo, false);
+  assert.equal(i.limite, 20000);
+});
+
+test('esEstable', () => {
+  assert.equal(esEstable([110000, 110000, 110000]), true);
+  assert.equal(esEstable([22000, 22000, 21570]), true);
+  assert.equal(esEstable([4130, 21566, 12840]), false);
+  assert.equal(esEstable([40000, 0, 40000]), false);
+  assert.equal(esEstable([40000]), true);
 });

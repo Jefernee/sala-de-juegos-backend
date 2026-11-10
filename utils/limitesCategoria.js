@@ -15,10 +15,26 @@
 //   • lo apartado al ahorro (no es consumo)
 //   • los préstamos dados (es plata que vuelve)
 //   • lo pagado CON el ahorro (va en desgloseGastoAhorro, no en desgloseEgreso)
-// Los gastos FIJOS (alquiler, internet, cuotas…) se devuelven con su promedio
-// pero sin límite: no se recortan de un día para otro.
+// Los gastos FIJOS (alquiler, internet, cuotas… si de verdad no varían, ver
+// esEstable) se devuelven con su promedio pero sin límite: no se recortan de
+// un día para otro.
 
 export const MESES_BASE = 3;
+
+// Un gasto "fijo" por nombre (alquiler, internet, suscripciones…) solo se trata
+// como fijo si de verdad costó casi lo mismo en los meses de la base: todos con
+// gasto y la diferencia entre el más caro y el más barato hasta este porcentaje
+// del más caro. Si varía (ej. suscripciones: ₡4.130, ₡21.566, ₡12.840) se
+// comporta como cualquier otra categoría, con su promedio y su límite. Con
+// menos de 2 meses no hay cómo saberlo y se respeta el nombre.
+export const VARIACION_FIJO = 0.1;
+
+export const esEstable = (totales) => {
+  if (totales.length < 2) return true;
+  if (totales.some((t) => t <= 0)) return false;
+  const max = Math.max(...totales);
+  return max - Math.min(...totales) <= max * VARIACION_FIJO;
+};
 
 // Suma por categoría un desglose [{ categoria, total }] dejando afuera lo que
 // no es consumo.
@@ -62,10 +78,12 @@ export const calcularLimites = ({ previos = [], delMes = null, propios = new Map
   const categorias = [];
   for (const categoria of nombres) {
     if (reglas.esAhorro(categoria) || reglas.esPrestamo(categoria)) continue;
-    const fijo = reglas.esFijo(categoria);
     // Un mes de la base sin gasto en la categoría cuenta como ₡0: el promedio
     // es "lo que se gasta por mes", no "lo que se gasta los meses que se gasta".
     const historial = porMes.map((m) => ({ anio: m.anio, mes: m.mes, total: m.gastos.get(categoria) || 0 }));
+    // Fijo = fijo por nombre, estable en la base y sin un límite propio (si el
+    // usuario le puso uno, quiere controlarlo como cualquier otra).
+    const fijo = reglas.esFijo(categoria) && esEstable(historial.map((h) => h.total)) && !propios.has(categoria);
     const promedio = porMes.length
       ? Math.round(historial.reduce((s, h) => s + h.total, 0) / porMes.length)
       : 0;
