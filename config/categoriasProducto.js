@@ -14,6 +14,7 @@ export const CATEGORIAS_PRODUCTO = [
   'snacks',
   'helados',
   'preparados',
+  'escolares', // útiles escolares: lapiceros, cuadernos, borradores…
   CATEGORIA_POR_DEFECTO,
 ];
 
