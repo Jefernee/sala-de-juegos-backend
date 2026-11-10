@@ -37,6 +37,8 @@ import MovimientoPersonal, {
 } from '../models/MovimientoPersonal.js';
 import ResumenPersonalMes, { NOMBRES_MES_PERSONAL } from '../models/ResumenPersonalMes.js';
 import AperturaPersonal from '../models/AperturaPersonal.js';
+import LimiteCategoriaPersonal from '../models/LimiteCategoriaPersonal.js';
+import { calcularLimites, avanceDelMes } from '../utils/limitesCategoria.js';
 import { crearFiltroMes, crearFechaParaMes } from '../utils/dateUtils.js';
 
 // Versión del formato del snapshot mensual. Subir este número al agregar campos
@@ -301,6 +303,89 @@ export const getPrestamos = async (req, res) => {
   } catch (error) {
     console.error('❌ Error al leer los préstamos:', error);
     res.status(500).json({ message: 'Error al leer los préstamos', error: error.message });
+  }
+};
+
+// ============================================
+// Límites por categoría ("lo que solés gastar"). Ver utils/limitesCategoria.js.
+// ============================================
+
+const REGLAS_LIMITE = {
+  esAhorro,
+  esPrestamo: (c) => c === CATEGORIA_PRESTAMO,
+  esFijo: (c) => esGastoFijo(c) || CATEGORIAS_DEUDA.includes(c),
+};
+
+// Categorías a las que se les puede poner un límite propio: las de gasto que
+// no son ahorro, préstamo ni fijas.
+const admiteLimite = (categoria) =>
+  CATEGORIAS_EGRESO.includes(categoria) &&
+  !REGLAS_LIMITE.esAhorro(categoria) &&
+  !REGLAS_LIMITE.esPrestamo(categoria) &&
+  !REGLAS_LIMITE.esFijo(categoria);
+
+// GET /api/finanzas-personales/limites?mes=&anio=
+// Respuesta: { mes, anio, avanceMes (0-1), mesesBase: [{anio,mes}],
+//   categorias: [{ categoria, fijo, gastado, promedio, propio, limite, historial }] }
+// `limite` es el propio si hay, si no el promedio; null en los fijos o sin datos.
+export const getLimites = async (req, res) => {
+  try {
+    const mes = parseInt(req.query.mes);
+    const anio = parseInt(req.query.anio);
+    if (!mes || !anio || mes < 1 || mes > 12 || anio < 2000 || anio > 2100) {
+      return res.status(400).json({ message: 'Los parámetros mes (1-12) y anio son obligatorios. Ej: ?mes=11&anio=2026' });
+    }
+
+    await asegurarSnapshots(req.user.id);
+    const usuario = new mongoose.Types.ObjectId(req.user.id);
+    const [previos, delMes, guardados] = await Promise.all([
+      ResumenPersonalMes.find(
+        { usuario, $or: [{ anio: { $lt: anio } }, { anio, mes: { $lt: mes } }] },
+        'anio mes desgloseEgreso'
+      ).sort({ anio: -1, mes: -1 }).limit(3).lean(),
+      leerResumenMes(req.user.id, mes, anio),
+      LimiteCategoriaPersonal.find({ usuario }, 'categoria monto').lean(),
+    ]);
+
+    const propios = new Map(guardados.map((g) => [g.categoria, g.monto]));
+    const { mesesBase, categorias } = calcularLimites({ previos, delMes, propios, reglas: REGLAS_LIMITE });
+    res.status(200).json({ mes, anio, avanceMes: avanceDelMes(mes, anio), mesesBase, categorias });
+  } catch (error) {
+    console.error('❌ Error al calcular los límites por categoría:', error);
+    res.status(500).json({ message: 'Error al calcular los límites por categoría', error: error.message });
+  }
+};
+
+// PUT /api/finanzas-personales/limites
+// Body: { categoria, monto }. monto > 0 fija un límite propio; monto null (o 0)
+// lo quita y la categoría vuelve a usar su promedio.
+export const guardarLimite = async (req, res) => {
+  try {
+    const categoria = String(req.body?.categoria || '').normalize('NFC').trim();
+    if (!admiteLimite(categoria)) {
+      return res.status(400).json({ message: `"${categoria}" no admite límite (solo categorías de gasto que no sean ahorro, préstamos ni fijas)` });
+    }
+    const usuario = new mongoose.Types.ObjectId(req.user.id);
+    const crudo = req.body?.monto;
+
+    if (crudo == null || Number(crudo) === 0) {
+      await LimiteCategoriaPersonal.deleteOne({ usuario, categoria });
+      return res.status(200).json({ categoria, propio: null });
+    }
+
+    const monto = Math.round(Number(crudo));
+    if (!Number.isFinite(monto) || monto < 1 || monto > 100000000) {
+      return res.status(400).json({ message: 'El límite tiene que ser un monto mayor que cero' });
+    }
+    await LimiteCategoriaPersonal.findOneAndUpdate(
+      { usuario, categoria },
+      { $set: { monto } },
+      { upsert: true, new: true, runValidators: true }
+    );
+    res.status(200).json({ categoria, propio: monto });
+  } catch (error) {
+    console.error('❌ Error al guardar el límite:', error);
+    res.status(500).json({ message: 'Error al guardar el límite', error: error.message });
   }
 };
 

@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js scripts/probarMigrarJuegos.js scripts/probarJuegosController.js scripts/probarCarruselJuegos.js scripts/probarCorreoBCR.js scripts/probarEditarFechaMovimiento.js",
+    "test": "node scripts/verificarVocabulario.js && node --test scripts/probarTurnoPendiente.js scripts/probarCategoriasActivos.js scripts/probarJuegosDePlays.js scripts/probarFiltroPendiente.js scripts/probarMigrarJuegos.js scripts/probarJuegosController.js scripts/probarCarruselJuegos.js scripts/probarCorreoBCR.js scripts/probarEditarFechaMovimiento.js scripts/probarLimitesCategoria.js",
     "probar-turno": "node --test scripts/probarTurnoPendiente.js",
     "probar-categorias": "node --test scripts/probarCategoriasActivos.js",
     "probar-juegos": "node --test scripts/probarJuegosDePlays.js",
@@ -15,6 +15,7 @@
     "probar-carrusel": "node --test scripts/probarCarruselJuegos.js",
     "probar-correo-bcr": "node --test scripts/probarCorreoBCR.js",
     "probar-editar-fecha": "node --test scripts/probarEditarFechaMovimiento.js",
+    "probar-limites": "node --test scripts/probarLimitesCategoria.js",
     "medir-portadas": "node scripts/medirPortadas.js",
     "verificar-vocabulario": "node scripts/verificarVocabulario.js",
     "dev": "cross-env NODE_ENV=development node server.js",

@@ -14,6 +14,8 @@ import {
   getAniosDisponibles,
   getTipoCambio,
   getPrestamos,
+  getLimites,
+  guardarLimite,
   getApertura,
   guardarApertura,
   deleteApertura,
@@ -36,6 +38,8 @@ router.get('/recomendaciones', getRecomendaciones); // ?mes=&anio=
 router.get('/anios-disponibles', getAniosDisponibles);
 router.get('/tipo-cambio', getTipoCambio);          // TC del dólar (Hacienda, cacheado por día)
 router.get('/prestamos', getPrestamos);             // "Te deben": prestado − abonado por persona
+router.get('/limites', getLimites);                 // ?mes=&anio= — lo que solés gastar por categoría
+router.put('/limites', guardarLimite);              // { categoria, monto } — límite propio (null lo quita)
 
 // Saldo de apertura: lo que se traía de meses anteriores (ahorros y/o plata a
 // mano) sin registrarlo movimiento por movimiento. Uno por usuario.
