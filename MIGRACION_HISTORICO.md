@@ -81,3 +81,56 @@ node scripts/migrarHistoricoExcel.js migrar     # 3. reconcilia + inserta + rege
 
 `migrar` **aborta solo** si algún mes no cuadra contra los totales auditados
 (checksum **₡3.516.535**), así nunca importa datos que no sumen.
+
+
+---
+
+# 📒 Segunda importación: libro de contabilidad (mar 2021 – mar 2026)
+
+Además del Excel de plays, la sala llevó un **libro de contabilidad**
+(`Contabilidad Sala de Juegos Ruiz.xlsb`, una hoja por mes). Esta segunda
+importación **solo AGREGA lo que el sistema no tiene**; lo que ya existe es lo real
+y no se modifica ni se borra. Todo lo agregado lleva **`origen: 'excel_contabilidad'`**
+(plays, ganancias, pagos, activos y las fichas de juego nuevas), así `rollback`
+borra únicamente eso.
+
+## Qué se carga
+
+| Qué | Cómo queda en el sistema |
+|---|---|
+| **Plays** mar-2021 a feb-2024 (₡3.397.710) | Un play por día con su monto (si el día trae PS4 y PS5, uno por consola). Antes de 2023-10 el Excel no distingue consola: quedan como Play 4. Cliente y atendió = "Histórico". |
+| **Máquinas** | `Ganancia` mensual: `Maquinas Chinos` (2021-04..2025-10), `Maquinas Zapata` (2024-07..2025-10), `Futbolin` (2021-05..2025-10), más Zapata/Futbolín de los meses de 2025-11 a 2026-04 donde el sistema solo tenía Chinos (si el sistema ya tiene ese tipo en el mes, no se agrega). |
+| **Peluches** y **Torneos** | `Ganancia` con los tipos nuevos `Peluches` y `Torneos`. |
+| **Gastos** | `PagoServicio` (Luz, Internet, Patente, Mantenimiento General y el servicio nuevo `Otros`) hasta 2026-03, incluidos los personales. **No** se cargan las cuotas de la Pantalla Xiaomi (el activo ya está en el sistema) ni la Regleta General Electric (se carga como activo). |
+| **Activos** | 55 del inventario del Excel sin pareja en el sistema. Los juegos se ligan a la ficha del catálogo si ya existe (no se duplican) y solo se crean fichas para los juegos que faltan. Placa: la siguiente del contador, igual que al crear un activo a mano. |
+| **No se carga** | Ventas 2021-2025, ahorro, mayo 2026 (copia de abril), ping pong, y los activos dudosos. |
+
+Se agregó `origen` (default `null`) a `Ganancia`, `PagoServicio` y `ActivoSala`, y
+los valores nuevos `Peluches`/`Torneos` (ganancias), `Otros` (pagos) y
+`excel_contabilidad` (origen de fichas de juego).
+
+## Comandos
+
+El .xlsb no se lee desde Node: primero un paso en Python lo vuelca a un JSON.
+
+```bash
+# 1. Excel -> JSON intermedio (no toca la base)
+python -I scripts/contabilidad/extraer_contabilidad.py <ruta.xlsb> <salida.json> <contabilidad_por_mes.csv>
+
+# 2. PRUEBA (dry-run): arma todo, cuadra totales, compara contra la base. SOLO LEE.
+node scripts/importarContabilidadExcel.js prueba [salida.json] [resumen.md]
+
+# 3. Solo si la prueba cuadra y el dueño aprueba:
+node scripts/importarContabilidadExcel.js cargar      # backup + inserta + regenera reportes + verifica
+
+# 4. Volver atrás: borra solo origen 'excel_contabilidad' y regenera reportes
+node scripts/importarContabilidadExcel.js rollback
+```
+
+- `prueba` escribe un resumen (categorías, cuadre, estado de resultados antes/después,
+  tabla de juegos, activos y placas) y **no escribe nada en la base**.
+- `cargar` aborta si el cuadre no da diferencia 0 o si las placas chocan; es
+  idempotente (si ya hay registros con ese origen, no los duplica).
+- `rollback` conserva una ficha de juego si algún activo la usa y no baja el
+  contador de placas (quedan huecos, es inocuo).
+- También existen `backup` y `verificar`.

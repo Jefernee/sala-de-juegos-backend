@@ -9,6 +9,7 @@ export const TIPOS_SERVICIO = [
   'Patente',
   'PlayStation Plus',
   'Mantenimiento General',
+  'Otros',
 ];
 
 const pagoServicioSchema = new mongoose.Schema(
@@ -36,6 +37,10 @@ const pagoServicioSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // Origen del registro: null = creado por el sistema; 'excel_contabilidad' = importado
+    // del libro de contabilidad historico (scripts/importarContabilidadExcel.js).
+    // Sirve para el rollback (borrar solo lo importado).
+    origen: { type: String, default: null },
   },
   { timestamps: true }
 );

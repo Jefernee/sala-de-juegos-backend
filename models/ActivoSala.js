@@ -135,6 +135,9 @@ const activoSalaSchema = new mongoose.Schema(
     // URLs de Cloudinary (las imágenes llegan como base64 y se suben igual que inventario)
     imagenUrl: { type: String, default: null }, // foto del artículo
     imagenFacturaUrl: { type: String, default: null }, // factura de COMPRA del activo
+    // Origen: null = creado por el sistema; 'excel_contabilidad' = importado del libro
+    // de contabilidad historico (scripts/importarContabilidadExcel.js). Para el rollback.
+    origen: { type: String, default: null },
   },
   { timestamps: true } // createdAt y updatedAt automáticos
 );

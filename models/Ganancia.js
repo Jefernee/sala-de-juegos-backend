@@ -2,7 +2,7 @@
 // Módulo de Administración: Ganancias
 import mongoose from 'mongoose';
 
-export const TIPOS_GANANCIA = ['Maquinas Chinos', 'Maquinas Zapata', 'Futbolin'];
+export const TIPOS_GANANCIA = ['Maquinas Chinos', 'Maquinas Zapata', 'Futbolin', 'Peluches', 'Torneos'];
 
 const gananciaSchema = new mongoose.Schema(
   {
@@ -29,6 +29,10 @@ const gananciaSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
+    // Origen del registro: null = creado por el sistema; 'excel_contabilidad' = importado
+    // del libro de contabilidad historico (scripts/importarContabilidadExcel.js).
+    // Sirve para el rollback (borrar solo lo importado).
+    origen: { type: String, default: null },
   },
   { timestamps: true }
 );

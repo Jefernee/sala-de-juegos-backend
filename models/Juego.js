@@ -72,7 +72,7 @@ const juegoSchema = new mongoose.Schema(
     // De dónde salió. Solo para poder auditar la migración inicial.
     origen: {
       type: String,
-      enum: ['catalogo', 'activo', 'vitrina', 'manual'],
+      enum: ['catalogo', 'activo', 'vitrina', 'manual', 'excel_contabilidad'],
       default: 'manual',
     },
   },
