@@ -24,6 +24,8 @@ import { getVitrina } from './controllers/juegosController.js';
 import activosReportRoutes from './routes/activosReportRoutes.js';
 import estadoResultadosRoutes from './routes/estadoResultados.js';
 import torneosRoutes from './routes/torneos.js';
+import novedadesRoutes from './routes/novedades.js';
+import { migrarNovedades } from './utils/migrarNovedades.js';
 // Finanzas Personales del administrador (módulo APARTE de la sala de juegos)
 import finanzasPersonalesRoutes from './routes/finanzasPersonales.js';
 // Gastos personales que se anotan solos desde el correo del BCR (Apps Script)
@@ -241,6 +243,16 @@ const connectDB = async () => {
         console.error('⚠️ Scheduler de WhatsApp (no crítico):', e.message);
       }
 
+      // Semilla de Novedades: SIEMPRE, igual que el scheduler (en producción
+      // EJECUTAR_MIGRACIONES=false y si no, nunca se crearía). Idempotente y no
+      // crítica: si falla, el servidor sigue igual.
+      try {
+        const { creada } = await migrarNovedades();
+        if (creada) console.log('📰 Novedades: creada la novedad inicial (EA FC 27).');
+      } catch (e) {
+        console.error('⚠️ Semilla de novedades (no crítico):', e.message);
+      }
+
       if (process.env.EJECUTAR_MIGRACIONES === 'false') {
         console.log('⏭️  Tareas de arranque OMITIDAS (EJECUTAR_MIGRACIONES=false).');
       } else {
@@ -442,6 +454,7 @@ app.use('/api/juegos', juegosRoutes);
 app.use('/api/activos-reports', activosReportRoutes);
 app.use('/api/estado-resultados', estadoResultadosRoutes);
 app.use('/api/torneos', torneosRoutes);
+app.use('/api/novedades', novedadesRoutes);
 
 // Finanzas Personales del administrador — APARTE de la sala de juegos.
 // El propio router exige authMiddleware + soloAdmin en todas sus rutas.
