@@ -54,6 +54,8 @@ const juegoResumenSchema = new mongoose.Schema(
   {
     nombre: { type: String, required: true },
     vecesJugado: { type: Number, default: 0 },
+    // Parte del total de los plays donde se jugó (repartido entre sus juegos).
+    montoRecaudado: { type: Number },
   },
   { _id: false }
 );

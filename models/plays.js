@@ -48,6 +48,7 @@ const playSchema = new mongoose.Schema({
       'Play 5 número 1',
       'Play 5 número 2',
       'Play 5 número 3',
+      'Play 5 número 4',
       'Ping Pong'
     ],
     trim: true
@@ -59,12 +60,6 @@ const playSchema = new mongoose.Schema({
   },
   juegosJugados: {
     type: [String],
-    validate: {
-      validator: function(arr) {
-        return arr.length <= 2;
-      },
-      message: 'Solo se pueden seleccionar hasta 2 juegos'
-    },
     default: []
   },
   // Total de controles usados en la partida (1 a 4). Es el dato "real": los 2

@@ -108,19 +108,23 @@ const calcularReporte = (plays, año, mes, periodoInicio, periodoFin) => {
  
     // ── Juegos jugados ────────────────────────
     // juegosJugados es un array de strings, ej: ["FIFA 25", "GTA V"]
-    const juegos = Array.isArray(play.juegosJugados) ? play.juegosJugados : [];
-    for (const juego of juegos) {
-      if (!juego) continue;
-      const key = juego.trim();
+    // El dinero del play se reparte en partes iguales entre sus juegos, así la
+    // suma de todos los juegos da lo recaudado y no se cuenta dos veces.
+    const juegos = (Array.isArray(play.juegosJugados) ? play.juegosJugados : [])
+      .map((j) => (j || '').trim()).filter(Boolean);
+    const parte = juegos.length ? (play.total || 0) / juegos.length : 0;
+    for (const key of juegos) {
       if (!juegosMap[key]) {
-        juegosMap[key] = { nombre: key, vecesJugado: 0 };
+        juegosMap[key] = { nombre: key, vecesJugado: 0, montoRecaudado: 0 };
       }
       juegosMap[key].vecesJugado++;
+      juegosMap[key].montoRecaudado += parte;
     }
   }
  
   // Ordenar juegos de mayor a menor
   const juegosMasJugados = Object.values(juegosMap)
+    .map((j) => ({ ...j, montoRecaudado: Math.round(j.montoRecaudado) }))
     .sort((a, b) => b.vecesJugado - a.vecesJugado);
  
   return {

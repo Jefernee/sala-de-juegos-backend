@@ -230,11 +230,15 @@ const calcularDatosReporte = (plays, año, mes, inicio, fin) => {
     diasMap[dia].totalPlay5     += play.totalPlay5   || 0;
     diasMap[dia].totalPingPong  += play.totalPingPong || 0;
 
-    for (const juego of (Array.isArray(play.juegosJugados) ? play.juegosJugados : [])) {
-      if (!juego) continue;
-      const key = juego.trim();
-      if (!juegosMap[key]) juegosMap[key] = { nombre: key, vecesJugado: 0 };
+    // Mismo reparto que MonthlyReportPlaysController: el total del play se
+    // divide en partes iguales entre sus juegos.
+    const juegos = (Array.isArray(play.juegosJugados) ? play.juegosJugados : [])
+      .map((j) => (j || '').trim()).filter(Boolean);
+    const parte = juegos.length ? (play.total || 0) / juegos.length : 0;
+    for (const key of juegos) {
+      if (!juegosMap[key]) juegosMap[key] = { nombre: key, vecesJugado: 0, montoRecaudado: 0 };
       juegosMap[key].vecesJugado++;
+      juegosMap[key].montoRecaudado += parte;
     }
   }
 
@@ -248,7 +252,9 @@ const calcularDatosReporte = (plays, año, mes, inicio, fin) => {
     porEmpleado: Object.values(empleadosMap),
     porLugar:    Object.values(lugaresMap),
     porDia:      Object.values(diasMap).sort((a, b) => a.dia - b.dia),
-    juegosMasJugados: Object.values(juegosMap).sort((a, b) => b.vecesJugado - a.vecesJugado),
+    juegosMasJugados: Object.values(juegosMap)
+      .map((j) => ({ ...j, montoRecaudado: Math.round(j.montoRecaudado) }))
+      .sort((a, b) => b.vecesJugado - a.vecesJugado),
     // Los 10 clientes que más jugaron en el mes, igual que juegosMasJugados.
     // El cálculo es compartido (utils/rankingClientes.js) con el endpoint de
     // ranking por periodo, para que nunca digan cosas distintas.
