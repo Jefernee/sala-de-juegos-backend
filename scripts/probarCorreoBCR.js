@@ -27,7 +27,12 @@ import {
   categoriaDeComercio,
 } from '../utils/correoBCR.js';
 import { esCorreoSinpe, leerSinpe, decidirSinpe, descripcionSinpe } from '../utils/correoSinpeBCR.js';
-import { recibirCorreoBCR } from '../controllers/gastosCorreoController.js';
+import { recibirCorreoBCR, PAUSADO } from '../controllers/gastosCorreoController.js';
+
+// Mientras el anotado automático esté pausado (PAUSADO en el controlador, a
+// pedido del dueño desde 2026-10-07), las pruebas que esperan que se anote se
+// OMITEN en vez de fallar; al reactivarlo vuelven a correr solas.
+const SI_ACTIVO = { skip: PAUSADO ? 'anotado automático pausado (PAUSADO=true)' : false };
 
 console.error = () => {};
 
@@ -209,7 +214,7 @@ test('sin clave configurada en el servidor no acepta nada', async () => {
   assert.equal(res.statusCode, 503);
 });
 
-test('la compra se guarda como egreso del mes con su referencia', async () => {
+test('la compra se guarda como egreso del mes con su referencia', SI_ACTIVO, async () => {
   const res = await llamar({ body: { html: correoBCR(COMPRA) } });
   assert.equal(res.statusCode, 200);
   assert.equal(guardados.length, 1);
@@ -223,21 +228,21 @@ test('la compra se guarda como egreso del mes con su referencia', async () => {
   assert.equal(res.cuerpo.resultados[0].accion, 'anotado');
 });
 
-test('el mismo correo dos veces se anota una sola vez', async () => {
+test('el mismo correo dos veces se anota una sola vez', SI_ACTIVO, async () => {
   await llamar({ body: { html: correoBCR(COMPRA) } });
   const res = await llamar({ body: { html: correoBCR(COMPRA) } });
   assert.equal(guardados.length, 1);
   assert.equal(res.cuerpo.resultados[0].accion, 'repetido');
 });
 
-test('el retiro y la negada no se guardan', async () => {
+test('el retiro y la negada no se guardan', SI_ACTIVO, async () => {
   const res = await llamar({ body: { html: correoBCR(RETIRO, NEGADA) } });
   assert.equal(guardados.length, 0);
   assert.deepEqual(res.cuerpo.resultados.map((r) => r.accion), ['ignorado', 'ignorado']);
   assert.equal(res.cuerpo.resultados[0].retiro, true);
 });
 
-test('en modo prueba dice qué haría pero no guarda', async () => {
+test('en modo prueba dice qué haría pero no guarda', SI_ACTIVO, async () => {
   const res = await llamar({ body: { html: correoBCR(COMPRA), prueba: true } });
   assert.equal(guardados.length, 0);
   assert.equal(res.cuerpo.resultados[0].accion, 'anotaria');
@@ -312,7 +317,7 @@ test('SINPE recibido (acreditado) no se anota', () => {
   assert.equal(decidirSinpe(leerSinpe(correoSinpe({ verbo: 'acreditado' }))).accion, 'ignorar');
 });
 
-test('SINPE: el controlador lo guarda como egreso en colones con su referencia', async () => {
+test('SINPE: el controlador lo guarda como egreso en colones con su referencia', SI_ACTIVO, async () => {
   const res = await llamar({ body: { html: correoSinpe() } });
   assert.equal(res.statusCode, 200);
   assert.equal(guardados.length, 1);
@@ -326,20 +331,26 @@ test('SINPE: el controlador lo guarda como egreso en colones con su referencia',
   assert.equal(mov.origen, 'correo_bcr');
 });
 
-test('SINPE: el mismo correo dos veces se anota una sola vez', async () => {
+test('SINPE: el mismo correo dos veces se anota una sola vez', SI_ACTIVO, async () => {
   await llamar({ body: { html: correoSinpe() } });
   const res = await llamar({ body: { html: correoSinpe() } });
   assert.equal(guardados.length, 1);
   assert.equal(res.cuerpo.resultados[0].accion, 'repetido');
 });
 
-test('SINPE recibido: el controlador no guarda nada', async () => {
+test('SINPE recibido: el controlador no guarda nada', SI_ACTIVO, async () => {
   const res = await llamar({ body: { html: correoSinpe({ verbo: 'acreditado' }) } });
   assert.equal(guardados.length, 0);
   assert.equal(res.cuerpo.resultados[0].accion, 'ignorado');
 });
 
-test('un correo que no es del BCR responde 422', async () => {
+test('un correo que no es del BCR responde 422', SI_ACTIVO, async () => {
   const res = await llamar({ body: { html: '<p>hola</p>' } });
   assert.equal(res.statusCode, 422);
+});
+
+test('pausado: responde que lo vio pero no anota nada', { skip: PAUSADO ? false : 'no está pausado' }, async () => {
+  const res = await llamar({ body: { html: correoBCR(COMPRA) } });
+  assert.equal(guardados.length, 0);
+  assert.deepEqual(res.cuerpo, { resultados: [], pausado: true });
 });

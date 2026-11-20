@@ -21,7 +21,8 @@ import { esCorreoSinpe, leerSinpe, decidirSinpe, descripcionSinpe } from '../uti
 
 // Apagado a pedido del administrador (2026-10-07): los correos llegan pero no se
 // anota nada. Para reactivar, poner en false y pushear.
-const PAUSADO = true;
+// Exportado para que scripts/probarCorreoBCR.js sepa si correr las pruebas de anotar.
+export const PAUSADO = true;
 import { obtenerTipoCambio, regenerarResumenDeFecha } from './finanzasPersonalesController.js';
 
 // Lleva cualquiera de los dos avisos del BCR a la misma forma:
